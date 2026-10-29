@@ -1,0 +1,12 @@
+// Signierung
+//
+// Standardzustand: Signierung mit dem lokal vorhandenen Development-Zertifikat
+// („Sign to Run Locally" genügt nicht: der Hardened Runtime verlangt eine
+// echte Identität, sonst verweigert macOS den Zugriff auf USB-Geräte nicht,
+// zeigt aber Warnungen). Die Team-Kennung kommt aus Signing.local.xcconfig,
+// die NICHT ins Repository gehört. Vorlage: Signing.local.xcconfig.example
+#include? "Signing.local.xcconfig"
+
+CODE_SIGN_STYLE = Automatic
+CODE_SIGNING_ALLOWED = $(PORTAPACK_SIGNING:default=NO)
+CODE_SIGNING_REQUIRED = $(PORTAPACK_SIGNING:default=NO)

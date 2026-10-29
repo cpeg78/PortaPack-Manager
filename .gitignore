@@ -1,0 +1,26 @@
+# Xcode-Projekt wird aus project.yml erzeugt – auch iCloud-Konfliktkopien
+# („PortaPackManager 2.xcodeproj“, „Datei 2.swift“) nie einchecken.
+*.xcodeproj/
+* [0-9].*
+* [0-9]/
+
+# Lokale Signierung (Team-Kennung bleibt privat)
+Config/Signing.local.xcconfig
+
+# Build-Erzeugnisse
+.build
+build/
+DerivedData/
+*.xcuserstate
+*.xcuserdatad/
+xcuserdata/
+scratchpad/
+
+# macOS
+.DS_Store
+
+# Lokal kompilierte Prüfprogramme
+/RadioCli
+/ScanCli
+*.swp
+.claude/worktrees/

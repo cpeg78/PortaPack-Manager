@@ -1,0 +1,53 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleDevelopmentRegion</key>
+	<string>de</string>
+	<key>CFBundleDisplayName</key>
+	<string>PortaPack Manager</string>
+	<key>CFBundleExecutable</key>
+	<string>$(EXECUTABLE_NAME)</string>
+	<key>CFBundleIdentifier</key>
+	<string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>CFBundleName</key>
+	<string>PortaPack Manager</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>$(MARKETING_VERSION)</string>
+	<key>CFBundleVersion</key>
+	<string>$(CURRENT_PROJECT_VERSION)</string>
+	<key>LSApplicationCategoryType</key>
+	<string>public.app-category.utilities</string>
+	<key>LSMinimumSystemVersion</key>
+	<string>$(MACOSX_DEPLOYMENT_TARGET)</string>
+	<key>NSHumanReadableCopyright</key>
+	<string>© 2026 Christian Golz</string>
+	<key>NSPrincipalClass</key>
+	<string>NSApplication</string>
+	<key>NSBluetoothAlwaysUsageDescription</key>
+	<string>Über das Bluetooth des Mac empfängt die App die Drohnen-Kennung (Remote ID) aus Bluetooth-LE-Werbepaketen – zusätzlich zum HackRF.</string>
+	<key>NSLocationUsageDescription</key>
+	<string>Der eigene Standort dient als Bezug für Entfernungen und die Positionsdekodierung von Flugzeugen, Schiffen und Sonden. Er bleibt auf diesem Mac, außer du teilst ihn ausdrücklich (SondeHub) oder nutzt den Fernzugriff.</string>
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>Der eigene Standort dient als Bezug für Entfernungen und die Positionsdekodierung von Flugzeugen, Schiffen und Sonden. Er bleibt auf diesem Mac, außer du teilst ihn ausdrücklich (SondeHub) oder nutzt den Fernzugriff.</string>
+	<key>NSSpeechRecognitionUsageDescription</key>
+	<string>Die App wandelt empfangene Flugfunk-Sprüche in Text um, damit du sie lesen und durchsuchen kannst. Die Erkennung läuft nur auf diesem Mac – nichts verlässt den Rechner.</string>
+	<key>ITSAppUsesNonExemptEncryption</key>
+	<false/>
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleURLName</key>
+			<string>de.christiangolz.portapackmanager</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>portapack</string>
+			</array>
+		</dict>
+	</array>
+</dict>
+</plist>

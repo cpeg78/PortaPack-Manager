@@ -1,0 +1,11 @@
+/* Erlaubnistexte der Info.plist auf Englisch – die deutschen stehen in der Info.plist selbst. */
+
+"NSBluetoothAlwaysUsageDescription" = "The app uses the Mac's Bluetooth to receive drone IDs (Remote ID) from Bluetooth LE advertising packets – in addition to the HackRF.";
+
+"NSLocationUsageDescription" = "Your location is the reference for distances and for decoding the positions of aircraft, ships and sondes. It stays on this Mac unless you explicitly share it (SondeHub) or use Remote Access.";
+
+"NSLocationWhenInUseUsageDescription" = "Your location is the reference for distances and for decoding the positions of aircraft, ships and sondes. It stays on this Mac unless you explicitly share it (SondeHub) or use Remote Access.";
+
+"NSSpeechRecognitionUsageDescription" = "The app converts received airband transmissions to text so you can read and search them. Recognition runs only on this Mac – nothing leaves the computer.";
+
+"NSHumanReadableCopyright" = "© 2026 Christian Golz";

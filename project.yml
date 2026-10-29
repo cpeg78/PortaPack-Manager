@@ -1,0 +1,82 @@
+name: PortaPackManager
+options:
+  bundleIdPrefix: de.christiangolz
+  deploymentTarget:
+    macOS: "15.0"
+  createIntermediateGroups: true
+  developmentLanguage: de
+  knownRegions:
+    - de
+    - en
+  groupSortPosition: top
+
+settings:
+  base:
+    SWIFT_VERSION: "6.0"
+    SWIFT_STRICT_CONCURRENCY: complete
+    SWIFT_DEFAULT_ACTOR_ISOLATION: nonisolated
+    SWIFT_APPROACHABLE_CONCURRENCY: NO
+    MACOSX_DEPLOYMENT_TARGET: "15.0"
+    ENABLE_USER_SCRIPT_SANDBOXING: YES
+    DEAD_CODE_STRIPPING: YES
+    ENABLE_HARDENED_RUNTIME: YES
+    SWIFT_TREAT_WARNINGS_AS_ERRORS: NO
+    # Texte für die Übersetzung beim Bauen sammeln (.stringsdata) – Grundlage für en.lproj.
+    SWIFT_EMIT_LOC_STRINGS: YES
+    LOCALIZATION_PREFERS_STRING_CATALOGS: NO
+  configs:
+    Debug:
+      SWIFT_ACTIVE_COMPILATION_CONDITIONS: DEBUG
+
+targets:
+  PortaPackManager:
+    type: application
+    platform: macOS
+    sources:
+      - path: PortaPackManager
+        excludes:
+          - "**/.DS_Store"
+      # Das Handbuch liegt für GitHub unter Docs/ und kommt als Hilfe ins Bundle.
+      - path: Docs/Hilfe.md
+        buildPhase: resources
+      - path: Docs/Help-en.md
+        buildPhase: resources
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: de.christiangolz.portapackmanager
+        PRODUCT_NAME: PortaPackManager
+        MARKETING_VERSION: "1.0"
+        CURRENT_PROJECT_VERSION: "1"
+        GENERATE_INFOPLIST_FILE: NO
+        INFOPLIST_FILE: PortaPackManager/Resources/Info.plist
+        CODE_SIGN_ENTITLEMENTS: PortaPackManager/Resources/PortaPackManager.entitlements
+        ENABLE_APP_SANDBOX: NO
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
+        COMBINE_HIDPI_IMAGES: YES
+        ENABLE_PREVIEWS: YES
+        SWIFT_OBJC_BRIDGING_HEADER: PortaPackManager/HackRF/PortaPackManager-Bridging-Header.h
+    configFiles:
+      Debug: Config/Signing.xcconfig
+      Release: Config/Signing.xcconfig
+    scheme:
+      testTargets:
+        - PortaPackManagerTests
+      gatherCoverageData: true
+      language: de
+      region: DE
+
+  PortaPackManagerTests:
+    type: bundle.unit-test
+    platform: macOS
+    sources:
+      - path: PortaPackManagerTests
+    dependencies:
+      - target: PortaPackManager
+    configFiles:
+      Debug: Config/Signing.xcconfig
+      Release: Config/Signing.xcconfig
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: de.christiangolz.portapackmanager.tests
+        GENERATE_INFOPLIST_FILE: YES
