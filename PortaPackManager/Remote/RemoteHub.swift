@@ -437,7 +437,10 @@ final class RemoteHub {
     }
 
     func applySettings(restart: Bool = false) {
-        if enabled {
+        // Der Testwirt teilt die UserDefaults der echten App: ohne diese Sperre
+        // belegte ein Testlauf Port 1478, und die echte App kam nicht mehr an ihren
+        // Server (Fund 30.10.2026, Testlauf von `release.sh`).
+        if enabled, ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] == nil {
             if tokenUnavailable {
                 stopServer()
                 error = String(localized: "Der Zugangsschlüssel ist im Schlüsselbund gerade nicht lesbar. Der Fernzugriff ist ausgesetzt und startet von selbst, sobald er wieder gelesen werden kann.")

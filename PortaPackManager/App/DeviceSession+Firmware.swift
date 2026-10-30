@@ -197,9 +197,20 @@ extension DeviceSession {
     /// mitten im Seitenschreiben ließe das Gerät nur noch per DFU starten
     /// (Review 28.10.2026, W5).
     func enterHackRFMode() async {
-        guard !busy, let device else { return }
-        await device.switchToHackRFMode()
-        await disconnect()
+        // Läuft auf dem PortaPack gerade eine App, beendet `hackrf` mitunter erst
+        // diese – das Gerät meldet sich dann wieder als Mayhem (z. B. als
+        // „Transceiver“), und erst der nächste Befehl wechselt (Fund 30.10.2026,
+        // vom Handy dreimal tippen). Deshalb bis zu dreimal senden.
+        for attempt in 1...3 {
+            guard !busy, let device else { return }
+            if attempt > 1 { Log.session.notice("HackRF-Modus nicht erreicht – Befehl erneut (Versuch \(attempt))") }
+            await device.switchToHackRFMode()
+            await disconnect()
+            for _ in 0..<20 where hackRF == nil && self.device == nil {
+                try? await Task.sleep(for: .milliseconds(500))
+            }
+            guard hackRF == nil, self.device != nil else { return }
+        }
     }
 
     /// Startet das Gerät neu (aus beiden Modi).

@@ -58,11 +58,19 @@ LOG="$OUT/build.log"
 
 if (( TESTS )); then
     echo "› Tests"
+    # `xcodebuild test` beendet die laufende App (gleiche Bundle-ID), und die
+    # Live-Gerätetests belegen währenddessen den HackRF – danach wieder starten.
+    INSTALLED="$HOME/Applications/$DISPLAY_NAME.app"
+    WAS_RUNNING=0
+    if pgrep -qf "$INSTALLED/Contents/MacOS/"; then WAS_RUNNING=1; fi
     if ! xcodebuild test -project "$APP_NAME.xcodeproj" -scheme "$APP_NAME" -destination 'platform=macOS' \
+            -configuration Release ENABLE_TESTABILITY=YES \
             -derivedDataPath "$CACHE/DerivedData-ReleaseTests" >"$OUT/test.log" 2>&1; then
         grep -E "✘|error:|failed" "$OUT/test.log" | head -20 >&2
+        if (( WAS_RUNNING )); then open -g "$INSTALLED"; fi
         fail "Tests fehlgeschlagen – Protokoll: $OUT/test.log"
     fi
+    if (( WAS_RUNNING )); then open -g "$INSTALLED"; fi
 fi
 
 echo "› Bauen (Release, $IDENTITY)"
