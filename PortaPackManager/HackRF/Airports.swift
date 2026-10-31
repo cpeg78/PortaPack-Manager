@@ -1,5 +1,5 @@
+import CoreLocation
 import Foundation
-import MapKit
 import Observation
 
 /// Ein Flugplatz aus der OurAirports-Datenbank (`airports.csv`).
@@ -207,17 +207,6 @@ enum AirportFilter {
             self.init(south: s, west: w, north: n, east: e)
         }
 
-        /// Sichtbarer Ausschnitt einer MapKit-Karte.
-        init?(mapRect rect: MKMapRect) {
-            guard rect.width > 0, rect.height > 0 else { return nil }
-            let world = MKMapSize.world
-            let top = MKMapPoint(x: world.width / 2, y: min(max(rect.minY, 0), world.height)).coordinate.latitude
-            let bottom = MKMapPoint(x: world.width / 2, y: min(max(rect.maxY, 0), world.height)).coordinate.latitude
-            let west = rect.minX / world.width * 360 - 180
-            let east = rect.maxX / world.width * 360 - 180
-            self.init(south: bottom, west: west, north: top, east: east)
-        }
-
         static func wrap(_ lon: Double) -> Double {
             let l = (lon + 180).truncatingRemainder(dividingBy: 360)
             return (l < 0 ? l + 360 : l) - 180
@@ -280,23 +269,43 @@ final class AirportDatabase {
     private(set) var loading = false
     private(set) var error: String?
     @ObservationIgnored private var loaded = false
+    @ObservationIgnored private var loadTask: Task<Void, Never>?
+
+    /// Einmal erfolgreich geladen – fehlt die Ablage später, hat macOS den Cache-Ordner
+    /// geleert (bei knappem Speicher, Fund 31.10.2026), und sie wird still neu geladen.
+    static let downloadedKey = "airportsDownloaded"
 
     /// Liest die verdichtete Ablage (einmal je Programmlauf, abseits des Main Actors).
     func loadIfNeeded() {
         guard !loaded else { return }
         loaded = true
         let url = Self.fileURL
-        guard FileManager.default.fileExists(atPath: url.path) else { return }
+        guard FileManager.default.fileExists(atPath: url.path) else {
+            if UserDefaults.standard.bool(forKey: Self.downloadedKey) {
+                Log.session.info("Flugplätze: Ablage fehlt (Cache geleert) – lade neu")
+                loadTask = Task { await self.download() }
+            }
+            return
+        }
         loading = true
-        Task {
+        loadTask = Task {
             let result = await Task.detached { () -> [Airport] in
                 guard let data = try? Data(contentsOf: url) else { return [] }
                 return (try? JSONDecoder().decode([Airport].self, from: data)) ?? []
             }.value
             if self.airports.isEmpty { self.airports = result }
+            if !result.isEmpty { UserDefaults.standard.set(true, forKey: Self.downloadedKey) }
             self.updated = (try? FileManager.default.attributesOfItem(atPath: url.path))?[.modificationDate] as? Date
             self.loading = false
         }
+    }
+
+    /// Wie `loadIfNeeded`, wartet aber, bis die Ablage gelesen (oder neu geladen) ist. Der Fernzugriff
+    /// fragte sonst direkt nach dem Programmstart eine noch leere Liste ab und meldete
+    /// „Flugplätze am Mac laden“, obwohl sie längst heruntergeladen war (31.10.2026).
+    func waitUntilLoaded() async {
+        loadIfNeeded()
+        await loadTask?.value
     }
 
     /// Lädt `airports.csv` (≈ 12 MB) neu, verdichtet sie und legt nur die
@@ -324,6 +333,7 @@ final class AirportDatabase {
             airports = parsed
             updated = Date()
             loaded = true
+            UserDefaults.standard.set(true, forKey: Self.downloadedKey)
         } catch {
             self.error = String(localized: "Laden fehlgeschlagen: \(error.localizedDescription)")
         }

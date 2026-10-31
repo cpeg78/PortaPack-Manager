@@ -159,6 +159,14 @@ struct PlannerView: View {
                     LabeledContent("Dauer \(Int(planner.sondeMinutes)) min") {
                         Slider(value: $planner.sondeMinutes, in: 60...240, step: 15)
                     }
+                    Picker("Bis zur ersten Sonde abwechseln", selection: $planner.sondeProbeMinutes) {
+                        Text("Aus – durchgehend horchen").tag(0.0)
+                        ForEach([3.0, 5.0, 10.0, 15.0], id: \.self) { minutes in
+                            Text("alle \(Int(minutes)) min").tag(minutes)
+                        }
+                    }
+                    Text("Solange noch keine Sonde dekodiert ist, läuft der vorherige Empfänger (z. B. ADS-B) weiter, und der HackRF horcht nur in diesem Abstand 1½ min nach Sonden. Ist eine Sonde da, bleibt er dabei.")
+                        .font(.caption).foregroundStyle(.secondary)
                     Toggle("Nur wenn SondeHub eine Sonde in Reichweite meldet", isOn: $planner.sondeOnlyInRange)
                     if planner.sondeOnlyInRange {
                         LabeledContent("Reichweite \(Int(planner.sondeRangeKm)) km") {

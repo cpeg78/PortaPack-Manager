@@ -16,12 +16,16 @@ struct BLEView: View {
             ControlsSplit(width: 280, issue: model.error) {
                 VSplitView {
                     deviceTable.frame(minHeight: 200)
-                    HSplitView {
-                        packetTable.frame(minWidth: 380)
-                        detail.frame(minWidth: 260, idealWidth: 320)
+                    HStack(spacing: 0) {
+                        packetTable.frame(minWidth: 340, maxWidth: .infinity, maxHeight: .infinity)
+                        Divider()
+                        detail.frame(width: 300).frame(maxHeight: .infinity)
                     }
                     .frame(minHeight: 200)
                 }
+                // Kein HSplitView im VSplitView: das ließ AppKit die Constraints endlos
+                // neu rechnen (Absturz beim Öffnen, 30.10.2026 – wie Smart Home 28.10.).
+                // Innen 340 + Trenner 1 + 300 = 641 < 660 außen.
                 .frame(minWidth: 660)
             } controls: {
                 controls

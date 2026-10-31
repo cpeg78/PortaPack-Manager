@@ -1,4 +1,4 @@
-import MapKit
+import CoreLocation
 import SwiftUI
 
 struct APRSView: View {
@@ -9,8 +9,7 @@ struct APRSView: View {
     @State private var order: [ColumnSort<APRSStation>] = []
     @AppStorage("homeLat") private var homeLat = 0.0
     @AppStorage("homeLon") private var homeLon = 0.0
-    @State private var camera: MapCameraPosition = .automatic
-    @State private var scrollZoom = MapScrollZoom()
+    @State private var mapController = MapController()
     @State private var showTrails = true
 
     private var home: CLLocationCoordinate2D? {
@@ -44,40 +43,36 @@ struct APRSView: View {
     private func center(on id: APRSStation.ID?) {
         guard let id, let station = model.stations.first(where: { $0.id == id }),
               let lat = station.latitude, let lon = station.longitude else { return }
-        let span = scrollZoom.region?.span ?? MKCoordinateSpan(latitudeDelta: 0.5, longitudeDelta: 0.5)
-        let region = MKCoordinateRegion(center: CLLocationCoordinate2D(latitude: lat, longitude: lon), span: span)
-        scrollZoom.region = region
-        withAnimation(.easeInOut(duration: 0.4)) { camera = .region(region) }
+        mapController.center(on: CLLocationCoordinate2D(latitude: lat, longitude: lon))
+    }
+
+    private var mapFeatures: [MapFeature] {
+        let accent = MapColor.accent
+        var list: [MapFeature] = []
+        if let home { list.append(.home(home)) }
+        if showTrails {
+            for station in positioned where station.trail.count > 1 {
+                let selected = selection == station.id
+                list.append(.line("st:\(station.id)/trail", station.trail.map { CLLocationCoordinate2D(latitude: $0.lat, longitude: $0.lon) },
+                                  color: selected ? MapColor.selected : accent, width: selected ? 3 : 1.5,
+                                  opacity: selected ? 1 : 0.5, selected: selected))
+            }
+        }
+        for station in positioned {
+            let selected = selection == station.id
+            let stale = Date().timeIntervalSince(station.lastHeard) > 1800
+            list.append(.marker("st:\(station.id)", at: CLLocationCoordinate2D(latitude: station.latitude!, longitude: station.longitude!),
+                                symbol: MapSymbol(sfSymbol: station.last.systemImage),
+                                color: selected ? MapColor.selected : stale ? MapColor.stale : accent,
+                                size: 20, label: station.id, selected: selected, select: station.id))
+        }
+        return list
     }
 
     private var map: some View {
-        MapReader { proxy in
-            Map(position: $camera, selection: $selection) {
-                if let home {
-                    Marker("Standort", systemImage: "house.fill", coordinate: home).tint(.brown)
-                }
-                if showTrails {
-                    ForEach(positioned) { station in
-                        if station.trail.count > 1 {
-                            MapPolyline(coordinates: station.trail.map { CLLocationCoordinate2D(latitude: $0.lat, longitude: $0.lon) })
-                                .stroke(selection == station.id ? Color.orange : Color.accentColor.opacity(0.5),
-                                        lineWidth: selection == station.id ? 3 : 1.5)
-                        }
-                    }
-                }
-                ForEach(positioned) { station in
-                    Annotation(station.id, coordinate: CLLocationCoordinate2D(latitude: station.latitude!, longitude: station.longitude!)) {
-                        Image(systemName: station.last.systemImage)
-                            .foregroundStyle(selection == station.id ? Color.orange
-                                             : Date().timeIntervalSince(station.lastHeard) > 1800 ? Color.secondary : Color.accentColor)
-                            .font(.title3)
-                    }
-                    .tag(station.id)
-                }
-            }
-            .mapStyle(.standard(elevation: .flat, pointsOfInterest: .excludingAll))
-            .mapControls { MapZoomStepper(); MapCompass(); MapScaleView() }
-            .scrollWheelZoom(scrollZoom) { camera = .region($0) }
+        LeafletMap(features: mapFeatures, controller: mapController,
+                   options: MapOptions(center: home.map(MapPoint.init) ?? MapPoint(51, 10), zoom: home == nil ? 5 : 9),
+                   onSelect: { selection = $0 })
             .overlay(alignment: .topLeading) {
                 if positioned.isEmpty {
                     Text(model.running ? "Noch keine Position empfangen" : "Empfang starten")
@@ -87,12 +82,11 @@ struct APRSView: View {
                 }
             }
             .overlay(alignment: .bottomLeading) {
-                if camera.positionedByUser || camera.region != nil, !positioned.isEmpty {
-                    Button("Alle Stationen zeigen", systemImage: "scope") { camera = .automatic }
+                if !mapController.following, !positioned.isEmpty {
+                    Button("Alle Stationen zeigen", systemImage: "scope") { mapController.showAll() }
                         .padding(10)
                 }
             }
-        }
     }
 
     private var table: some View {

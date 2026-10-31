@@ -85,6 +85,17 @@ right). The panel always lists its sections in the same order:
 If you have hidden the Controls panel and an error occurs, it appears as a
 narrow banner above the content – “Show Controls” opens the panel again.
 
+### Maps
+
+All maps in the app show OpenStreetMap – the same map as the remote access web
+page. Drag to pan, zoom with the scroll wheel or trackpad, or use the + and −
+buttons at the bottom right. Until you move the map it fits itself to all
+targets; afterwards “Show all …” at the bottom left brings that back. Click a
+target to select it, click an empty spot to clear the selection. Direction
+arrows on tracks thin out as you zoom out and come back as you zoom in. The map
+tiles need an internet connection; only the visible map area goes to
+OpenStreetMap, never received data.
+
 ### Keyboard and Input
 
 - **Space** starts and stops reception on every receiver page (Radio and DAB+:
@@ -366,8 +377,13 @@ Weather Balloons pages lead here with “Reception Schedule …”.
 - **A sonde window follows reception:** If a balloon can still be heard at the
   planned end, the window keeps running until nothing has come in for
   5 minutes. If a balloon has landed or left the range (10 minutes of silence),
-  or none shows up at all for 30 minutes, the window ends early – and whatever
-  was running before starts again.
+  or none shows up at all for 30 minutes (and SondeHub reports none in range
+  either), the window ends early – and whatever was running before starts
+  again.
+- **Alternate until the first sonde** (every 5 minutes by default): until a
+  balloon has been decoded, the previous receiver (e.g. ADS-B) keeps running,
+  and the HackRF only listens for sondes for 1½ minutes every few minutes. Once
+  one is heard, it stays on it. “Off” listens continuously.
 - **Priority** when entries overlap: METEOR, then amateur satellites, then
   radiosondes.
 - **Skip** ends a running recording – in the red banner at the bottom, on this
@@ -622,9 +638,15 @@ need to record anything: the audio stays in memory only briefly.
 - **Language:** English for regular radiotelephony, German for VFR traffic at
   small airfields and rescue helicopters. “Automatic” tries both and keeps the
   more confident result.
-- The first time you turn it on, macOS downloads the speech model once (the
-  progress shows in the control panel). On macOS 15 the system also asks for
-  permission to use speech recognition.
+- **Speech recognition:** “Apple (built-in)” is fast and needs nothing extra.
+  **Whisper** is much more accurate with noise and radio jargon (in tests with
+  noisy transmissions about 10 % instead of 50 % wrong words, call signs almost
+  always right). For it, the app downloads a model once – recommended
+  “Balanced (Small)”, 190 MB. Under **Model** you choose the size; a ✓ shows
+  what's already downloaded, and you can delete models you no longer need there.
+- The first time you turn it on, macOS (Apple) or the app (Whisper) downloads
+  the speech model once; the progress shows in the control panel. On macOS 15
+  the system also asks for permission to use Apple's speech recognition.
 - **Faded text** means the recognizer was unsure. Hover over the text to see
   the raw text exactly as the recognizer delivered it. The column already shows
   number words as digits (“flight level eight zero” → “flight level 80”, “one
@@ -1021,9 +1043,15 @@ under **Settings ▸ Remote Access**.
 ### How It Works
 
 1. **“Turn On Remote Access”**.
-2. Open one of the **addresses** on your phone – easiest via **QR code**. The
-   address contains the access key; without it the page shows nothing.
-3. On iPhone, add it as an app via “Share ▸ Add to Home Screen”.
+2. Under **Accounts**, use **Add Account** to create a user name and a password
+   (at least 8 characters). The role **Control** may switch and change settings,
+   **View only** sees everything but can't change anything – good for family and
+   friends.
+3. Open one of the **addresses** on your phone – easiest via **QR code** – and
+   sign in with user name and password. The phone stays signed in; the browser
+   offers to save the password.
+4. On iPhone, add it as an app via “Share ▸ Add to Home Screen”. The app asks
+   you to sign in once on its first start.
 
 **On the go, via VPN only:** install Tailscale on your Mac and phone and use
 the Tailscale address (100.x.y.z) – or dial into your home network via VPN (e.g.
@@ -1055,16 +1083,22 @@ time, confirm with “Allow”.
 ### Good to Know
 
 - While Remote Access is on, the Mac stays awake.
-- **Regenerate** creates a new key and locks out all pages opened so far. The
-  browser remembers the key and removes it from the address bar – so a
-  screenshot won't give it away.
+- Each account shows how many devices are signed in. **Change Password** and
+  **Sign Out Everywhere** (in the account's “…” menu) sign out all devices of
+  that account, **Delete** removes the account entirely. To sign out on the
+  phone, use the bottom of the menu.
+- After five wrong passwords from one device, signing in waits 30 s, then twice
+  as long each time (at most 15 min).
+- In your home network the page runs over http, i.e. unencrypted – so from
+  outside only through a VPN such as Tailscale, which encrypts the connection.
 - Keys (Zigbee, meters) are never transferred via the web page; you enter them
   on the Mac.
 - **Last rejected** shows when someone from outside tried to connect. If your
   VPN uses unusual addresses, you can turn off “Home network and VPN only”.
-- If the keychain can't be read at some point, Remote Access pauses and says so
-  under Settings ▸ Remote Access. As soon as the key can be read again, it
-  resumes by itself – with the same key, your phones stay signed in.
+- The accounts are stored in the Mac's keychain, passwords only in hashed form
+  (a check value, never in plain text). If the keychain can't be read at some
+  point, Remote Access pauses and says so under Settings ▸ Remote Access. As soon
+  as it can be read again, it resumes by itself – your phones stay signed in.
 
 <a id="sharing"></a>
 ## Share Data
@@ -1315,4 +1349,5 @@ outdoors and as high as possible does more than any setting.
   - whatever you turn on yourself under “Share Data” and “Notifications”.
 - Map tiles come from OpenStreetMap.
 - For “Convert transmissions to text” (Airband), macOS downloads a speech model from
-  Apple once; the recognition itself runs on your Mac.
+  Apple once – or, with Whisper, the app downloads a model from Hugging Face
+  (huggingface.co); the recognition itself runs on your Mac.

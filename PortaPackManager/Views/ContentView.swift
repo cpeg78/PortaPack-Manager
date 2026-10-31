@@ -180,7 +180,10 @@ struct ContentView: View {
                 let open = openWindow
                 BackgroundController.shared.openMainWindowAction = { open(id: AppServices.mainWindowID) }
             }
-            .onChange(of: navigation.page) { _, page in
+            // `initial`: Aus der Menüleiste („Einstellungen …“) wird die Seite gesetzt,
+            // bevor das geschlossene Hauptfenster neu entsteht – ohne Erstauswertung
+            // zeigte es dann die Startseite (Fund 30.10.2026).
+            .onChange(of: navigation.page, initial: true) { _, page in
                 if let page { selection = page; navigation.page = nil }
             }
             // Für Hilfe-Menü (⌘?) und Pegelanzeige: welche Seite gerade zu sehen ist.

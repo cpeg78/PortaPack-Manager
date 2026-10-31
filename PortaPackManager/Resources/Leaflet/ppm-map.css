@@ -1,0 +1,30 @@
+/* Karte der Mac-App – ergänzt leaflet.css (siehe ppm-map.js). */
+html, body, #map { margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden; }
+body { background: #e5e3df; font: 11px -apple-system, BlinkMacSystemFont, "Helvetica Neue", sans-serif; }
+.leaflet-container { background: #e5e3df; font: inherit; }
+
+.ppm-icon { background: none; border: none; }
+.ppm-marker { position: relative; width: 0; height: 0; }
+.ppm-sym { position: absolute; line-height: 0; transform-origin: 50% 50%;
+  filter: drop-shadow(0 0 1px rgba(255,255,255,.95)) drop-shadow(0 1px 1px rgba(0,0,0,.35)); }
+.ppm-sym.ppm-plain { filter: none; }
+.ppm-sym svg { display: block; overflow: visible; }
+.ppm-label { position: absolute; left: 0; transform: translateX(-50%); white-space: nowrap; pointer-events: none;
+  padding: 0 3px; border-radius: 3px; background: rgba(255,255,255,.82); color: #1d1d1f;
+  font-size: 10.5px; line-height: 14px; }
+.ppm-label.ppm-right { transform: translateY(-50%); }
+.ppm-label.ppm-bold { font-weight: 600; }
+.ppm-label.ppm-dim { color: #6e6e73; }
+.ppm-label.ppm-small { font-size: 9px; line-height: 12px; }
+
+/* Bedienelemente: Kartenbild bleibt hell, die Knöpfe folgen dem Erscheinungsbild. */
+@media (prefers-color-scheme: dark) {
+  .leaflet-bar a, .leaflet-bar a:hover { background: #2c2c2e; color: #f2f2f7; border-bottom-color: #48484a; }
+  .leaflet-bar a.leaflet-disabled { background: #1c1c1e; color: #636366; }
+  .leaflet-bar { border-color: rgba(255,255,255,.25) !important; }
+  .leaflet-control-attribution { background: rgba(28,28,30,.8) !important; color: #d1d1d6; }
+  .leaflet-control-attribution a { color: #64d2ff; }
+  .leaflet-control-scale-line { background: rgba(28,28,30,.75); color: #f2f2f7; border-color: #d1d1d6; }
+  .leaflet-tooltip { background: #2c2c2e; color: #f2f2f7; border-color: #48484a; }
+  .leaflet-tooltip-top:before { border-top-color: #2c2c2e; }
+}

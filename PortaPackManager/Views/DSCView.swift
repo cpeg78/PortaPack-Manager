@@ -1,4 +1,4 @@
-import MapKit
+import CoreLocation
 import SwiftUI
 
 /// Seefunk-Notruf (DSC) auf UKW-Kanal 70: Rufliste, Detailkarte, Karte für
@@ -11,8 +11,7 @@ struct DSCView: View {
     @State private var order: [ColumnSort<DSCLogEntry>] = []
     @AppStorage("homeLat") private var homeLat = 0.0
     @AppStorage("homeLon") private var homeLon = 0.0
-    @State private var camera: MapCameraPosition = .automatic
-    @State private var scrollZoom = MapScrollZoom()
+    @State private var mapController = MapController()
 
     private var home: CLLocationCoordinate2D? {
         (homeLat == 0 && homeLon == 0) ? nil : CLLocationCoordinate2D(latitude: homeLat, longitude: homeLon)
@@ -44,40 +43,40 @@ struct DSCView: View {
 
     // MARK: Karte
 
+    private var mapFeatures: [MapFeature] {
+        var list: [MapFeature] = []
+        if let home {
+            list.append(.home(home))
+            // Unsichtbarer Kreis der typischen Reichweite (UKW-Seefunk reicht ~40 km): Ohne Ziele
+            // zoomte die Karte sonst bis auf die eigene Straße.
+            list.append(.extent("range", center: home, radius: 40_000))
+        }
+        for entry in areas {
+            let area = entry.call.area!
+            let selected = selection == entry.id
+            list.append(.polygon("area:\(entry.id)", [
+                CLLocationCoordinate2D(latitude: area.north, longitude: area.west),
+                CLLocationCoordinate2D(latitude: area.north, longitude: area.east),
+                CLLocationCoordinate2D(latitude: area.south, longitude: area.east),
+                CLLocationCoordinate2D(latitude: area.south, longitude: area.west),
+            ], color: Self.mapColor(entry.call), width: selected ? 2 : 1, fillOpacity: selected ? 0.25 : 0.1,
+               select: String(entry.id), selected: selected))
+        }
+        for entry in positioned {
+            let position = entry.call.position!
+            let selected = selection == entry.id
+            list.append(.marker("call:\(entry.id)", at: CLLocationCoordinate2D(latitude: position.latitude, longitude: position.longitude),
+                                symbol: entry.call.concernsDistress ? .sos : .ship,
+                                color: selected ? MapColor.selected : Self.mapColor(entry.call),
+                                size: 22, label: label(entry), selected: selected, select: String(entry.id)))
+        }
+        return list
+    }
+
     private var map: some View {
-        MapReader { proxy in
-            Map(position: $camera, selection: $selection) {
-                if let home {
-                    Marker("Standort", systemImage: "house.fill", coordinate: home).tint(.brown)
-                    // Unsichtbarer Kreis der typischen Reichweite (UKW-Seefunk reicht ~40 km): Ohne Ziele
-                    // zoomte die automatische Kamera sonst bis auf die eigene Straße.
-                    MapCircle(center: home, radius: 40_000).foregroundStyle(.clear)
-                }
-                ForEach(areas) { entry in
-                    let area = entry.call.area!
-                    MapPolygon(coordinates: [
-                        CLLocationCoordinate2D(latitude: area.north, longitude: area.west),
-                        CLLocationCoordinate2D(latitude: area.north, longitude: area.east),
-                        CLLocationCoordinate2D(latitude: area.south, longitude: area.east),
-                        CLLocationCoordinate2D(latitude: area.south, longitude: area.west),
-                    ])
-                    .foregroundStyle(Self.color(entry.call).opacity(selection == entry.id ? 0.25 : 0.1))
-                    .stroke(Self.color(entry.call), lineWidth: selection == entry.id ? 2 : 1)
-                }
-                ForEach(positioned) { entry in
-                    let position = entry.call.position!
-                    Annotation(label(entry), coordinate: CLLocationCoordinate2D(latitude: position.latitude, longitude: position.longitude)) {
-                        Image(systemName: entry.call.concernsDistress ? "sos.circle.fill" : "ferry.fill")
-                            .font(.title2)
-                            .foregroundStyle(selection == entry.id ? Color.orange : Self.color(entry.call))
-                            .background(Circle().fill(.background).padding(2))
-                    }
-                    .tag(entry.id)
-                }
-            }
-            .mapStyle(.standard(elevation: .flat, pointsOfInterest: .excludingAll))
-            .mapControls { MapZoomStepper(); MapScaleView() }
-            .scrollWheelZoom(scrollZoom) { camera = .region($0) }
+        LeafletMap(features: mapFeatures, controller: mapController,
+                   options: MapOptions(fitMaxZoom: 11, center: home.map(MapPoint.init) ?? MapPoint(54, 9), zoom: home == nil ? 5 : 9),
+                   onSelect: { key in selection = key.flatMap { Int($0) } })
             .overlay(alignment: .topLeading) {
                 if positioned.isEmpty, areas.isEmpty {
                     Text(model.running ? "Noch kein Ruf mit Position" : "Empfang starten")
@@ -93,11 +92,22 @@ struct DSCView: View {
                 }
             }
             .overlay(alignment: .bottomLeading) {
-                if camera.positionedByUser || camera.region != nil, !(positioned.isEmpty && areas.isEmpty) {
-                    Button("Alle Rufe zeigen", systemImage: "scope") { camera = .automatic }
+                if !mapController.following, !(positioned.isEmpty && areas.isEmpty) {
+                    Button("Alle Rufe zeigen", systemImage: "scope") { mapController.showAll() }
                         .padding(10)
                 }
             }
+    }
+
+    /// Farbe auf der (immer hellen) Karte – wie `color(_:)`, aber ohne Systemfarben,
+    /// die im Dunkelmodus weiß würden.
+    static func mapColor(_ call: DSCCall) -> String {
+        if call.isTest { return MapColor.stale }
+        if call.concernsDistress { return MapColor.red }
+        switch call.category {
+        case .urgency: return "#ff9500"
+        case .safety: return "#d4a300"
+        default: return "#1d1d1f"
         }
     }
 
@@ -111,10 +121,7 @@ struct DSCView: View {
         } else {
             return
         }
-        let span = scrollZoom.region?.span ?? MKCoordinateSpan(latitudeDelta: 1, longitudeDelta: 1)
-        let region = MKCoordinateRegion(center: target, span: span)
-        scrollZoom.region = region
-        withAnimation(.easeInOut(duration: 0.4)) { camera = .region(region) }
+        mapController.center(on: target)
     }
 
     // MARK: Liste

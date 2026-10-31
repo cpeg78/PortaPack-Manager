@@ -91,13 +91,4 @@ struct ArchiveApproachTests {
         #expect(ArchiveSighting.approaches([3000, 2000, 900, 400]) == 1) // Landeanflug
         #expect(ArchiveSighting.approaches([]) == 0)
     }
-
-    @Test("Richtungspfeile zeigen in Flugrichtung und bleiben begrenzt")
-    @MainActor func arrows() {
-        let north = (0..<50).map { CLLocationCoordinate2D(latitude: 53 + Double($0) * 0.01, longitude: 10) }
-        let marks = TrackArrow.marks(north, limit: 10)
-        #expect(!marks.isEmpty && marks.count <= 10)
-        #expect(marks.allSatisfy { abs($0.bearing) < 1 || abs($0.bearing - 360) < 1 })
-        #expect(TrackArrow.marks([north[0]]).isEmpty)
-    }
 }

@@ -184,10 +184,8 @@ struct MapAircraft: MapTarget, Sendable {
     let heading: Double?
     let stale: Bool
     let trail: [CLLocationCoordinate2D]
-    var symbolName: String { "airplane" }
-    /// Das Symbol „airplane“ zeigt nach Osten.
-    var symbolDirection: Double { 90 }
-    var symbolSize: CGFloat { 18 }
+    var symbol: MapSymbol { .plane }
+    var symbolSize: Double { 22 }   // mit dunkler Kontur; 18 ging auf der Karte unter (30.10.2026)
 
     init?(_ plane: Aircraft, now: Date) {
         guard let lat = plane.latitude, let lon = plane.longitude else { return nil }

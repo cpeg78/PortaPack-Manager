@@ -20,15 +20,18 @@ struct SensorView: View {
             ControlsSplit(width: 280, issue: model.error) {
                 VSplitView {
                     sensorTable.frame(minHeight: 180)
-                    HSplitView {
+                    HStack(spacing: 0) {
                         packetTable.frame(minWidth: 300, maxWidth: .infinity, maxHeight: .infinity)
-                        packetDetail.frame(minWidth: 240, idealWidth: 320, maxWidth: .infinity, maxHeight: .infinity)
+                        Divider()
+                        packetDetail.frame(width: 280).frame(maxHeight: .infinity)
                     }
                     .frame(minHeight: 200)
                 }
-                // Mindestbreite über der Summe der inneren Spalten (300 + 240 + Trenner):
+                // Mindestbreite über der Summe der inneren Spalten (300 + Trenner + 280):
                 // lag sie darunter, rechnete AppKit die Constraints endlos neu und die
-                // App stürzte beim Öffnen der Seite ab (27.10.2026).
+                // App stürzte beim Öffnen der Seite ab (27.10.2026). Kein HSplitView im
+                // VSplitView – dasselbe Muster brachte BLE, Drohnen und Meshtastic am
+                // 30.10.2026 trotz passender Breiten zum Absturz.
                 .frame(minWidth: 600)
             } controls: {
                 controls

@@ -1,4 +1,4 @@
-import MapKit
+import CoreLocation
 import SwiftUI
 
 struct DroneView: View {
@@ -9,8 +9,7 @@ struct DroneView: View {
     @State private var order: [ColumnSort<Drone>] = []
     @AppStorage("homeLat") private var homeLat = 0.0
     @AppStorage("homeLon") private var homeLon = 0.0
-    @State private var camera: MapCameraPosition = .automatic
-    @State private var scrollZoom = MapScrollZoom()
+    @State private var mapController = MapController()
     @State private var showTrails = true
     @State private var showOperators = true
 
@@ -25,12 +24,16 @@ struct DroneView: View {
             ControlsSplit(width: 280, issue: model.error) {
                 VSplitView {
                     map.frame(minHeight: 240)
-                    HSplitView {
-                        table.frame(minWidth: 380)
-                        detail.frame(minWidth: 260, idealWidth: 320)
+                    HStack(spacing: 0) {
+                        table.frame(minWidth: 340, maxWidth: .infinity, maxHeight: .infinity)
+                        Divider()
+                        detail.frame(width: 300).frame(maxHeight: .infinity)
                     }
                     .frame(minHeight: 200)
                 }
+                // Kein HSplitView im VSplitView: das ließ AppKit die Constraints endlos
+                // neu rechnen (Absturz beim Öffnen, 30.10.2026 – wie Smart Home 28.10.).
+                // Innen 340 + Trenner 1 + 300 = 641 < 660 außen.
                 .frame(minWidth: 660)
             } controls: {
                 controls
@@ -54,55 +57,50 @@ struct DroneView: View {
         guard let id, let drone = model.drones.first(where: { $0.id == id }),
               let lat = drone.latitude ?? drone.system?.operatorLatitude,
               let lon = drone.longitude ?? drone.system?.operatorLongitude else { return }
-        let span = scrollZoom.region?.span ?? MKCoordinateSpan(latitudeDelta: 0.02, longitudeDelta: 0.02)
-        let region = MKCoordinateRegion(center: CLLocationCoordinate2D(latitude: lat, longitude: lon), span: span)
-        scrollZoom.region = region
-        withAnimation(.easeInOut(duration: 0.4)) { camera = .region(region) }
+        mapController.center(on: CLLocationCoordinate2D(latitude: lat, longitude: lon))
     }
 
     // MARK: - Karte
 
-    private var map: some View {
-        MapReader { proxy in
-            Map(position: $camera, selection: $selection) {
-                if let home {
-                    Marker("Standort", systemImage: "house.fill", coordinate: home).tint(.brown)
-                }
-                if showTrails {
-                    ForEach(positioned) { drone in
-                        if drone.trail.count > 1 {
-                            MapPolyline(coordinates: drone.trail.map { CLLocationCoordinate2D(latitude: $0.lat, longitude: $0.lon) })
-                                .stroke(selection == drone.id ? Color.orange : Color.accentColor.opacity(0.5),
-                                        lineWidth: selection == drone.id ? 3 : 1.5)
-                        }
-                    }
-                }
-                if showOperators {
-                    ForEach(operators) { drone in
-                        let pilot = CLLocationCoordinate2D(latitude: drone.system!.operatorLatitude!,
-                                                           longitude: drone.system!.operatorLongitude!)
-                        if let lat = drone.latitude, let lon = drone.longitude {
-                            MapPolyline(coordinates: [pilot, CLLocationCoordinate2D(latitude: lat, longitude: lon)])
-                                .stroke(.purple.opacity(0.6), style: StrokeStyle(lineWidth: 1, dash: [4, 3]))
-                        }
-                        Marker("Pilot", systemImage: "person.fill", coordinate: pilot).tint(.purple)
-                    }
-                }
-                ForEach(positioned) { drone in
-                    Annotation(drone.displayName,
-                               coordinate: CLLocationCoordinate2D(latitude: drone.latitude!, longitude: drone.longitude!)) {
-                        Image(systemName: "airplane.circle.fill")
-                            .rotationEffect(.degrees((drone.location?.direction ?? 90) - 90))
-                            .foregroundStyle(selection == drone.id ? Color.orange
-                                             : Date().timeIntervalSince(drone.lastSeen) > 30 ? Color.secondary : Color.accentColor)
-                            .font(.title2)
-                    }
-                    .tag(drone.id)
-                }
+    private var mapFeatures: [MapFeature] {
+        let accent = MapColor.accent
+        var list: [MapFeature] = []
+        if let home { list.append(.home(home)) }
+        if showTrails {
+            for drone in positioned where drone.trail.count > 1 {
+                let selected = selection == drone.id
+                list.append(.line("dr:\(drone.id)/trail", drone.trail.map { CLLocationCoordinate2D(latitude: $0.lat, longitude: $0.lon) },
+                                  color: selected ? MapColor.selected : accent, width: selected ? 3 : 1.5,
+                                  opacity: selected ? 1 : 0.5, selected: selected))
             }
-            .mapStyle(.standard(elevation: .flat))
-            .mapControls { MapZoomStepper(); MapCompass(); MapScaleView() }
-            .scrollWheelZoom(scrollZoom) { camera = .region($0) }
+        }
+        if showOperators {
+            for drone in operators {
+                let pilot = CLLocationCoordinate2D(latitude: drone.system!.operatorLatitude!,
+                                                   longitude: drone.system!.operatorLongitude!)
+                if let lat = drone.latitude, let lon = drone.longitude {
+                    list.append(.line("dr:\(drone.id)/pilotline", [pilot, CLLocationCoordinate2D(latitude: lat, longitude: lon)],
+                                      color: MapColor.purple, width: 1, opacity: 0.6, dash: [4, 3]))
+                }
+                list.append(.badge("dr:\(drone.id)/pilot", at: pilot, symbol: .person, color: MapColor.purple,
+                                   label: String(localized: "Pilot"), select: String(drone.id)))
+            }
+        }
+        for drone in positioned {
+            let selected = selection == drone.id
+            let stale = Date().timeIntervalSince(drone.lastSeen) > 30
+            list.append(.marker("dr:\(drone.id)", at: CLLocationCoordinate2D(latitude: drone.latitude!, longitude: drone.longitude!),
+                                symbol: .planeCircle, color: selected ? MapColor.selected : stale ? MapColor.stale : accent,
+                                size: 22, rotation: drone.location?.direction ?? 90, label: drone.displayName,
+                                selected: selected, select: String(drone.id)))
+        }
+        return list
+    }
+
+    private var map: some View {
+        LeafletMap(features: mapFeatures, controller: mapController,
+                   options: MapOptions(fitMaxZoom: 16, center: home.map(MapPoint.init) ?? MapPoint(51, 10), zoom: home == nil ? 5 : 13),
+                   onSelect: { selection = $0 })
             .overlay(alignment: .topLeading) {
                 if positioned.isEmpty {
                     Text(model.running ? "Noch keine Drohnenposition empfangen" : "Empfang starten")
@@ -111,7 +109,12 @@ struct DroneView: View {
                         .padding(10)
                 }
             }
-        }
+            .overlay(alignment: .bottomLeading) {
+                if !mapController.following, !positioned.isEmpty {
+                    Button("Alle Drohnen zeigen", systemImage: "scope") { mapController.showAll() }
+                        .padding(10)
+                }
+            }
     }
 
     // MARK: - Tabelle

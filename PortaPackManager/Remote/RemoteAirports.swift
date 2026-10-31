@@ -24,9 +24,9 @@ enum RemoteAirports {
         let airports: [Item]
     }
 
-    static func handle(_ query: [String: String]) -> Data {
+    static func handle(_ query: [String: String]) async -> Data {
         let database = AirportDatabase.shared
-        database.loadIfNeeded()
+        await database.waitUntilLoaded()
         let result = response(database.airports, bbox: query["bbox"])
         return (try? JSONEncoder().encode(result)) ?? Data("{}".utf8)
     }

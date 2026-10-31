@@ -1,6 +1,6 @@
 import AppKit
 import Foundation
-import MapKit
+import CoreLocation
 import Testing
 @testable import PortaPackManager
 
@@ -42,25 +42,6 @@ struct ReviewFixOberflaecheTests {
         // Ansicht ohne Fenster (Seite verlassen): nichts annehmen.
         #expect(!ScrollWheelMonitor.accepts(eventWindow: window, viewWindow: nil, hidden: false,
                                             location: CGPoint(x: 50, y: 50), bounds: bounds))
-    }
-
-    @Test("Kartenzoom: ohne Hover nichts verbrauchen, Entfernen setzt Hover zurück")
-    func kartenzoomOhneHoverReichtWeiter() {
-        let zoom = MapScrollZoom()
-        zoom.region = MKCoordinateRegion(center: .init(latitude: 53, longitude: 10),
-                                         span: .init(latitudeDelta: 1, longitudeDelta: 1))
-        let event = ScrollWheelArea.Event(dx: 0, dy: 5, precise: true, modifiers: [], location: .zero)
-        var applied: MKCoordinateRegion?
-        #expect(!zoom.handle(event, convert: { _ in nil }, apply: { applied = $0 }))
-        #expect(applied == nil)
-        zoom.cursor = CGPoint(x: 10, y: 10)
-        #expect(zoom.handle(event, convert: { _ in nil }, apply: { applied = $0 }))
-        #expect((applied?.span.latitudeDelta ?? 1) < 1)
-        zoom.reset()
-        #expect(zoom.cursor == nil)
-        // Seitliches Wischen wird verbraucht, zoomt aber nicht.
-        let region = MKCoordinateRegion(center: .init(latitude: 0, longitude: 0), span: .init(latitudeDelta: 1, longitudeDelta: 1))
-        #expect(MapScrollZoom.zoomed(region, dx: 10, dy: 1, precise: true, anchor: region.center) == nil)
     }
 
     // MARK: W10
@@ -225,39 +206,6 @@ struct ReviewFixOberflaecheTests {
 
     // MARK: Y22
 
-    @Test("Fernzugriffsschlüssel: alter Wert wird unverändert in den Schlüsselbund übernommen")
-    func schluesselMigrationBehaeltWert() throws {
-        let suite = "review-\(UUID().uuidString)"
-        let defaults = try #require(UserDefaults(suiteName: suite))
-        defer { defaults.removePersistentDomain(forName: suite) }
-        defaults.set("abcd2345wxyz", forKey: "remoteToken")
-        let store = RemoteTokenStore.memory()
-        let token = store.loadOrMigrate(defaults: defaults, key: "remoteToken", make: { "neu-neu-neu1" })
-        #expect(token == "abcd2345wxyz")
-        #expect(store.load() == .found("abcd2345wxyz"))
-        #expect(defaults.string(forKey: "remoteToken") == nil)
-        // Zweiter Start: aus dem Schlüsselbund, derselbe Wert.
-        #expect(store.loadOrMigrate(defaults: defaults, key: "remoteToken", make: { "neu-neu-neu1" }) == "abcd2345wxyz")
-    }
-
-    @Test("Fernzugriffsschlüssel: unlesbarer Schlüsselbund sperrt niemanden aus")
-    func schluesselbundFehlerBehaeltAltenWert() throws {
-        let suite = "review-\(UUID().uuidString)"
-        let defaults = try #require(UserDefaults(suiteName: suite))
-        defer { defaults.removePersistentDomain(forName: suite) }
-        defaults.set("abcd2345wxyz", forKey: "remoteToken")
-        let failing = RemoteTokenStore.memory(failing: true)
-        #expect(failing.loadOrMigrate(defaults: defaults, key: "remoteToken", make: { "neu-neu-neu1" }) == "abcd2345wxyz")
-        #expect(defaults.string(forKey: "remoteToken") == "abcd2345wxyz")
-        // Ganz neu: erzeugt und gesichert.
-        let fresh = RemoteTokenStore.memory()
-        let other = try #require(UserDefaults(suiteName: suite + "-2"))
-        defer { other.removePersistentDomain(forName: suite + "-2") }
-        #expect(fresh.loadOrMigrate(defaults: other, key: "remoteToken", make: { "neu-neu-neu1" }) == "neu-neu-neu1")
-        #expect(fresh.load() == .found("neu-neu-neu1"))
-        #expect(other.string(forKey: "remoteToken") == nil)
-    }
-
     @Test("HTTP-Server: Grenze je Gegenstelle und insgesamt")
     func serverGrenzeJeGegenstelle() {
         let busy = [String?](repeating: "192.168.1.5", count: 16)
@@ -269,12 +217,11 @@ struct ReviewFixOberflaecheTests {
         #expect(RemoteHTTPServer.admits(peer: nil, openPeers: busy))
     }
 
-    @Test("Fernzugriffsseite nimmt den Schlüssel aus der Adresszeile")
-    func seiteEntferntSchluesselAusAdresse() {
-        #expect(RemotePage.html.contains("history.replaceState"))
-        #expect(RemotePage.html.contains("searchParams.delete('k')"))
-        // Die Web-App vom Home-Bildschirm startet weiter mit Schlüssel.
-        #expect(RemotePage.manifest(token: "abc").contains("\"start_url\":\"/?k=abc\""))
+    @Test("Fernzugriffsseite kennt keinen Schlüssel mehr (Konten seit 30.10.2026)")
+    func seiteOhneSchluessel() {
+        #expect(!RemotePage.html.contains("k: K") && !RemotePage.html.contains("params.k"))
+        #expect(!RemotePage.html.contains("__K__"))
+        #expect(RemotePage.manifest().contains("\"start_url\":\"/\""))
     }
 
     // MARK: Nitpicks

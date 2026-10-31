@@ -1,4 +1,4 @@
-import MapKit
+import CoreLocation
 import SwiftUI
 
 /// Amateurfunk FT8/WSPR: Dekodierliste, Karte der Locatoren, Wasserfall des
@@ -13,8 +13,7 @@ struct FT8View: View {
     @AppStorage("homeLon") private var homeLon = 0.0
     @AppStorage("ft8OnlyCQ") private var onlyCQ = false
     @AppStorage("ft8WaterfallWSPR") private var showWSPRWaterfall = false
-    @State private var camera: MapCameraPosition = .automatic
-    @State private var scrollZoom = MapScrollZoom()
+    @State private var mapController = MapController()
 
     private var home: CLLocationCoordinate2D? {
         (homeLat == 0 && homeLon == 0) ? nil : CLLocationCoordinate2D(latitude: homeLat, longitude: homeLon)
@@ -31,7 +30,7 @@ struct FT8View: View {
                         .frame(minHeight: 110, idealHeight: 190)
                         .accessibilityElement(children: .contain)
                         .accessibilityLabel("Wasserfall des Amateurfunk-Kanals")
-                    FT8MapPane(model: model, selection: selection, home: home, camera: $camera, scrollZoom: scrollZoom)
+                    FT8MapPane(model: model, selection: selection, home: home, controller: mapController)
                         .frame(minHeight: 140, idealHeight: 280)
                     FT8SpotTable(model: model, selection: $selection, order: $order, onlyCQ: onlyCQ, home: home)
                         .frame(minHeight: 120)
@@ -55,10 +54,7 @@ struct FT8View: View {
     private func center(on id: FT8Spot.ID?) {
         guard let id, let spot = model.spots.first(where: { $0.id == id }), let grid = spot.grid,
               let pos = FT8Locator.coordinate(grid) else { return }
-        let span = scrollZoom.region?.span ?? MKCoordinateSpan(latitudeDelta: 8, longitudeDelta: 12)
-        let region = MKCoordinateRegion(center: CLLocationCoordinate2D(latitude: pos.lat, longitude: pos.lon), span: span)
-        scrollZoom.region = region
-        withAnimation(.easeInOut(duration: 0.4)) { camera = .region(region) }
+        mapController.center(on: CLLocationCoordinate2D(latitude: pos.lat, longitude: pos.lon))
     }
 
     // MARK: - Bedienfeld
@@ -314,39 +310,41 @@ struct FT8MapPane: View {
     let model: FT8Model
     let selection: FT8Spot.ID?
     let home: CLLocationCoordinate2D?
-    @Binding var camera: MapCameraPosition
-    let scrollZoom: MapScrollZoom
+    let controller: MapController
 
     private var selectedCall: String? {
         selection.flatMap { id in model.spots.first { $0.id == id }?.call }
     }
 
-    var body: some View {
-        MapReader { proxy in
-            Map(position: $camera) {
-                if let home {
-                    Marker("Standort", systemImage: "house.fill", coordinate: home).tint(.brown)
-                    // Unsichtbarer Kreis der typischen Reichweite (FT8 auf 2 m/6 m reicht oft über 1000 km): Ohne Ziele
-                    // zoomte die automatische Kamera sonst bis auf die eigene Straße.
-                    MapCircle(center: home, radius: 1_500_000).foregroundStyle(.clear)
-                }
-                ForEach(model.stations) { station in
-                    let coordinate = CLLocationCoordinate2D(latitude: station.latitude, longitude: station.longitude)
-                    if let home, station.call == selectedCall {
-                        MapPolyline(coordinates: [home, coordinate]).stroke(.orange, lineWidth: 2)
-                    }
-                    Annotation(station.call, coordinate: coordinate) {
-                        Image(systemName: station.lastMode == .wspr ? "dot.radiowaves.up.forward" : "antenna.radiowaves.left.and.right")
-                            .font(.callout)
-                            .foregroundStyle(station.call == selectedCall ? Color.orange
-                                             : Date().timeIntervalSince(station.lastHeard) > 900 ? Color.secondary
-                                             : station.lastMode == .wspr ? Color.purple : Color.accentColor)
-                    }
-                }
+    private var features: [MapFeature] {
+        let accent = MapColor.accent
+        let selectedCall = selectedCall
+        var list: [MapFeature] = []
+        if let home {
+            list.append(.home(home))
+            // Unsichtbarer Kreis der typischen Reichweite (FT8 auf 2 m/6 m reicht oft über 1000 km): Ohne Ziele
+            // zoomte die Karte sonst bis auf die eigene Straße.
+            list.append(.extent("range", center: home, radius: 1_500_000))
+        }
+        for station in model.stations {
+            let coordinate = CLLocationCoordinate2D(latitude: station.latitude, longitude: station.longitude)
+            let selected = station.call == selectedCall
+            if let home, selected {
+                list.append(.line("path:\(station.call)", [home, coordinate], color: MapColor.selected, width: 2, selected: true))
             }
-            .mapStyle(.standard(elevation: .flat, pointsOfInterest: .excludingAll))
-            .mapControls { MapZoomStepper(); MapCompass(); MapScaleView() }
-            .scrollWheelZoom(scrollZoom) { camera = .region($0) }
+            let wspr = station.lastMode == .wspr
+            let color = selected ? MapColor.selected
+                : Date().timeIntervalSince(station.lastHeard) > 900 ? MapColor.stale
+                : wspr ? MapColor.purple : accent
+            list.append(.marker("st:\(station.call)", at: coordinate, symbol: wspr ? .signal : .antenna, color: color,
+                                size: 16, label: station.call, selected: selected))
+        }
+        return list
+    }
+
+    var body: some View {
+        LeafletMap(features: features, controller: controller,
+                   options: MapOptions(fitMaxZoom: 8, center: home.map(MapPoint.init) ?? MapPoint(51, 10), zoom: 4))
             .overlay(alignment: .topLeading) {
                 if model.stations.isEmpty {
                     Text(model.running ? "Noch keine Station mit Locator" : "Empfang starten")
@@ -356,12 +354,11 @@ struct FT8MapPane: View {
                 }
             }
             .overlay(alignment: .bottomLeading) {
-                if camera.positionedByUser || camera.region != nil, !model.stations.isEmpty {
-                    Button("Alle Stationen zeigen", systemImage: "scope") { camera = .automatic }
+                if !controller.following, !model.stations.isEmpty {
+                    Button("Alle Stationen zeigen", systemImage: "scope") { controller.showAll() }
                         .padding(10)
                 }
             }
-        }
     }
 }
 

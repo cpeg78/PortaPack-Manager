@@ -1,5 +1,5 @@
 import AppKit
-import MapKit
+import CoreLocation
 import SwiftUI
 
 /// Sondenarchiv: alle bisher empfangenen Flüge aus den Meldungsprotokollen,
@@ -12,8 +12,7 @@ struct SondeArchiveView: View {
     @State private var order: [ColumnSort<SondeFlight>] = []
     @State private var search = ""
     @State private var deleting: SondeFlight?
-    @State private var camera: MapCameraPosition = .automatic
-    @State private var scrollZoom = MapScrollZoom()
+    @State private var mapController = MapController()
 
     private var filtered: [SondeFlight] {
         let term = search.trimmingCharacters(in: .whitespaces).lowercased()
@@ -74,7 +73,7 @@ struct SondeArchiveView: View {
         }
         .onDeleteCommand { if let selected, !Self.isLive(selected) { deleting = selected } }
         .task { await reload() }
-        .onChange(of: selection) { _, _ in camera = .automatic }
+        .onChange(of: selection) { _, _ in mapController.showAll(animated: false) }
     }
 
     /// Noch empfangene Flüge nicht löschen – das Protokoll wird gerade geschrieben.
@@ -141,28 +140,33 @@ struct SondeArchiveView: View {
 
     private func trackMap(_ flight: SondeFlight) -> some View {
         let track = flight.positioned.map { CLLocationCoordinate2D(latitude: $0.latitude!, longitude: $0.longitude!) }
-        return Map(position: $camera) {
-            if track.count > 1 {
-                MapPolyline(coordinates: track).stroke(.orange, lineWidth: 3)
-                TrackArrowMarks(points: track)
-            }
-            if let start = track.first { Marker("Erste Position", systemImage: "arrow.up.circle", coordinate: start).tint(.green) }
-            if let peak = flight.peak, let lat = peak.latitude, let lon = peak.longitude {
-                Marker(String(localized: "Gipfel \(((peak.altitude ?? 0) / 1000).formatted(.number.precision(.fractionLength(1)))) km"), systemImage: "balloon.fill",
-                       coordinate: CLLocationCoordinate2D(latitude: lat, longitude: lon)).tint(.blue)
-            }
-            if let end = track.last, track.count > 1 {
-                Marker(flight.burst ? "Letzte Position (Sinkflug)" : "Letzte Position", systemImage: "scope", coordinate: end).tint(.red)
-            }
+        var features: [MapFeature] = []
+        if track.count > 1 {
+            var line = MapFeature.line("track", track, color: MapColor.selected, width: 3, arrows: true)
+            line.fit = true
+            features.append(line)
         }
-        .mapStyle(.standard(elevation: .flat, pointsOfInterest: .excludingAll))
-        .mapControls { MapZoomStepper(); MapScaleView() }
-        .scrollWheelZoom(scrollZoom) { camera = .region($0) }
-        .overlay {
-            if track.isEmpty {
-                Text("Keine Position empfangen").padding(8).background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8))
-            }
+        if let start = track.first {
+            features.append(.badge("start", at: start, symbol: .ascent, color: MapColor.green,
+                                   label: String(localized: "Erste Position")))
         }
+        if let peak = flight.peak, let lat = peak.latitude, let lon = peak.longitude {
+            features.append(.badge("peak", at: CLLocationCoordinate2D(latitude: lat, longitude: lon), symbol: .balloon,
+                                   color: MapColor.blue,
+                                   label: String(localized: "Gipfel \(((peak.altitude ?? 0) / 1000).formatted(.number.precision(.fractionLength(1)))) km")))
+        }
+        if let end = track.last, track.count > 1 {
+            features.append(.badge("end", at: end, symbol: .scope, color: MapColor.red,
+                                   label: flight.burst ? String(localized: "Letzte Position (Sinkflug)") : String(localized: "Letzte Position")))
+        }
+        return LeafletMap(features: features, controller: mapController,
+                          options: MapOptions(fitMaxZoom: 12, center: track.last.map(MapPoint.init) ?? MapPoint(51, 10),
+                                              zoom: track.isEmpty ? 5 : 9))
+            .overlay {
+                if track.isEmpty {
+                    Text("Keine Position empfangen").padding(8).background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8))
+                }
+            }
     }
 
     static func duration(_ seconds: TimeInterval) -> String {

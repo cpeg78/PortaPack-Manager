@@ -1,10 +1,11 @@
 import Foundation
 import JavaScriptCore
+import Security
 import Testing
 @testable import PortaPackManager
 
 /// Fernzugriff nach der Sicherheitsprüfung vom 29.10.2026: nur Heimnetz/VPN,
-/// Grenzen je Gegenstelle, Host-Prüfung, CSRF-Schutz, Kopfzeilen, Schlüssel bei
+/// Grenzen je Gegenstelle, Host-Prüfung, CSRF-Schutz, Kopfzeilen, Konten bei
 /// Schlüsselbund-Fehlern, Archiv-Cache, Flugfunk-Halten, `t()` der Webseite.
 /// Alles über reine Funktionen – kein Server, keine UserDefaults der App, kein Schlüsselbund.
 @Suite("Fernzugriff: Sicherheit")
@@ -105,7 +106,7 @@ struct RemoteSecurityTests {
     @Test("Cookie vom Server: HttpOnly, SameSite=Strict, Path=/; Sicherheitsköpfe")
     func cookieAndHeaders() {
         let cookie = RemoteAccessPolicy.sessionCookie(token: "abcd2345wxyz")
-        #expect(cookie.hasPrefix("k=abcd2345wxyz;"))
+        #expect(cookie.hasPrefix("s=abcd2345wxyz;"))
         for part in ["HttpOnly", "SameSite=Strict", "Path=/"] { #expect(cookie.contains(part)) }
         let lines = RemoteHTTPServer.extraHeaderLines(["Set-Cookie": cookie])
         #expect(lines.contains("X-Content-Type-Options: nosniff\r\n"))
@@ -125,8 +126,8 @@ struct RemoteSecurityTests {
         let html = RemotePage.html
         #expect(!html.contains("document.cookie"))
         #expect(html.contains("'X-PortaPack': '1'"))
-        // Der Schlüssel aus ?k= wird weiter aus der Adresszeile genommen.
-        #expect(html.contains("searchParams.delete('k')"))
+        // Abgemeldet (401) → zurück zur Anmeldung.
+        #expect(html.contains("r.status === 401"))
         // Flugfunk: „lösen“ ist -1, nicht mehr 0 (= 118,000 MHz).
         #expect(html.contains("{ hold: -1 }"))
         #expect(!html.contains("{ hold: 0 }"))
@@ -134,20 +135,11 @@ struct RemoteSecurityTests {
 
     // MARK: Schlüssel
 
-    @Test("Unlesbarer Schlüsselbund ohne Altwert: kein neuer, ungespeicherter Schlüssel")
-    func keychainFailureNoFreshToken() throws {
-        let suite = "remote-security-\(UUID().uuidString)"
-        let defaults = try #require(UserDefaults(suiteName: suite))
-        defer { defaults.removePersistentDomain(forName: suite) }
-        let failing = RemoteTokenStore.memory(failing: true)
-        var made = 0
-        #expect(failing.loadOrMigrate(defaults: defaults, key: "remoteToken", make: { made += 1; return "neu-neu-neu1" }) == nil)
-        #expect(made == 0)
-        #expect(defaults.string(forKey: "remoteToken") == nil)
-        // Mit Altwert: der wird weiterverwendet (und bleibt liegen).
-        defaults.set("abcd2345wxyz", forKey: "remoteToken")
-        #expect(failing.loadOrMigrate(defaults: defaults, key: "remoteToken", make: { made += 1; return "neu-neu-neu1" }) == "abcd2345wxyz")
-        #expect(made == 0)
+    @Test("Unlesbarer Schlüsselbund: Konten werden nicht überschrieben")
+    func keychainFailureKeepsAccounts() {
+        let failing = RemoteAccountStore.memory(failing: true)
+        #expect(failing.load() == .failed(errSecAuthFailed))
+        #expect(!failing.save(RemoteAccountBook()))
     }
 
     // MARK: Flugfunk

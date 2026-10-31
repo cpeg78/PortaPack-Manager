@@ -1,5 +1,5 @@
 import Foundation
-import MapKit
+import CoreLocation
 import Testing
 @testable import PortaPackManager
 
@@ -103,13 +103,14 @@ struct AirportTests {
         #expect(AirportFilter.Bounds(query: "nan,9,53,10") == nil)
     }
 
-    @Test("MapKit-Ausschnitt → Grenzen")
-    func mapRect() throws {
-        let nw = MKMapPoint(CLLocationCoordinate2D(latitude: 54, longitude: 9))
-        let se = MKMapPoint(CLLocationCoordinate2D(latitude: 53, longitude: 11))
-        let bounds = try #require(AirportFilter.Bounds(mapRect: MKMapRect(x: nw.x, y: nw.y, width: se.x - nw.x, height: se.y - nw.y)))
-        #expect(abs(bounds.north - 54) < 1e-6 && abs(bounds.south - 53) < 1e-6)
-        #expect(abs(bounds.west - 9) < 1e-6 && abs(bounds.east - 11) < 1e-6)
+    @Test("Kartenausschnitt (Leaflet) → Grenzen, auch über die Datumsgrenze")
+    func viewportBounds() throws {
+        let view = MapViewport(south: 53, west: 9, north: 54, east: 11, zoom: 8, width: 400, height: 300)
+        let bounds = try #require(view.bounds)
+        #expect(abs(bounds.north - 54) < 1e-9 && abs(bounds.south - 53) < 1e-9)
+        #expect(abs(bounds.west - 9) < 1e-9 && abs(bounds.east - 11) < 1e-9)
+        let wrapped = try #require(MapViewport(south: -20, west: 170, north: -10, east: 190, zoom: 5, width: 400, height: 300).bounds)
+        #expect(wrapped.west == 170 && wrapped.east == -170)
     }
 
     @Test("Fernzugriff /api/airports: Felder, Höhe in Metern, leere Optionale fehlen")

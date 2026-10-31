@@ -1,4 +1,4 @@
-import MapKit
+import CoreLocation
 import SwiftUI
 
 struct GPSView: View {
@@ -7,8 +7,7 @@ struct GPSView: View {
     @Environment(DeviceSession.self) private var session
     /// Lebt im `ReceiverStore` – überlebt den Seitenwechsel samt laufendem Empfang.
     @Bindable private var model = ReceiverStore.shared.gps
-    @State private var camera: MapCameraPosition = .automatic
-    @State private var scrollZoom = MapScrollZoom()
+    @State private var mapController = MapController()
     @State private var centered = false
 
     var body: some View {
@@ -36,34 +35,42 @@ struct GPSView: View {
         model.status.solution.map { CLLocationCoordinate2D(latitude: $0.latitude, longitude: $0.longitude) }
     }
 
+    private var mapFeatures: [MapFeature] {
+        guard let coordinate, let sol = model.status.solution else { return [] }
+        var accuracy = MapFeature.circle("accuracy", center: coordinate, radius: max(sol.horizontalAccuracy, 3),
+                                         color: MapColor.blue, width: 1, opacity: 0.6, fillOpacity: 0.15)
+        accuracy.fit = false
+        var dot = MapFeature.marker("gps", at: coordinate, symbol: .dot, color: MapColor.blue, size: 14, label: "GPS")
+        dot.fit = false
+        return [accuracy, dot]
+    }
+
     private var map: some View {
-        Map(position: $camera) {
-            if let coordinate, let sol = model.status.solution {
-                MapCircle(center: coordinate, radius: max(sol.horizontalAccuracy, 3))
-                    .foregroundStyle(.blue.opacity(0.15))
-                    .stroke(.blue.opacity(0.6), lineWidth: 1)
-                Annotation("GPS", coordinate: coordinate) {
-                    Circle().fill(.blue).frame(width: 12, height: 12)
-                        .overlay(Circle().stroke(.white, lineWidth: 2))
+        LeafletMap(features: mapFeatures, controller: mapController,
+                   options: MapOptions(center: (homeLat != 0 || homeLon != 0) ? MapPoint(homeLat, homeLon) : MapPoint(51, 10),
+                                       zoom: (homeLat != 0 || homeLon != 0) ? 10 : 5))
+            .overlay(alignment: .topLeading) {
+                if model.status.solution == nil {
+                    Text(model.running ? "Noch keine Position – den Fortschritt siehst du rechts unter „Kaltstart“." : "Keine Position")
+                        .font(.callout).padding(8)
+                        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8))
+                        .padding(10)
                 }
             }
-        }
-        .mapControls { MapZoomStepper(); MapCompass(); MapScaleView() }
-        .scrollWheelZoom(scrollZoom) { camera = .region($0) }
-        .overlay(alignment: .topLeading) {
-            if model.status.solution == nil {
-                Text(model.running ? "Noch keine Position – den Fortschritt siehst du rechts unter „Kaltstart“." : "Keine Position")
-                    .font(.callout).padding(8)
-                    .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8))
+            .overlay(alignment: .bottomLeading) {
+                if let coordinate, centered {
+                    Button("Position zeigen", systemImage: "location") {
+                        mapController.show(around: coordinate, radiusMeters: 300)
+                    }
                     .padding(10)
+                }
             }
-        }
     }
 
     private func centerOnFirstFix() {
         guard !centered, let coordinate else { return }
         centered = true
-        camera = .region(MKCoordinateRegion(center: coordinate, latitudinalMeters: 600, longitudinalMeters: 600))
+        mapController.show(around: coordinate, radiusMeters: 300, animated: false)
     }
 
     // MARK: Satelliten

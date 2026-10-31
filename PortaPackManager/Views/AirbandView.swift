@@ -362,12 +362,37 @@ private struct AirbandTranscriptionControls: View {
     @Bindable var transcription: AirbandTranscription
 
     var body: some View {
+        content.onAppear { transcription.refreshInstalledModels() }
+    }
+
+    @ViewBuilder private var content: some View {
         Toggle("Sprüche in Text umwandeln", isOn: $transcription.enabled)
         Picker("Sprache", selection: $transcription.language) {
             ForEach(AirbandSpeechLanguage.allCases) { Text($0.title).tag($0) }
         }
         .disabled(!transcription.enabled)
         .help("Englisch für den Sprechfunk nach ICAO (fast überall), Deutsch für Sichtflug an kleinen Plätzen. „Automatisch“ erkennt jeden Spruch in beiden Sprachen und nimmt das sicherere Ergebnis – doppelte Rechenzeit.")
+        Picker("Spracherkennung", selection: $transcription.engine) {
+            ForEach(AirbandTranscription.Engine.allCases) { Text($0.title).tag($0) }
+        }
+        .help("Apple: schnell, im System enthalten. Whisper: meist genauer bei Rauschen und Funkkürzeln; das Modell lädt die App einmalig herunter (whisper.cpp, rechnet auf dem Mac).")
+        if transcription.engine == .whisper {
+            Picker("Modell", selection: $transcription.whisperModel) {
+                ForEach(WhisperModel.allCases) { model in
+                    Text(verbatim: "\(model.title) · \(model.sizeText)" + (transcription.installedWhisperModels.contains(model) ? " ✓" : ""))
+                        .tag(model)
+                }
+            }
+            let others = WhisperModel.allCases.filter { $0 != transcription.whisperModel && transcription.installedWhisperModels.contains($0) }
+            if !others.isEmpty {
+                Menu("Geladene Modelle löschen") {
+                    ForEach(others) { model in
+                        Button("\(model.title) (\(model.sizeText))") { transcription.deleteWhisperModel(model) }
+                    }
+                }
+                .fixedSize()
+            }
+        }
         Text("Läuft nur auf dem Mac, nichts verlässt den Rechner. Der Ton bleibt dafür nur kurz im Speicher; gespeichert wird er nur mit „Sprüche aufzeichnen“.")
             .font(.caption).foregroundStyle(.secondary)
         if transcription.enabled {
@@ -375,7 +400,9 @@ private struct AirbandTranscriptionControls: View {
                 ProgressView(value: fraction) {
                     Text("Sprachmodell wird geladen …").font(.caption)
                 }
-                Text("Einmalig vom System, danach arbeitet die Erkennung ohne Internet.")
+                Text(transcription.engine == .whisper
+                     ? "Einmalig von Hugging Face (\(transcription.whisperModel.sizeText)), danach arbeitet die Erkennung ohne Internet."
+                     : "Einmalig vom System, danach arbeitet die Erkennung ohne Internet.")
                     .font(.caption).foregroundStyle(.secondary)
             } else if let text = transcription.statusText {
                 Label(text, systemImage: transcription.statusIsProblem ? "exclamationmark.triangle" : "hourglass")

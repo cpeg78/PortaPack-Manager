@@ -38,6 +38,8 @@ struct ReviewPlanTests {
         #expect(!ReceptionPlanner.endSondeEarly(heard: nil, now: began.addingTimeInterval(10), start: start, end: end))
         #expect(!ReceptionPlanner.endSondeEarly(heard: nil, now: began.addingTimeInterval(29 * 60), start: start, end: end))
         #expect(ReceptionPlanner.endSondeEarly(heard: nil, now: began.addingTimeInterval(30 * 60), start: start, end: end))
+        // SondeHub meldet eine Sonde im Umkreis: nicht wegen „keine gehört“ abbrechen.
+        #expect(!ReceptionPlanner.endSondeEarly(heard: nil, now: began.addingTimeInterval(45 * 60), start: start, end: end, onlineNearby: true))
         // Ohne bekannten Beginn bzw. mit Beginn vor dem Fenster gilt der Fensterbeginn.
         #expect(ReceptionPlanner.noShowStart(window: window, began: nil) == window)
         #expect(ReceptionPlanner.noShowStart(window: window, began: window.addingTimeInterval(-60)) == window)
@@ -192,5 +194,18 @@ struct ReviewPlanTests {
         #expect(lock.blocksReceiving)        // Pause vor dem zweiten Versuch
         lock.held = false
         #expect(!lock.blocksReceiving)
+    }
+
+    @Test("Bis zur ersten Sonde abwechseln: nach 90 s ohne Sonde Gerät zurückgeben")
+    func sondeProbePause() {
+        let start = Date(timeIntervalSince1970: 1_800_000_000)
+        let late = start.addingTimeInterval(ReceptionPlanner.sondeProbeListen)
+        #expect(!ReceptionPlanner.pauseSondeProbe(heard: nil, listenStart: start, now: start.addingTimeInterval(60), probeMinutes: 5, canReturn: true))
+        #expect(ReceptionPlanner.pauseSondeProbe(heard: nil, listenStart: start, now: late, probeMinutes: 5, canReturn: true))
+        // Sonde gehört: bleibt dabei. Abwechseln aus: bleibt dabei. Nichts lief vorher: bleibt dabei.
+        #expect(!ReceptionPlanner.pauseSondeProbe(heard: start, listenStart: start, now: late, probeMinutes: 5, canReturn: true))
+        #expect(!ReceptionPlanner.pauseSondeProbe(heard: nil, listenStart: start, now: late, probeMinutes: 0, canReturn: true))
+        #expect(!ReceptionPlanner.pauseSondeProbe(heard: nil, listenStart: start, now: late, probeMinutes: 5, canReturn: false))
+        #expect(!ReceptionPlanner.pauseSondeProbe(heard: nil, listenStart: nil, now: late, probeMinutes: 5, canReturn: true))
     }
 }

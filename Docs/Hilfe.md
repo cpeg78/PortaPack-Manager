@@ -86,6 +86,17 @@ Bedienfeld stehen die Abschnitte immer in derselben Reihenfolge:
 Hast du das Bedienfeld eingeklappt und es tritt ein Fehler auf, erscheint er als
 schmales Band über dem Inhalt – mit „Bedienfeld zeigen“ klappst du es wieder auf.
 
+### Karten
+
+Alle Karten der App zeigen OpenStreetMap – dieselbe Karte wie die Fernzugriffs-Webseite.
+Ziehen verschiebt, Mausrad oder Trackpad zoomen, die Knöpfe + und − unten rechts
+ebenso. Solange du die Karte nicht bewegst, passt sie sich allen Zielen an; danach
+holt „Alle … zeigen“ unten links sie zurück. Ein Klick auf ein Ziel wählt es aus,
+ein Klick ins Leere hebt die Auswahl auf. Richtungspfeile auf Spuren werden beim
+Herauszoomen weniger und beim Hineinzoomen wieder mehr. Für die Kacheln braucht der
+Mac eine Internetverbindung; dabei geht nur der Kartenausschnitt an
+OpenStreetMap, nie empfangene Daten.
+
 ### Tastatur und Eingaben
 
 - **Leertaste** startet und stoppt den Empfang auf jeder Empfängerseite (bei Radio
@@ -370,8 +381,12 @@ und Wetterballons führen mit „Empfangsplan …“ hierher.
 - **Ein Sondenfenster folgt dem Empfang:** Ist am geplanten Ende noch ein
   Ballon zu hören, läuft es weiter, bis 5 Minuten lang nichts mehr kommt. Ist
   ein Ballon gelandet oder außer Reichweite (10 Minuten still) oder kommt
-  30 Minuten lang gar keiner, endet es vorzeitig – und was vorher lief, startet
-  wieder.
+  30 Minuten lang gar keiner (und SondeHub meldet auch keinen in Reichweite),
+  endet es vorzeitig – und was vorher lief, startet wieder.
+- **Bis zur ersten Sonde abwechseln** (Vorgabe alle 5 Minuten): Solange noch
+  kein Ballon dekodiert ist, läuft der vorherige Empfänger (z. B. ADS-B)
+  weiter, und der HackRF horcht nur alle paar Minuten 1½ Minuten nach Sonden.
+  Ist einer zu hören, bleibt er dabei. „Aus“ horcht durchgehend.
 - **Vorrang**, wenn sich Termine überschneiden: METEOR, dann
   Amateurfunk-Satelliten, dann Radiosonden.
 - **Überspringen** beendet eine laufende Aufnahme – im roten Band unten, auf
@@ -624,9 +639,17 @@ aufzeichnen: Der Ton bleibt nur kurz im Speicher.
 - **Sprache:** Englisch für den normalen Sprechfunk, Deutsch für Sichtflug an
   kleinen Plätzen und Rettungshubschrauber. „Automatisch“ versucht beides und
   nimmt das sicherere Ergebnis.
-- Beim ersten Einschalten lädt macOS das Sprachmodell einmalig herunter (der
-  Fortschritt steht im Bedienfeld). Auf macOS 15 fragt das System außerdem
-  nach der Erlaubnis für die Spracherkennung.
+- **Spracherkennung:** „Apple (eingebaut)“ ist schnell und braucht nichts
+  extra. **Whisper** ist bei Rauschen und Funkkürzeln deutlich genauer (im Test
+  mit verrauschten Sprüchen rund 10 % statt 50 % falsche Wörter, Rufzeichen fast
+  immer richtig). Dafür lädt die App einmalig ein Modell herunter – empfohlen
+  „Ausgewogen (Small)“, 190 MB. Unter **Modell** wählst du die Größe; ein ✓
+  zeigt, was schon geladen ist, nicht mehr gebrauchte Modelle kannst du dort
+  löschen.
+- Beim ersten Einschalten lädt macOS (bei Apple) bzw. die App (bei Whisper)
+  das Sprachmodell einmalig herunter; der Fortschritt steht im Bedienfeld. Auf
+  macOS 15 fragt das System bei Apple außerdem nach der Erlaubnis für die
+  Spracherkennung.
 - **Blasser Text** heißt: Die Erkennung war sich unsicher. Fahr mit der Maus
   über den Text, dann siehst du den Rohtext, so wie ihn die Erkennung geliefert
   hat. In der Spalte stehen Zahlwörter schon als Ziffern („flight level eight
@@ -1024,9 +1047,15 @@ unter **Einstellungen ▸ Fernzugriff**.
 ### So geht's
 
 1. **„Fernzugriff einschalten“**.
-2. Eine der **Adressen** am Handy öffnen – am einfachsten über **QR-Code**. Die
-   Adresse enthält den Zugangsschlüssel; ohne ihn zeigt die Seite nichts.
-3. Auf dem iPhone über „Teilen ▸ Zum Home-Bildschirm“ als App ablegen.
+2. Unter **Konten** mit **Konto hinzufügen** einen Benutzernamen und ein Passwort
+   (mindestens 8 Zeichen) anlegen. Die Rolle **Bedienen** darf umschalten und
+   einstellen, **Nur ansehen** sieht alles, darf aber nichts verändern – gut für
+   Familie und Freunde.
+3. Eine der **Adressen** am Handy öffnen – am einfachsten über **QR-Code** – und
+   mit Benutzername und Passwort anmelden. Das Handy bleibt angemeldet; der
+   Browser bietet an, das Passwort zu sichern.
+4. Auf dem iPhone über „Teilen ▸ Zum Home-Bildschirm“ als App ablegen. Die App
+   fragt beim ersten Start einmal selbst nach der Anmeldung.
 
 **Unterwegs nur über VPN:** Tailscale auf Mac und Handy installieren und die
 Tailscale-Adresse (100.x.y.z) nutzen – oder dich per VPN ins Heimnetz einwählen
@@ -1059,17 +1088,23 @@ bestätigen.
 ### Gut zu wissen
 
 - Solange der Fernzugriff an ist, bleibt der Mac wach.
-- **Neu erzeugen** macht einen neuen Schlüssel und sperrt alle bisher geöffneten
-  Seiten aus. Der Browser merkt sich den Schlüssel und nimmt ihn aus der
-  Adresszeile – ein Bildschirmfoto verrät ihn dann nicht.
+- Bei jedem Konto steht, wie viele Geräte angemeldet sind. **Passwort ändern**
+  und **Überall abmelden** (im Menü „…“ des Kontos) melden alle Geräte dieses
+  Kontos ab, **Löschen** entfernt das Konto ganz. Abmelden auf dem Handy geht
+  unten im Menü.
+- Nach fünf falschen Passwörtern von einem Gerät wartet die Anmeldung erst 30 s,
+  danach jedes Mal doppelt so lange (höchstens 15 min).
+- Im Heimnetz läuft die Seite über http, also unverschlüsselt – von unterwegs
+  deshalb nur über ein VPN wie Tailscale, das die Verbindung verschlüsselt.
 - Schlüssel (Zigbee, Zähler) werden nie über die Webseite übertragen; die
   trägst du am Mac ein.
 - Unter **Zuletzt abgewiesen** siehst du, wenn jemand von außerhalb anklopfen
   wollte. Nutzt dein VPN ungewöhnliche Adressen, kannst du „Nur Heimnetz und VPN“
   ausschalten.
-- Ist der Schlüsselbund einmal nicht lesbar, setzt der Fernzugriff aus und zeigt
-  das unter Einstellungen ▸ Fernzugriff an. Sobald der Schlüssel wieder lesbar
-  ist, geht es von selbst weiter – mit demselben Schlüssel, deine Handys bleiben
+- Die Konten liegen im Schlüsselbund des Mac, Passwörter nur verschlüsselt
+  (als Prüfwert, nicht im Klartext). Ist der Schlüsselbund einmal nicht lesbar,
+  setzt der Fernzugriff aus und zeigt das unter Einstellungen ▸ Fernzugriff an.
+  Sobald er wieder lesbar ist, geht es von selbst weiter – deine Handys bleiben
   angemeldet.
 
 <a id="sharing"></a>
@@ -1322,4 +1357,5 @@ Antenne draußen und so hoch wie möglich bringt mehr als jede Einstellung.
   - was du unter „Daten teilen“ und „Benachrichtigungen“ selbst einschaltest.
 - Kartenkacheln kommen von OpenStreetMap.
 - Für „Sprüche in Text umwandeln“ (Flugfunk) lädt macOS einmalig ein
-  Sprachmodell von Apple; die Erkennung selbst läuft auf dem Mac.
+  Sprachmodell von Apple bzw. – mit Whisper – die App ein Modell von Hugging Face
+  (huggingface.co); die Erkennung selbst läuft auf dem Mac.

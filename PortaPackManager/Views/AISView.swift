@@ -1,4 +1,4 @@
-import MapKit
+import CoreLocation
 import SwiftUI
 
 struct AISView: View {
@@ -218,9 +218,8 @@ struct MapShip: MapTarget {
     let heading: Double?
     let stale: Bool
     let trail: [CLLocationCoordinate2D]
-    let symbolName: String
-    var symbolDirection: Double { 0 }
-    let symbolSize: CGFloat
+    let symbol: MapSymbol
+    let symbolSize: Double
 
     init(_ vessel: AISVessel, now: Date) {
         id = vessel.id
@@ -230,15 +229,17 @@ struct MapShip: MapTarget {
         heading = fixed ? nil : vessel.displayHeading
         stale = now.timeIntervalSince(vessel.lastSeen) > Self.staleSeconds
         trail = vessel.trail.map { CLLocationCoordinate2D(latitude: $0.lat, longitude: $0.lon) }
-        symbolName = vessel.isBaseStation ? "antenna.radiowaves.left.and.right"
-            : vessel.isAidToNavigation ? "light.beacon.max.fill"
-            : heading == nil ? "circle.fill" : "location.north.fill"
-        symbolSize = heading == nil && !fixed ? 9 : 16
+        symbol = vessel.isBaseStation ? .antenna
+            : vessel.isAidToNavigation ? .beacon
+            : heading == nil ? .dot : .hull
+        // Größer als Flugzeuge und dunkel umrandet: Pfeile in der Akzentfarbe gingen
+        // auf Wasser und Uferland unter (30.10.2026).
+        symbolSize = fixed ? 16 : heading == nil ? 11 : 22
     }
 
     static func == (a: MapShip, b: MapShip) -> Bool {
         a.id == b.id && a.label == b.label && a.heading == b.heading && a.stale == b.stale
-            && a.symbolName == b.symbolName
+            && a.symbol == b.symbol
             && a.coordinate.latitude == b.coordinate.latitude
             && a.coordinate.longitude == b.coordinate.longitude
             && a.trail.count == b.trail.count
@@ -247,10 +248,9 @@ struct MapShip: MapTarget {
     }
 }
 
-/// Karte der AIS-Seite – zeichnet wie `ADSBMapView` selbst in einem
-/// `TargetCanvas`; vorher kostete je Schiff eine `Annotation` plus
-/// `MapPolyline` bei jeder Meldung den Neuaufbau aller MapKit-Überlagerungen.
-/// `Equatable`: neu gezeichnet wird nur, wenn sich Schiffe geändert haben.
+/// Karte der AIS-Seite – wie `ADSBMapView` über `LeafletMap`; an die Seite geht
+/// je Meldung nur, was sich an Schiffen und Spuren geändert hat.
+/// `Equatable`: neu gerechnet wird nur, wenn sich Schiffe geändert haben.
 struct AISMapView: View, Equatable {
     let ships: [MapShip]
     let home: CLLocationCoordinate2D?
@@ -260,12 +260,7 @@ struct AISMapView: View, Equatable {
     let selected: AISVessel.ID?
     @Binding var selection: AISVessel.ID?
 
-    @State private var camera: MapCameraPosition = .automatic
-    @State private var viewport = MapViewport()
-    @State private var scrollZoom = MapScrollZoom()
-    /// Bis der Nutzer die Karte bewegt oder etwas auswählt, folgt der
-    /// Ausschnitt allen Schiffen.
-    @State private var followAll = true
+    @State private var map = MapController()
 
     nonisolated static func == (a: AISMapView, b: AISMapView) -> Bool {
         a.ships == b.ships && a.showTrails == b.showTrails && a.running == b.running
@@ -273,28 +268,9 @@ struct AISMapView: View, Equatable {
     }
 
     var body: some View {
-        MapReader { proxy in
-            Map(position: $camera, interactionModes: [.pan, .zoom]) {
-                if let home {
-                    Marker("Standort", systemImage: "house.fill", coordinate: home).tint(.brown)
-                }
-            }
-            .mapStyle(.standard(elevation: .flat, pointsOfInterest: .excludingAll))
-            .mapControls { MapZoomStepper(); MapScaleView() }
-            .onMapCameraChange(frequency: .continuous) { context in
-                scrollZoom.region = context.region
-                viewport.rect = context.rect
-            }
-            .overlay {
-                TargetCanvas(planes: ships, showTrails: showTrails, selection: selection, viewport: viewport)
-            }
-            .onTapGesture { point in select(at: point, proxy: proxy) }
-            .scrollWheelZoom(scrollZoom) { region in followAll = false; camera = .region(region) }
-            .onAppear {
-                fitAll(animated: false)
-            }
-            .onChange(of: camera.positionedByUser) { _, byUser in if byUser { followAll = false } }
-            .onChange(of: shipIDsKey) { _, _ in if followAll { fitAll(animated: true) } }
+        LeafletMap(features: features, controller: map,
+                   options: MapOptions(fitMaxZoom: 13, center: home.map(MapPoint.init) ?? MapPoint(54, 9), zoom: home == nil ? 5 : 9),
+                   onSelect: { key in selection = key.flatMap { $0.hasPrefix("sh:") ? Int($0.dropFirst(3)) : nil } })
             .onChange(of: selection) { _, id in center(on: id) }
             .overlay(alignment: .topLeading) {
                 if ships.isEmpty {
@@ -305,63 +281,24 @@ struct AISMapView: View, Equatable {
                 }
             }
             .overlay(alignment: .bottomLeading) {
-                if !followAll, !ships.isEmpty {
-                    Button("Alle Schiffe zeigen", systemImage: "scope") {
-                        followAll = true
-                        fitAll(animated: true)
-                    }
-                    .padding(10)
+                if !map.following, !ships.isEmpty {
+                    Button("Alle Schiffe zeigen", systemImage: "scope") { map.showAll() }
+                        .padding(10)
                 }
             }
-        }
     }
 
-    /// Wechselt, sobald ein Schiff hinzukommt oder verschwindet.
-    private var shipIDsKey: Int {
-        var hasher = Hasher()
-        for ship in ships { hasher.combine(ship.id) }
-        return hasher.finalize()
-    }
-
-    /// Klick: nächstes Schiff im Umkreis von 14 Punkten, sonst Auswahl aufheben.
-    private func select(at point: CGPoint, proxy: MapProxy) {
-        var best: (id: Int, distance: CGFloat)?
-        for ship in ships {
-            guard let p = proxy.convert(ship.coordinate, to: .local) else { continue }
-            let d = hypot(p.x - point.x, p.y - point.y)
-            if d <= 14, best == nil || d < best!.distance { best = (ship.id, d) }
-        }
-        selection = best?.id
-    }
-
-    /// Ausschnitt um alle Schiffe (und den Standort) mit etwas Rand.
-    private func fitAll(animated: Bool) {
-        var coordinates = ships.map(\.coordinate)
-        if let home { coordinates.append(home) }
-        guard let first = coordinates.first else { return }
-        var minLat = first.latitude, maxLat = first.latitude
-        var minLon = first.longitude, maxLon = first.longitude
-        for c in coordinates {
-            minLat = min(minLat, c.latitude); maxLat = max(maxLat, c.latitude)
-            minLon = min(minLon, c.longitude); maxLon = max(maxLon, c.longitude)
-        }
-        let region = MKCoordinateRegion(
-            center: CLLocationCoordinate2D(latitude: (minLat + maxLat) / 2, longitude: (minLon + maxLon) / 2),
-            span: MKCoordinateSpan(latitudeDelta: max((maxLat - minLat) * 1.3, 0.05),
-                                   longitudeDelta: max((maxLon - minLon) * 1.3, 0.05)))
-        scrollZoom.region = region
-        if animated { withAnimation(.easeInOut(duration: 0.4)) { camera = .region(region) } }
-        else { camera = .region(region) }
+    private var features: [MapFeature] {
+        var list: [MapFeature] = []
+        if let home { list.append(.home(home)) }
+        list += MapFeature.targets(ships, showTrails: showTrails, selection: selection, prefix: "sh:")
+        return list
     }
 
     /// Zentriert auf das ausgewählte Schiff (behält den Zoom).
     private func center(on id: Int?) {
         guard let id, let ship = ships.first(where: { $0.id == id }) else { return }
-        followAll = false
-        let span = scrollZoom.region?.span ?? MKCoordinateSpan(latitudeDelta: 0.3, longitudeDelta: 0.3)
-        let region = MKCoordinateRegion(center: ship.coordinate, span: span)
-        scrollZoom.region = region
-        withAnimation(.easeInOut(duration: 0.4)) { camera = .region(region) }
+        map.center(on: ship.coordinate)
     }
 }
 

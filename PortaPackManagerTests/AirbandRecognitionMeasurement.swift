@@ -130,4 +130,46 @@ struct AirbandRecognitionMeasurement {
         }
         print(rows.joined(separator: "\n"))
     }
+
+    /// Gleiche Sprüche und gleiches Rauschen mit Whisper (je geladenem Modell),
+    /// eingebaute Aufbereitung, mit Rufzeichen-Hinweisen im Vorgabe-Text.
+    @Test("Whisper: Erkennungsquote je Modell")
+    func measureWhisper() async throws {
+        let voices = ["en": ["Daniel", "Samantha", "Karen"], "de": ["Anna"]]
+        var audioCache: [String: [Float]] = [:]
+        var rows: [String] = []
+        for model in WhisperModel.allCases where WhisperModelStore.isInstalled(model) {
+            let recognizer = try WhisperSpeechRecognizer(model: WhisperModelStore.url(for: model), automatic: false)
+            let automatic = try WhisperSpeechRecognizer(model: WhisperModelStore.url(for: model), automatic: true)
+            for snr in [nil, 20.0, 10.0, 5.0] as [Double?] {
+                var werSum = 0.0, count = 0, signs = 0, seconds = 0.0, audioSeconds = 0.0, autoRight = 0
+                for (k, phrase) in Self.phrases.enumerated() {
+                    for voice in voices[phrase.language] ?? [] {
+                        let key = voice + phrase.text
+                        let audio = try audioCache[key] ?? AirbandRealRecognitionTests.synthesize(phrase.text, voice: voice)
+                        audioCache[key] = audio
+                        let samples = Self.channel(audio, snr: snr, seed: UInt64(k + 1))
+                        count += 1
+                        guard let prepared = AirbandSpeechAudio.prepare(samples) else { werSum += 1; continue }
+                        let context = AirbandPhraseology.contextualStrings(callsigns: Self.candidates, channelNames: ["Bremen Radar"], language: phrase.language)
+                        let start = Date()
+                        let result = try await recognizer.recognize(prepared, language: phrase.language, context: context)
+                        seconds += Date().timeIntervalSince(start)
+                        audioSeconds += Double(prepared.count) / 16_000
+                        let text = result?.text ?? ""
+                        werSum += Self.wer(reference: phrase.text, hypothesis: text)
+                        if AirbandTranscriptFormatter.matchCallsign(in: text, candidates: Self.candidates)?.callsign == phrase.callsign { signs += 1 }
+                        if try await automatic.recognize(prepared, language: "en", context: context)?.language == phrase.language { autoRight += 1 }
+                        if snr == nil || snr == 10 {
+                            print("WHISPER-TEXT \(model.rawValue) \(snr.map { "\($0)" } ?? "sauber") \(voice): \(text) [\(String(format: "%.2f", result?.confidence ?? -1))]")
+                        }
+                    }
+                }
+                rows.append(String(format: "WHISPER | %@ | %@ | WER %.0f %% | Rufzeichen %d/%d | Sprache auto %d/%d | %.3f s je s Ton",
+                                   model.rawValue, snr.map { String(format: "%.0f dB", $0) } ?? "sauber",
+                                   werSum / Double(max(1, count)) * 100, signs, count, autoRight, count, seconds / max(audioSeconds, 0.001)))
+            }
+        }
+        print(rows.joined(separator: "\n"))
+    }
 }

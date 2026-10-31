@@ -147,6 +147,16 @@ final class ReceptionPlanner {
     var sondeOnlyInRange = UserDefaults.standard.object(forKey: "plannerSondeOnlyInRange") as? Bool ?? true {
         didSet { UserDefaults.standard.set(sondeOnlyInRange, forKey: "plannerSondeOnlyInRange") }
     }
+    /// Bis zur ersten Sondenmeldung abwechseln (Nutzerwunsch 30.10.2026): so viele
+    /// Minuten zurück zum vorherigen Empfänger (ADS-B, AIS …), dann
+    /// `sondeProbeListen` lang nach Sonden horchen. 0 = durchgehend auf der Sonde.
+    var sondeProbeMinutes = UserDefaults.standard.object(forKey: "plannerSondeProbeMinutes") as? Double ?? 5 {
+        didSet { UserDefaults.standard.set(sondeProbeMinutes, forKey: "plannerSondeProbeMinutes") }
+    }
+    /// So lange horcht jeder Versuch – eine RS41 sendet jede Sekunde, die Kanäle
+    /// brauchen nach dem Start einige Sekunden zum Einrasten.
+    nonisolated static let sondeProbeListen: TimeInterval = 90
+
     /// Vorgabe 110 km: live 26./27.10.2026 dekodierte die Skyscan RS41 bis
     /// ≈ 100 km gut, bis 115 km vereinzelt, ab 140 km gar nicht.
     var sondeRangeKm = ReceptionPlanner.storedRange {
@@ -317,6 +327,14 @@ final class ReceptionPlanner {
     /// das spät begann (erst bei Sonde in Reichweite, nach einem Neustart der App
     /// oder nach einer Trennung), schon im ersten Takt (Review 29.10.2026).
     private var sondeBegan: Date?
+    /// Beginn des laufenden Horch-Versuchs (bei jedem Start neu, anders als `sondeBegan`).
+    private var sondeListenStart: Date?
+    /// Pause zwischen zwei Horch-Versuchen: Fenster und Ende der Pause. Solange
+    /// beginnt das Fenster nicht neu, der vorherige Empfänger läuft.
+    private(set) var sondeProbePause: (id: String, until: Date)?
+    /// Fenster, dessen Warten auf eine Sonde im Umkreis schon im Protokoll steht –
+    /// eine Zeile je Fenster statt einer je Takt.
+    private var sondeWaitLogged: String?
     /// Empfangsfenster, in das zuletzt Sondenmeldungen gingen.
     private var lastSondeWindow: String?
     /// Nach Fensterende weiter, solange eine Sonde zu hören ist – Ende erst nach
@@ -462,11 +480,20 @@ final class ReceptionPlanner {
                 recomputeSondeWindows()            // ggf. über das Fensterende hinaus
             }
             let counted = Self.noShowStart(window: window.start, began: sondeBegan)
-            if Self.endSondeEarly(heard: sondeHeard, now: now, start: counted, end: job.end) {
+            let onlineNearby = !sondesInRange.isEmpty && sondeHubChecked.map { now.timeIntervalSince($0) < 600 } == true
+            if Self.endSondeEarly(heard: sondeHeard, now: now, start: counted, end: job.end, onlineNearby: onlineNearby) {
                 skip(job.id)
                 await finish(job, note: sondeHeard == nil
                              ? String(localized: "30 Minuten keine Sonde gehört – vorzeitig beendet")
                              : String(localized: "Sonde seit 10 Minuten nicht mehr gehört – vorzeitig beendet"))
+            } else if Self.pauseSondeProbe(heard: sondeHeard, listenStart: sondeListenStart, now: now,
+                                           probeMinutes: sondeProbeMinutes, canReturn: resume != nil) {
+                // Noch keine Sonde gehört: Gerät für ein paar Minuten zurückgeben.
+                // Kein Eintrag im Verlauf und keine Mitteilung – das wäre alle paar Minuten einer.
+                sondeProbePause = (job.id, now.addingTimeInterval(sondeProbeMinutes * 60))
+                sonde.stop(on: session?.hackRF)
+                active = nil
+                Self.log.notice("Noch keine Sonde – \(Int(self.sondeProbeMinutes)) min zurück zum vorherigen Empfänger")
             }
         }
         // Überflüge haben Vorrang vor einem (früher begonnenen) Sondenfenster,
@@ -475,9 +502,20 @@ final class ReceptionPlanner {
         if pruned.count != skipped.count { skipped = pruned }
         var due = Self.due(upcoming, now: now, skipped: Set(skipped.keys))
         var waiting: String?
-        if let job = due, job.isSonde, sondeOnlyInRange, !(await sondeNearby(now: now, running: active?.same(as: job) == true)) {
+        if let job = due, job.isSonde, let pause = sondeProbePause, pause.id == job.id, now < pause.until {
+            waiting = String(localized: "Radiosonden: noch keine Sonde gehört – nächster Versuch um \(pause.until.formatted(date: .omitted, time: .shortened))")
+            // SondeHub trotzdem weiter abfragen (Kanäle für den nächsten Versuch, „in Reichweite“).
+            _ = await sondeNearby(now: now, running: false)
+            due = nil
+        } else if let job = due, job.isSonde, sondeOnlyInRange, !(await sondeNearby(now: now, running: active?.same(as: job) == true)) {
             waiting = String(localized: "Radiosonden bis \(job.end.formatted(date: .omitted, time: .shortened)): wartet – laut SondeHub keine Sonde im Umkreis von \(Int(sondeRangeKm)) km")
             due = nil
+            if sondeWaitLogged != job.id {
+                sondeWaitLogged = job.id
+                // Sonst steht im Protokoll gar nichts – das Fenster scheint einfach nie zu beginnen.
+                let nearest = sondeHubChecked == nil ? "SondeHub noch nicht abgefragt" : "keine Sonde gemeldet"
+                Self.log.notice("Radiosonden wartet: \(nearest, privacy: .public) im Umkreis von \(Int(self.sondeRangeKm)) km (bis \(job.end.formatted(date: .omitted, time: .shortened), privacy: .public))")
+            }
         }
         if let job = active, let due, job.same(as: due) {
             active = due                       // neu gerechnete Zeiten übernehmen
@@ -552,6 +590,15 @@ final class ReceptionPlanner {
         return max(planned, min(heard.addingTimeInterval(sondeTailSilence), start.addingTimeInterval(5 * 3600)))
     }
 
+    /// Horch-Versuch beenden und das Gerät zurückgeben? Nur solange keine Sonde
+    /// gehört wurde, der Versuch `sondeProbeListen` lang lief, Abwechseln an ist
+    /// und es einen vorherigen Empfänger gibt (sonst bliebe der HackRF einfach frei).
+    nonisolated static func pauseSondeProbe(heard: Date?, listenStart: Date?, now: Date,
+                                            probeMinutes: Double, canReturn: Bool) -> Bool {
+        guard heard == nil, probeMinutes > 0, canReturn, let listenStart else { return false }
+        return now.timeIntervalSince(listenStart) >= sondeProbeListen
+    }
+
     /// Ab wann `sondeNoShow` zählt: Beginn der Aufnahme, frühestens der
     /// geplante Fensterbeginn.
     nonisolated static func noShowStart(window: Date, began: Date?) -> Date {
@@ -560,10 +607,13 @@ final class ReceptionPlanner {
 
     /// Vorzeitig beenden (geplantes Ende noch nicht erreicht): eine gehörte Sonde
     /// ist seit `sondeEarlySilence` still, oder seit `start` (Beginn der Aufnahme,
-    /// siehe `noShowStart`) kam `sondeNoShow` lang gar keine.
-    nonisolated static func endSondeEarly(heard: Date?, now: Date, start: Date, end: Date) -> Bool {
+    /// siehe `noShowStart`) kam `sondeNoShow` lang gar keine – außer SondeHub meldet
+    /// gerade eine im Umkreis (`onlineNearby`): Dann ist sie nur noch zu weit oder zu
+    /// niedrig und kommt meist näher (Fund 30.10.2026: Schleswig in 73 km auf 8 km
+    /// Höhe, das Fenster wäre nach 30 min abgebrochen und übersprungen worden).
+    nonisolated static func endSondeEarly(heard: Date?, now: Date, start: Date, end: Date, onlineNearby: Bool = false) -> Bool {
         guard now < end else { return false }
-        guard let heard else { return now.timeIntervalSince(start) >= sondeNoShow }
+        guard let heard else { return !onlineNearby && now.timeIntervalSince(start) >= sondeNoShow }
         return now.timeIntervalSince(heard) >= sondeEarlySilence
     }
 
@@ -593,7 +643,11 @@ final class ReceptionPlanner {
     }
 
     private func begin(_ job: Job) async {
-        if job.isSonde { sondeHeard = nil; sondeBegan = nil }
+        // Weiterer Horch-Versuch im selben Fenster: die Frist „30 min ohne Sonde“
+        // zählt weiter ab dem ersten Start, nicht ab jedem Versuch.
+        let probing = sondeProbePause?.id == job.id
+        if job.isSonde, !probing { sondeHeard = nil; sondeBegan = nil }
+        if job.isSonde { sondeProbePause = nil }
         guard let session, !session.busy else { return }
         if session.hackRF == nil {
             guard session.device != nil else {
@@ -676,7 +730,10 @@ final class ReceptionPlanner {
                 return
             }
         }
-        if job.isSonde { sondeBegan = Date() }
+        if job.isSonde {
+            if sondeBegan == nil { sondeBegan = Date() }
+            sondeListenStart = Date()
+        }
         active = job
         Self.log.notice("Start: \(job.title, privacy: .public)")
     }

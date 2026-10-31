@@ -202,6 +202,20 @@ final class AirbandTranscription {
 
     static let enabledKey = "airbandTranscribe"
     static let languageKey = "airbandTranscribeLanguage"
+    static let engineKey = "airbandTranscribeEngine"
+    static let whisperModelKey = "airbandWhisperModel"
+
+    /// Welche Erkennung: Apples eingebaute oder Whisper (whisper.cpp, Modell wählbar).
+    enum Engine: String, CaseIterable, Identifiable, Sendable {
+        case apple, whisper
+        var id: String { rawValue }
+        var title: String {
+            switch self {
+            case .apple: String(localized: "Apple (eingebaut)")
+            case .whisper: String(localized: "Whisper")
+            }
+        }
+    }
     static let log = Logger(subsystem: "de.christiangolz.portapackmanager", category: "Spracherkennung")
 
     /// Schalter „Sprüche in Text umwandeln“ (Vorgabe aus).
@@ -219,6 +233,36 @@ final class AirbandTranscription {
             UserDefaults.standard.set(language.rawValue, forKey: Self.languageKey)
             if enabled { prepare(userInitiated: true) }
         }
+    }
+
+    var engine: Engine {
+        didSet {
+            guard engine != oldValue else { return }
+            UserDefaults.standard.set(engine.rawValue, forKey: Self.engineKey)
+            if enabled { prepare(userInitiated: true) }
+        }
+    }
+
+    var whisperModel: WhisperModel {
+        didSet {
+            guard whisperModel != oldValue else { return }
+            UserDefaults.standard.set(whisperModel.rawValue, forKey: Self.whisperModelKey)
+            if enabled, engine == .whisper { prepare(userInitiated: true) }
+        }
+    }
+
+    /// Geladene Whisper-Modelle (für die Liste; nach Download/Löschen neu gelesen).
+    private(set) var installedWhisperModels: Set<WhisperModel> = []
+
+    func refreshInstalledModels() {
+        installedWhisperModels = Set(WhisperModel.allCases.filter(WhisperModelStore.isInstalled))
+    }
+
+    /// Ein Modell löschen (nicht das gerade benutzte, solange die Erkennung läuft).
+    func deleteWhisperModel(_ model: WhisperModel) {
+        guard !(enabled && engine == .whisper && model == whisperModel) else { return }
+        WhisperModelStore.delete(model)
+        refreshInstalledModels()
     }
 
     private(set) var status: Status = .off
@@ -250,6 +294,8 @@ final class AirbandTranscription {
     init(log: AirbandLog) {
         enabled = UserDefaults.standard.bool(forKey: Self.enabledKey)
         language = AirbandSpeechLanguage(rawValue: UserDefaults.standard.string(forKey: Self.languageKey) ?? "") ?? .english
+        engine = Engine(rawValue: UserDefaults.standard.string(forKey: Self.engineKey) ?? "") ?? .apple
+        whisperModel = WhisperModel(rawValue: UserDefaults.standard.string(forKey: Self.whisperModelKey) ?? "") ?? .standard
         let store = log
         queue = AirbandTranscriptionQueue(
             deliver: { [weak self] result in
@@ -312,6 +358,10 @@ final class AirbandTranscription {
         let languages = language.codes
         Task { await queue.setPaused(true) }
         setStatus(.preparing)
+        if engine == .whisper {
+            prepareWhisper(automatic: language == .automatic)
+            return
+        }
         prepareTask = Task { [weak self] in
             if #available(macOS 26, *), AnalyzerSpeechRecognizer.isAvailable {
                 do {
@@ -361,6 +411,46 @@ final class AirbandTranscription {
             await queue.setRecognizer(LegacyRecognizerFilter(languages: Set(languages.filter { !missing.contains($0) })))
             await queue.setPaused(false)
             self.setStatus(.ready)
+        }
+    }
+
+    /// Whisper: Modell bei Bedarf laden (Prüfsumme), dann den Kontext abseits des
+    /// Main Actor aufbauen (dauert ein paar Sekunden, lädt das Modell in Metal).
+    private func prepareWhisper(automatic: Bool) {
+        let queue = queue!
+        let model = whisperModel
+        prepareTask = Task { [weak self] in
+            do {
+                if !WhisperModelStore.isInstalled(model) {
+                    Self.log.notice("Whisper-Modell wird geladen: \(model.file, privacy: .public)")
+                    try await WhisperModelStore.download(model) { [weak self] fraction in
+                        Task { @MainActor [weak self] in
+                            guard let self, self.enabled, self.engine == .whisper else { return }
+                            if case .ready = self.status { return }
+                            self.setStatus(.downloading(fraction))
+                        }
+                    }
+                    self?.refreshInstalledModels()
+                }
+                try Task.checkCancellation()
+                guard let self, self.enabled else { return }
+                self.setStatus(.preparing)
+                let recognizer = try await Task.detached(priority: .userInitiated) {
+                    try WhisperSpeechRecognizer(model: WhisperModelStore.url(for: model), automatic: automatic)
+                }.value
+                guard !Task.isCancelled, self.enabled, self.engine == .whisper, self.whisperModel == model else { return }
+                self.engineName = "Whisper (\(model.title))"
+                await queue.setRecognizer(recognizer)
+                await queue.setPaused(false)
+                self.setStatus(.ready)
+                Self.log.notice("Spracherkennung bereit (Whisper \(model.file, privacy: .public))")
+            } catch is CancellationError {
+                return
+            } catch {
+                guard let self, !Task.isCancelled else { return }
+                Self.log.error("Whisper nicht bereit: \(String(describing: error), privacy: .public)")
+                self.setStatus(.failed(error.localizedDescription))
+            }
         }
     }
 

@@ -83,9 +83,10 @@ Screen”.
 - **Start, stop, Optimize Signal** – the phone switches the HackRF itself.
   Frequency memory, airband channel list and reception schedule are shared with
   the Mac; schedule entries can be skipped from the phone.
-- **Secure by default:** an access key in the address (set up via QR code),
-  only devices from your home network or VPN (e.g. Tailscale) are accepted,
-  keys for Zigbee or meters never leave the Mac.
+- **Secure by default:** sign-in with your own accounts (user name and
+  password, roles “Control” and “View only”), only devices from your home
+  network or VPN (e.g. Tailscale) are accepted, keys for Zigbee or meters never
+  leave the Mac.
 - German and English, light and dark.
 
 ![Aircraft: map with airports, type, operator and route](Docs/Bilder/flugzeuge.jpg)

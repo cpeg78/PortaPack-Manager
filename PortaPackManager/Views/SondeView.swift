@@ -1,4 +1,4 @@
-import MapKit
+import CoreLocation
 import SwiftUI
 
 struct SondeView: View {
@@ -11,8 +11,7 @@ struct SondeView: View {
     @AppStorage("homeLat") private var homeLat = 0.0
     @AppStorage("homeLon") private var homeLon = 0.0
     @AppStorage("sondeGroundAltitude") private var groundAltitude = 100.0
-    @State private var camera: MapCameraPosition = .automatic
-    @State private var scrollZoom = MapScrollZoom()
+    @State private var mapController = MapController()
     @State private var manualMHz = 403.0
     /// Verlauf der gewählten (sonst der zuletzt gehörten) Sonde aus dem Meldungsprotokoll.
     @State private var history: SondeFlight?
@@ -124,52 +123,48 @@ struct SondeView: View {
     private func center(on id: Sonde.ID?) {
         guard let id, let sonde = model.sondes.first(where: { $0.id == id }),
               let lat = sonde.latitude, let lon = sonde.longitude else { return }
-        let span = scrollZoom.region?.span ?? MKCoordinateSpan(latitudeDelta: 1, longitudeDelta: 1)
-        let region = MKCoordinateRegion(center: CLLocationCoordinate2D(latitude: lat, longitude: lon), span: span)
-        scrollZoom.region = region
-        withAnimation(.easeInOut(duration: 0.4)) { camera = .region(region) }
+        mapController.center(on: CLLocationCoordinate2D(latitude: lat, longitude: lon))
     }
 
     // MARK: - Karte
 
-    private var map: some View {
-        MapReader { proxy in
-            Map(position: $camera, selection: $selection) {
-                if let home {
-                    Marker("Standort", systemImage: "house.fill", coordinate: home).tint(.brown)
-                    // Unsichtbarer Kreis der typischen Reichweite (Sonden sind bis ~150 km zu hören): Ohne Ziele
-                    // zoomte die automatische Kamera sonst bis auf die eigene Straße.
-                    MapCircle(center: home, radius: 150_000).foregroundStyle(.clear)
-                }
-                ForEach(positioned) { sonde in
-                    if sonde.trail.count > 1 {
-                        let trail = sonde.trail.map { CLLocationCoordinate2D(latitude: $0.lat, longitude: $0.lon) }
-                        MapPolyline(coordinates: trail)
-                            .stroke(selection == sonde.id ? Color.orange : Color.accentColor.opacity(0.7),
-                                    lineWidth: selection == sonde.id ? 3 : 2)
-                        TrackArrowMarks(points: trail, color: selection == sonde.id ? .orange : .accentColor, limit: 12)
-                    }
-                    if let landing = sonde.landing(groundAltitude: groundAltitude) {
-                        let here = CLLocationCoordinate2D(latitude: sonde.latitude!, longitude: sonde.longitude!)
-                        let there = CLLocationCoordinate2D(latitude: landing.lat, longitude: landing.lon)
-                        MapPolyline(coordinates: [here, there])
-                            .stroke(.red.opacity(0.7), style: StrokeStyle(lineWidth: 1.5, dash: [5, 4]))
-                        Marker("Landung ≈", systemImage: "scope", coordinate: there).tint(.red)
-                    }
-                }
-                ForEach(positioned) { sonde in
-                    Annotation(sonde.serial, coordinate: CLLocationCoordinate2D(latitude: sonde.latitude!, longitude: sonde.longitude!)) {
-                        Image(systemName: sonde.burst ? "arrow.down.circle.fill" : "balloon.fill")
-                            .font(.title3)
-                            .foregroundStyle(selection == sonde.id ? Color.orange
-                                             : Date().timeIntervalSince(sonde.lastSeen) > 60 ? Color.secondary : Color.accentColor)
-                    }
-                    .tag(sonde.id)
-                }
+    private var mapFeatures: [MapFeature] {
+        let accent = MapColor.accent
+        var list: [MapFeature] = []
+        if let home {
+            list.append(.home(home))
+            // Unsichtbarer Kreis der typischen Reichweite (Sonden sind bis ~150 km zu hören): Ohne Ziele
+            // zoomte die Karte sonst bis auf die eigene Straße.
+            list.append(.extent("range", center: home, radius: 150_000))
+        }
+        for sonde in positioned {
+            let selected = selection == sonde.id
+            let key = "so:\(sonde.id)"
+            if sonde.trail.count > 1 {
+                let trail = sonde.trail.map { CLLocationCoordinate2D(latitude: $0.lat, longitude: $0.lon) }
+                list.append(.line("\(key)/trail", trail, color: selected ? MapColor.selected : accent,
+                                  width: selected ? 3 : 2, opacity: selected ? 1 : 0.7, arrows: true, selected: selected))
             }
-            .mapStyle(.standard(elevation: .flat, pointsOfInterest: .excludingAll))
-            .mapControls { MapZoomStepper(); MapCompass(); MapScaleView() }
-            .scrollWheelZoom(scrollZoom) { camera = .region($0) }
+            if let landing = sonde.landing(groundAltitude: groundAltitude) {
+                let here = CLLocationCoordinate2D(latitude: sonde.latitude!, longitude: sonde.longitude!)
+                let there = CLLocationCoordinate2D(latitude: landing.lat, longitude: landing.lon)
+                list.append(.line("\(key)/landingline", [here, there], color: MapColor.red, width: 1.5, opacity: 0.7, dash: [5, 4]))
+                list.append(.badge("\(key)/landing", at: there, symbol: .scope, color: MapColor.red,
+                                   label: String(localized: "Landung ≈"), select: sonde.id))
+            }
+            let stale = Date().timeIntervalSince(sonde.lastSeen) > 60
+            list.append(.marker(key, at: CLLocationCoordinate2D(latitude: sonde.latitude!, longitude: sonde.longitude!),
+                                symbol: sonde.burst ? .descent : .balloon,
+                                color: selected ? MapColor.selected : stale ? MapColor.stale : accent,
+                                size: 22, label: sonde.serial, selected: selected, select: sonde.id))
+        }
+        return list
+    }
+
+    private var map: some View {
+        LeafletMap(features: mapFeatures, controller: mapController,
+                   options: MapOptions(center: home.map(MapPoint.init) ?? MapPoint(51, 10), zoom: home == nil ? 5 : 8),
+                   onSelect: { selection = $0 })
             .overlay(alignment: .topLeading) {
                 if positioned.isEmpty {
                     Text(model.running ? "Noch keine Position empfangen" : "Empfang starten")
@@ -179,12 +174,11 @@ struct SondeView: View {
                 }
             }
             .overlay(alignment: .bottomLeading) {
-                if camera.positionedByUser || camera.region != nil, !positioned.isEmpty {
-                    Button("Alle Sonden zeigen", systemImage: "scope") { camera = .automatic }
+                if !mapController.following, !positioned.isEmpty {
+                    Button("Alle Sonden zeigen", systemImage: "scope") { mapController.showAll() }
                         .padding(10)
                 }
             }
-        }
     }
 
     // MARK: - Tabelle

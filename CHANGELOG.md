@@ -3,6 +3,58 @@
 All notable changes to PortaPack Manager. Versions follow
 [Semantic Versioning](https://semver.org).
 
+## 1.1.0 – 2026-10-31
+
+### Changed
+
+- **Maps on OpenStreetMap (Leaflet) instead of Apple Maps:** every map in the
+  app (aircraft, ships, APRS, radiosondes and their archive, drones, DSC,
+  Meshtastic, FT8/WSPR, VOR, GPS, traffic archive) now uses the same Leaflet
+  map as the remote access page – one look on Mac, phone and future Linux/Windows
+  versions. Only changed targets are sent to the map; direction arrows on tracks
+  keep a fixed on-screen spacing and thin out when zooming out. GPS gets a
+  “Show position” button; drones, Meshtastic and VOR get “Show all …”.
+
+- **Remote access with accounts:** sign in with user name and password instead
+  of an access key in the address. Several accounts with the roles “Control” and
+  “View only”; passwords stored as PBKDF2 hashes in the keychain; devices stay
+  signed in and can be signed out per account; failed sign-ins are throttled.
+  Old links with `?k=` no longer work – create an account under
+  Settings ▸ Remote Access.
+
+### Added
+
+- **Airband: Whisper as an alternative speech recognizer** (whisper.cpp,
+  runs on the Mac with Metal). Choose the model (Base, Small, Large v3 Turbo);
+  the app downloads it once and verifies its checksum. In tests with noisy
+  synthetic transmissions: 3–11 % word errors instead of 29–63 % with Apple's
+  recognizer, call signs 16–17 of 17 instead of 4–10.
+
+- **Radiosondes: alternate until the first sonde.** Until a sonde is decoded,
+  the previous receiver (e.g. ADS-B) keeps running and the HackRF listens for
+  sondes for 1½ minutes every 5 minutes (adjustable, or off).
+
+### Fixed
+
+- Drones, Bluetooth LE, Meshtastic and radio sensors: the app no longer crashes
+  when opening these pages.
+- Airports on the aircraft map: if macOS cleared the app's cache folder (e.g.
+  when disk space runs low), the list is downloaded again automatically; the
+  remote access page no longer asks to load it on the Mac right after start.
+- Menu bar: “Settings …” opens the settings even when the main window is
+  being created anew.
+- Radiosonde charts: the hover box no longer appears twice (temperature and
+  humidity chart drew it on top of each other).
+
+- A sonde window no longer ends after 30 minutes without reception while
+  SondeHub still reports a sonde in range.
+
+- Remote access: the weather balloon box only counts sondes heard in the last
+  5 minutes as “live”.
+- Switching to HackRF mode retries when the PortaPack first returns in Mayhem
+  mode (it was still closing an app).
+- Running the tests no longer starts a second remote access server.
+
 ## 1.0 – 2026-10-29
 
 First public release.

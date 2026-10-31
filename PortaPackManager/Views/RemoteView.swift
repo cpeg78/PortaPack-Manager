@@ -6,6 +6,11 @@ struct RemoteView: View {
     @Bindable private var hub = RemoteHub.shared
     @State private var portText = ""
     @State private var qrAddress: String?
+    /// Offener Dialog: Konto anlegen bzw. Passwort ändern (Name des Kontos).
+    @State private var addingAccount = false
+    @State private var passwordFor: String?
+    @State private var deleting: String?
+    @State private var accountError: String?
 
     var body: some View {
         Form {
@@ -54,13 +59,13 @@ struct RemoteView: View {
             }
 
             Section("Adressen") {
-                if hub.tokenUnavailable {
-                    Text("Der Zugangsschlüssel ist im Schlüsselbund gerade nicht lesbar – der Fernzugriff ist ausgesetzt. Die App versucht es von selbst erneut.")
+                if hub.accountsUnavailable {
+                    Text("Die Konten sind im Schlüsselbund gerade nicht lesbar – der Fernzugriff ist ausgesetzt. Die App versucht es von selbst erneut.")
                         .foregroundStyle(.orange)
                 } else if hub.addresses.isEmpty {
                     Text("Keine Netzwerkverbindung").foregroundStyle(.secondary)
                 }
-                ForEach(hub.tokenUnavailable ? [] : hub.addresses, id: \.self) { address in
+                ForEach(hub.accountsUnavailable ? [] : hub.addresses, id: \.self) { address in
                     VStack(alignment: .leading, spacing: 3) {
                         Text(address.note).font(.caption).foregroundStyle(.secondary)
                         HStack {
@@ -94,22 +99,7 @@ struct RemoteView: View {
                 }
             }
 
-            Section {
-                LabeledContent("Schlüssel") {
-                    HStack {
-                        if hub.tokenUnavailable {
-                            Text("nicht lesbar").foregroundStyle(.orange)
-                        } else {
-                            Text(hub.token).font(.body.monospaced()).textSelection(.enabled)
-                        }
-                        Button("Neu erzeugen") { hub.regenerateToken(); qrAddress = nil }
-                    }
-                }
-            } header: {
-                Text("Zugangsschlüssel")
-            } footer: {
-                Text("Ohne den Schlüssel in der Adresse zeigt die Seite nichts. Ein neuer Schlüssel sperrt alle bisher geöffneten Seiten aus.")
-            }
+            accountsSection
 
             Section("Betrieb") {
                 LabeledContent("Empfänger", value: hub.activeMode?.title ?? "–")
@@ -143,6 +133,68 @@ struct RemoteView: View {
         .navigationTitle("Fernzugriff")
     }
 
+    /// Konten des Fernzugriffs: Name, Rolle, angemeldete Geräte; anlegen, Passwort
+    /// ändern, überall abmelden, löschen.
+    private var accountsSection: some View {
+        Section {
+            if hub.accounts.accounts.isEmpty {
+                Text("Noch kein Konto – ohne Konto kann sich niemand anmelden.")
+                    .foregroundStyle(.orange)
+            }
+            ForEach(hub.accounts.accounts) { account in
+                HStack {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(verbatim: account.name).font(.body.weight(.medium))
+                        let count = hub.accounts.sessionCount(for: account.name)
+                        Text(count == 0 ? String(localized: "nicht angemeldet") : String(localized: "\(count) Geräte angemeldet"))
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    Picker("Rolle", selection: Binding(
+                        get: { account.role },
+                        set: { accountError = hub.setRole($0, for: account.name) })) {
+                        Text("Bedienen").tag(RemoteAccount.Role.control)
+                        Text("Nur ansehen").tag(RemoteAccount.Role.view)
+                    }
+                    .labelsHidden().pickerStyle(.segmented).fixedSize()
+                    Menu {
+                        Button("Passwort ändern …") { passwordFor = account.name }
+                        Button("Überall abmelden") { accountError = hub.signOutEverywhere(account.name) }
+                            .disabled(hub.accounts.sessionCount(for: account.name) == 0)
+                        Divider()
+                        Button("Löschen …", role: .destructive) { deleting = account.name }
+                    } label: {
+                        Image(systemName: "ellipsis.circle")
+                    }
+                    .menuStyle(.borderlessButton).fixedSize()
+                }
+            }
+            Button("Konto hinzufügen …", systemImage: "person.badge.plus") { addingAccount = true }
+            if let accountError {
+                Text(accountError).font(.caption).foregroundStyle(.red)
+            }
+        } header: {
+            Text("Konten")
+        } footer: {
+            Text("Auf dem Handy meldest du dich mit Benutzername und Passwort an und bleibst angemeldet. „Nur ansehen“ zeigt alles, darf aber nichts umschalten oder einstellen. Ein neues Passwort und „Überall abmelden“ melden alle Geräte des Kontos ab. Die Seite läuft im Heimnetz unverschlüsselt (http) – von unterwegs nur über ein VPN wie Tailscale.")
+        }
+        .sheet(isPresented: $addingAccount) {
+            AccountForm(mode: .add) { name, password, role in hub.addAccount(name: name, password: password, role: role) }
+        }
+        .sheet(item: Binding(get: { passwordFor.map(AccountName.init) }, set: { passwordFor = $0?.name })) { item in
+            AccountForm(mode: .password(item.name)) { _, password, _ in hub.setPassword(password, for: item.name) }
+        }
+        .confirmationDialog(Text("Konto „\(deleting ?? "")“ löschen?"), isPresented: Binding(
+            get: { deleting != nil }, set: { if !$0 { deleting = nil } })) {
+            Button("Löschen", role: .destructive) {
+                if let deleting { accountError = hub.removeAccount(deleting) }
+                deleting = nil
+            }
+        } message: {
+            Text("Alle Geräte dieses Kontos werden abgemeldet.")
+        }
+    }
+
     private var validPort: Bool {
         guard let value = Int(portText) else { return false }
         return (1024...65535).contains(value)
@@ -163,5 +215,64 @@ struct RemoteView: View {
         let image = NSImage(size: rep.size)
         image.addRepresentation(rep)
         return image
+    }
+}
+
+private struct AccountName: Identifiable {
+    let name: String
+    var id: String { name }
+}
+
+/// Dialog „Konto hinzufügen“ bzw. „Passwort ändern“. `save` liefert `nil` bei Erfolg,
+/// sonst den Fehlertext.
+private struct AccountForm: View {
+    enum Mode { case add, password(String) }
+
+    let mode: Mode
+    let save: (String, String, RemoteAccount.Role) -> String?
+    @Environment(\.dismiss) private var dismiss
+    @State private var name = ""
+    @State private var password = ""
+    @State private var repeated = ""
+    @State private var role = RemoteAccount.Role.control
+    @State private var error: String?
+
+    private var adding: Bool { if case .add = mode { true } else { false } }
+
+    var body: some View {
+        Form {
+            if case .password(let account) = mode {
+                LabeledContent("Konto") { Text(verbatim: account) }
+            } else {
+                TextField("Benutzername", text: $name)
+                    .textContentType(.username)
+                Picker("Rolle", selection: $role) {
+                    Text("Bedienen").tag(RemoteAccount.Role.control)
+                    Text("Nur ansehen").tag(RemoteAccount.Role.view)
+                }
+            }
+            SecureField("Passwort", text: $password)
+                .textContentType(.newPassword)
+            SecureField("Passwort wiederholen", text: $repeated)
+                .textContentType(.newPassword)
+            if !repeated.isEmpty, repeated != password {
+                Text("Die Passwörter stimmen nicht überein.").font(.caption).foregroundStyle(.red)
+            }
+            if let error {
+                Text(error).font(.caption).foregroundStyle(.red)
+            }
+        }
+        .formStyle(.grouped)
+        .frame(width: 380)
+        .navigationTitle(adding ? Text("Konto hinzufügen") : Text("Passwort ändern"))
+        .toolbar {
+            ToolbarItem(placement: .cancellationAction) { Button("Abbrechen") { dismiss() } }
+            ToolbarItem(placement: .confirmationAction) {
+                Button(adding ? "Anlegen" : "Ändern") {
+                    if let problem = save(name, password, role) { error = problem } else { dismiss() }
+                }
+                .disabled(password.isEmpty || password != repeated || (adding && name.isEmpty))
+            }
+        }
     }
 }

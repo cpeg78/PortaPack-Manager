@@ -181,7 +181,6 @@ final class RemoteHub {
 
     static let enabledKey = "remoteEnabled"
     static let portKey = "remotePort"
-    static let tokenKey = "remoteToken"
     static let localOnlyKey = "remoteLocalOnly"
     static let defaultPort = 1478
 
@@ -219,52 +218,66 @@ final class RemoteHub {
         }
     }
 
-    private(set) var token: String
-    /// Der Schlüsselbund war nicht lesbar und es gab keinen Altwert: Der Fernzugriff
-    /// ist ausgesetzt, bis der Schlüssel wieder gelesen werden kann. Nie einen neuen
-    /// Schlüssel erzeugen, der nirgends gespeichert ist – das sperrte bei jedem Start
-    /// alle Handys aus (Review 29.10.2026).
-    private(set) var tokenUnavailable = false
-    @ObservationIgnored private var tokenRetryTask: Task<Void, Never>?
+    /// Konten und angemeldete Geräte (seit 30.10.2026 statt des geteilten Schlüssels).
+    private(set) var accounts = RemoteAccountBook()
+    /// Der Schlüsselbund war nicht lesbar: Der Fernzugriff ist ausgesetzt, bis die
+    /// Konten wieder gelesen werden können. Nie mit leerer Liste weitermachen und
+    /// speichern – das löschte alle Konten (wie früher beim Schlüssel, Review 29.10.2026).
+    private(set) var accountsUnavailable = false
+    @ObservationIgnored private var accountsRetryTask: Task<Void, Never>?
+    @ObservationIgnored private var loginThrottle = LoginThrottle()
 
     @ObservationIgnored private let server = RemoteHTTPServer()
     @ObservationIgnored private var encoder: AACStreamEncoder?
     @ObservationIgnored private var activity: NSObjectProtocol?
     private static let log = Logger(subsystem: "de.christiangolz.portapackmanager", category: "Fernzugriff")
 
-    /// Der Schlüssel liegt im Schlüsselbund; ein alter Wert aus UserDefaults wird
-    /// unverändert übernommen (siehe `RemoteTokenStore`).
-    @ObservationIgnored private let tokenStore = RemoteTokenStore.keychain
+    /// Konten im Schlüsselbund; im Testwirt nur im Speicher.
+    @ObservationIgnored private let accountStore: RemoteAccountStore
 
     private init() {
         if ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil {
-            // Testwirt: teilt UserDefaults und Schlüsselbund mit der echten App. Hier
-            // nichts migrieren und nichts schreiben – sonst verschob schon ein Testlauf
-            // den echten Schlüssel, und ältere Fassungen erzeugten danach einen neuen.
-            token = UserDefaults.standard.string(forKey: Self.tokenKey).flatMap { $0.count >= 8 ? $0 : nil } ?? Self.makeToken()
+            // Testwirt: teilt UserDefaults und Schlüsselbund mit der echten App – hier
+            // nichts lesen und nichts schreiben (Schlüsselbund-Abfragen, echte Konten).
+            accountStore = .memory()
         } else {
-            let loaded = RemoteTokenStore.keychain.loadOrMigrate(defaults: .standard, key: Self.tokenKey, make: Self.makeToken)
-            token = loaded ?? ""
-            tokenUnavailable = loaded == nil
+            accountStore = .keychain
+            loadAccounts()
         }
     }
 
-    /// Liest den Schlüssel erneut (nach einem Schlüsselbund-Fehler beim Start) – erst
-    /// nach 30 s, dann mit wachsendem Abstand bis 10 min: Fragt der Schlüsselbund dabei
-    /// nach, soll nicht alle 30 s ein Dialog erscheinen.
-    private func retryTokenLoad() {
-        guard tokenRetryTask == nil else { return }
-        tokenRetryTask = Task { [weak self] in
+    /// Konten lesen; beim ersten Start mit Konten den alten Zugangsschlüssel löschen.
+    private func loadAccounts() {
+        switch accountStore.load() {
+        case .found(var book):
+            if book.prune() { _ = accountStore.save(book) }
+            accounts = book
+            accountsUnavailable = false
+        case .notFound:
+            accounts = RemoteAccountBook()
+            accountsUnavailable = false
+            RemoteAccountStore.removeLegacyToken()
+        case .failed(let status):
+            accountsUnavailable = true
+            Self.log.error("Konten im Schlüsselbund nicht lesbar (\(status)) – Fernzugriff ausgesetzt")
+        }
+    }
+
+    /// Liest die Konten erneut (nach einem Schlüsselbund-Fehler) – erst nach 30 s,
+    /// dann mit wachsendem Abstand bis 10 min: Fragt der Schlüsselbund dabei nach,
+    /// soll nicht alle 30 s ein Dialog erscheinen.
+    private func retryAccountsLoad() {
+        guard accountsRetryTask == nil else { return }
+        accountsRetryTask = Task { [weak self] in
             var delay = 30.0
             while !Task.isCancelled {
                 try? await Task.sleep(for: .seconds(delay))
                 delay = min(delay * 2, 600)
                 guard let self, !Task.isCancelled else { return }
-                if let loaded = self.tokenStore.loadOrMigrate(defaults: .standard, key: Self.tokenKey, make: Self.makeToken) {
-                    Self.log.info("Zugangsschlüssel wieder lesbar – Fernzugriff geht weiter")
-                    self.token = loaded
-                    self.tokenUnavailable = false
-                    self.tokenRetryTask = nil
+                self.loadAccounts()
+                if !self.accountsUnavailable {
+                    Self.log.info("Konten wieder lesbar – Fernzugriff geht weiter")
+                    self.accountsRetryTask = nil
                     self.applySettings()
                     return
                 }
@@ -272,20 +285,54 @@ final class RemoteHub {
         }
     }
 
-    static func makeToken() -> String {
-        let alphabet = Array("abcdefghjkmnpqrstuvwxyz23456789")
-        return String((0..<12).map { _ in alphabet.randomElement()! })
+    // MARK: - Konten (Einstellungen am Mac)
+
+    /// Änderung übernehmen und sichern; `nil` = gespeichert, sonst Fehlertext.
+    private func commit(_ book: RemoteAccountBook) -> String? {
+        guard !accountsUnavailable else { return String(localized: "Die Konten sind im Schlüsselbund gerade nicht lesbar.") }
+        guard accountStore.save(book) else { return String(localized: "Die Konten ließen sich nicht im Schlüsselbund sichern.") }
+        accounts = book
+        return nil
     }
 
-    func regenerateToken() {
-        token = Self.makeToken()
-        tokenStore.replace(with: token, defaults: .standard, key: Self.tokenKey)
-        // Ausdrücklich neu erzeugt (und gesichert, notfalls in UserDefaults): weiter geht's.
-        if tokenUnavailable {
-            tokenUnavailable = false
-            tokenRetryTask?.cancel(); tokenRetryTask = nil
-            applySettings()
+    static func message(_ problem: RemoteAccountBook.Problem) -> String {
+        switch problem {
+        case .invalidName: String(localized: "Der Benutzername darf 1–32 Zeichen lang sein: Buchstaben, Ziffern, Punkt, Unterstrich, Bindestrich.")
+        case .duplicateName: String(localized: "Diesen Benutzernamen gibt es schon.")
+        case .shortPassword: String(localized: "Das Passwort braucht mindestens \(RemoteAccountBook.minimumPasswordLength) Zeichen.")
+        case .unknownAccount: String(localized: "Dieses Konto gibt es nicht mehr.")
+        case .lastController: String(localized: "Mindestens ein Konto muss bedienen dürfen.")
         }
+    }
+
+    func addAccount(name: String, password: String, role: RemoteAccount.Role) -> String? {
+        var book = accounts
+        do { try book.add(name: name, password: password, role: role) } catch { return Self.message(error) }
+        return commit(book)
+    }
+
+    func setPassword(_ password: String, for name: String) -> String? {
+        var book = accounts
+        do { try book.setPassword(password, for: name) } catch { return Self.message(error) }
+        return commit(book)
+    }
+
+    func setRole(_ role: RemoteAccount.Role, for name: String) -> String? {
+        var book = accounts
+        do { try book.setRole(role, for: name) } catch { return Self.message(error) }
+        return commit(book)
+    }
+
+    func removeAccount(_ name: String) -> String? {
+        var book = accounts
+        book.remove(name)
+        return commit(book)
+    }
+
+    func signOutEverywhere(_ name: String) -> String? {
+        var book = accounts
+        book.signOut(name)
+        return commit(book)
     }
 
     // MARK: - Server
@@ -441,11 +488,10 @@ final class RemoteHub {
         // belegte ein Testlauf Port 1478, und die echte App kam nicht mehr an ihren
         // Server (Fund 30.10.2026, Testlauf von `release.sh`).
         if enabled, ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] == nil {
-            if tokenUnavailable {
+            if accountsUnavailable {
                 stopServer()
-                error = String(localized: "Der Zugangsschlüssel ist im Schlüsselbund gerade nicht lesbar. Der Fernzugriff ist ausgesetzt und startet von selbst, sobald er wieder gelesen werden kann.")
-                Self.log.error("Zugangsschlüssel nicht lesbar – Fernzugriff ausgesetzt")
-                retryTokenLoad()
+                error = String(localized: "Die Konten sind im Schlüsselbund gerade nicht lesbar. Der Fernzugriff ist ausgesetzt und startet von selbst, sobald sie wieder gelesen werden können.")
+                retryAccountsLoad()
                 return
             }
             if running && !restart { return }
@@ -713,16 +759,16 @@ final class RemoteHub {
         let note: String
     }
 
-    /// Erreichbare Adressen samt Schlüssel: Rechnername (Bonjour) und IPv4.
+    /// Erreichbare Adressen: Rechnername (Bonjour) und IPv4 – ohne Schlüssel, die Seite meldet an.
     var addresses: [Address] {
         var result: [Address] = []
         if let name = Host.current().localizedName {
             let host = name.replacingOccurrences(of: " ", with: "-").folding(options: .diacriticInsensitive, locale: nil)
-            result.append(Address(url: "http://\(host).local:\(port)/?k=\(token)", note: String(localized: "Heimnetz (Rechnername)")))
+            result.append(Address(url: "http://\(host).local:\(port)/", note: String(localized: "Heimnetz (Rechnername)")))
         }
         for ip in Self.ipv4Addresses() {
             let note = ip.hasPrefix("100.") && Self.isCGNAT(ip) ? String(localized: "Tailscale (von unterwegs)") : String(localized: "Heimnetz")
-            result.append(Address(url: "http://\(ip):\(port)/?k=\(token)", note: note))
+            result.append(Address(url: "http://\(ip):\(port)/", note: note))
         }
         return result
     }
@@ -752,15 +798,6 @@ final class RemoteHub {
 
     // MARK: - Anfragen
 
-    /// Vergleich in konstanter Zeit: bricht nicht beim ersten abweichenden
-    /// Zeichen ab, verrät also über die Antwortzeit nichts vom Schlüssel.
-    nonisolated static func matches(_ candidate: String?, _ token: String) -> Bool {
-        guard let candidate else { return false }
-        let a = Array(candidate.utf8), b = Array(token.utf8)
-        guard a.count == b.count, !b.isEmpty else { return false }
-        return zip(a, b).reduce(UInt8(0)) { $0 | ($1.0 ^ $1.1) } == 0
-    }
-
     /// Eigene Namen des Macs für die `Host`-Prüfung (einmal ermittelt). `gethostname`
     /// statt `ProcessInfo.hostName` – Letzteres fragt mitunter sekundenlang das DNS.
     private static let localHostNames: [String] = {
@@ -774,6 +811,50 @@ final class RemoteHub {
         }
         return names
     }()
+
+    /// Anmeldeseite in der Sprache der App.
+    private static func loginPage(status: Int, message: String? = nil, name: String = "", noAccounts: Bool = false) -> RemoteHTTPServer.Response {
+        .data(status: status, contentType: "text/html; charset=utf-8",
+              body: Data(RemotePage.login(message: message, name: name, noAccounts: noAccounts).utf8))
+    }
+
+    /// 303 zur Startseite (nach dem Formular, damit „Neu laden“ nicht erneut sendet).
+    private static func redirectHome(cookies: [String]) -> RemoteHTTPServer.Response {
+        var headers = ["Location": "/"]
+        // `extraHeaderLines` kennt je Name nur einen Wert – mehrere Cookies als eigene
+        // `Set-Cookie`-Zeilen über eine eingefügte Zeilengrenze.
+        if !cookies.isEmpty { headers["Set-Cookie"] = cookies.joined(separator: "\r\nSet-Cookie: ") }
+        return .withHeaders(headers, .data(status: 303, contentType: "text/plain; charset=utf-8", body: Data()))
+    }
+
+    /// Formular `POST /login`: Name und Passwort prüfen (PBKDF2 abseits des Main Actor),
+    /// Fehlversuche je Gegenstelle bremsen, bei Erfolg Sitzung und Cookie.
+    private func login(_ request: RemoteHTTPServer.Request) async -> RemoteHTTPServer.Response {
+        let peer = request.peer ?? "?"
+        let form = request.form
+        let name = String((form["name"] ?? "").prefix(32))
+        let password = String((form["password"] ?? "").prefix(200))
+        if accounts.accounts.isEmpty { return Self.loginPage(status: 401, noAccounts: true) }
+        if let wait = loginThrottle.blocked(peer) {
+            return Self.loginPage(status: 429, message: String(localized: "Zu viele Fehlversuche – versuch es in \(wait) s erneut."), name: name)
+        }
+        let candidates = accounts.accounts
+        let account = await Task.detached(priority: .userInitiated) {
+            RemoteAccountBook.verify(name: name, password: password, in: candidates)
+        }.value
+        // Während der Prüfung gelöscht oder Passwort geändert: gilt nicht mehr.
+        guard let account, accounts.account(named: account.name)?.hash == account.hash else {
+            loginThrottle.fail(peer)
+            Self.log.notice("Anmeldung fehlgeschlagen von \(peer, privacy: .public)")
+            return Self.loginPage(status: 401, message: String(localized: "Benutzername oder Passwort stimmt nicht."), name: name)
+        }
+        loginThrottle.succeed(peer)
+        var book = accounts
+        let token = book.createSession(for: account)
+        if let problem = commit(book) { return Self.loginPage(status: 503, message: problem, name: name) }
+        Self.log.notice("Angemeldet: \(account.name, privacy: .public) von \(peer, privacy: .public)")
+        return Self.redirectHome(cookies: [RemoteAccessPolicy.sessionCookie(token: token)])
+    }
 
     private func handle(_ request: RemoteHTTPServer.Request) async -> RemoteHTTPServer.Response {
         // DNS-Rebinding: ein fremder Name, der plötzlich auf den Mac zeigt, kommt nicht durch.
@@ -792,32 +873,46 @@ final class RemoteHub {
         case "/favicon.ico": return .text(404, "")
         default: break
         }
-        let cookieToken = request.headers["cookie"]?
-            .split(separator: ";").map { $0.trimmingCharacters(in: .whitespaces) }
-            .first { $0.hasPrefix("k=") }.map { String($0.dropFirst(2)) }
-        guard Self.matches(request.query["k"], token) || Self.matches(cookieToken, token) else {
-            return .data(status: 403, contentType: "text/html; charset=utf-8", body: Data(RemotePage.forbidden().utf8))
+        if request.path == "/manifest.webmanifest" {
+            return .data(status: 200, contentType: "application/manifest+json", body: Data(RemotePage.manifest().utf8))
         }
-        // CSRF: Aktionen nur aus der eigenen Seite (Review 29.10.2026, S2).
+        // CSRF: Aktionen nur aus der eigenen Seite (Review 29.10.2026, S2) – auch An-/Abmelden.
         guard RemoteAccessPolicy.allowsOrigin(path: request.path, headers: request.headers) else {
             Self.log.notice("Abgewiesen (nicht aus der eigenen Seite): \(request.path, privacy: .public)")
             return .text(403, String(localized: "Nur aus der Fernzugriffsseite"))
         }
-        // Erst nach der Schlüsselprüfung – sonst erschien jeder Portscan als „letzter Abruf“.
+        switch (request.method, request.path) {
+        case ("POST", "/login"): return await login(request)
+        case ("POST", "/logout"):
+            if let token = RemoteAccessPolicy.sessionToken(cookieHeader: request.headers["cookie"]) {
+                var book = accounts
+                book.endSession(token)
+                _ = commit(book)
+            }
+            return Self.redirectHome(cookies: RemoteAccessPolicy.clearedCookies)
+        default: break
+        }
+        let token = RemoteAccessPolicy.sessionToken(cookieHeader: request.headers["cookie"])
+        guard let account = accounts.account(forSession: token), let token else {
+            // Nicht angemeldet: die Seite zeigt die Anmeldung, alles andere 401.
+            if request.path == "/" || request.path == "/index.html" || request.path == "/login" {
+                return Self.loginPage(status: 200, noAccounts: accounts.accounts.isEmpty)
+            }
+            return .text(401, String(localized: "Bitte anmelden."))
+        }
+        if request.path == "/login" { return Self.redirectHome(cookies: []) }
+        // „Nur ansehen“: nur lesende Abrufe (Liste in RemoteAccessPolicy.readOnlyParameters).
+        if account.role == .view, RemoteAccessPolicy.requiresControl(path: request.path, query: request.query) {
+            return .text(403, String(localized: "Dieses Konto darf nur ansehen, nichts umschalten oder einstellen."))
+        }
+        // Erst nach der Anmeldung – sonst erschien jeder Portscan als „letzter Abruf“.
         lastRequest = Date()
+        var touched = accounts
+        if touched.touch(session: token) { _ = commit(touched) }
         switch request.path {
         case "/", "/index.html":
-            // Schlüssel einsetzen: eine Web-App vom iOS-Home-Bildschirm hat
-            // eigene Cookies und startet mit der gespeicherten Adresse.
-            // Dazu Sprache und Wörterbuch der App (RemotePage.page).
-            // Das Cookie setzt der Server (`HttpOnly`) – Skripte, auch die eines anderen
-            // Ports derselben Adresse, kommen nicht daran.
-            let page = RemotePage.page(token: token)
-            return .withHeaders(["Set-Cookie": RemoteAccessPolicy.sessionCookie(token: token)],
-                                .data(status: 200, contentType: "text/html; charset=utf-8", body: Data(page.utf8)))
-        case "/manifest.webmanifest":
-            return .data(status: 200, contentType: "application/manifest+json",
-                         body: Data(RemotePage.manifest(token: token).utf8))
+            let page = RemotePage.page(user: account.name, role: account.role)
+            return .data(status: 200, contentType: "text/html; charset=utf-8", body: Data(page.utf8))
         case "/api/state":
             return .json(snapshotJSON(selected: request.query["sel"]))
         case "/api/mode":
@@ -897,7 +992,7 @@ final class RemoteHub {
             return .json(snapshotJSON(selected: nil))
         case "/api/sondes": return await RemoteSondes.handle(request.query)
         case "/api/airports":
-            return .json(RemoteAirports.handle(request.query))
+            return .json(await RemoteAirports.handle(request.query))
         case "/api/plan":
             return .json(RemoteWeather.plan(request.query))
         case "/img":
@@ -1181,6 +1276,8 @@ final class RemoteHub {
             var speedKn: Double?
             var course: Double?
             var heading: Double?
+            /// Feste Station: "base" (Basisstation) oder "aton" (Seezeichen) – Kartensymbol wie am Mac.
+            var fixed: String?
             var destination: String?
             var eta: String?
             var length: Int?
@@ -1260,6 +1357,7 @@ final class RemoteHub {
                 id: vessel.mmsi, name: vessel.name, callsign: vessel.callsign, type: kind,
                 status: AISMessage.statusText(vessel.status), lat: vessel.latitude, lon: vessel.longitude,
                 speedKn: vessel.speedKnots, course: vessel.courseDegrees, heading: vessel.displayHeading,
+                fixed: vessel.isBaseStation ? "base" : vessel.isAidToNavigation ? "aton" : nil,
                 destination: vessel.destination?.nilIfEmpty, eta: vessel.eta?.text,
                 length: vessel.lengthMeters, beam: vessel.beamMeters, draught: vessel.draughtMeters, imo: vessel.imo,
                 age: Int(now.timeIntervalSince(vessel.lastSeen)),

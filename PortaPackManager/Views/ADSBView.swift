@@ -1,4 +1,4 @@
-import MapKit
+import CoreLocation
 import SwiftUI
 
 struct ADSBView: View {
@@ -386,17 +386,11 @@ struct ADSBView: View {
     }
 }
 
-/// Die Karte der ADS-B-Seite. Flugzeuge und Spuren zeichnet sie selbst in
-/// einem `Canvas` über der Karte – mit je einer `Annotation` und `MapPolyline`
-/// pro Flugzeug baute MapKit bei jeder Aktualisierung (2× je Sekunde) alle
-/// Symbole und Überlagerungen neu und blockierte den Hauptthread bei 150
-/// Flugzeugen ≈ 75 ms, egal wie lang die Spuren waren (gemessen 25.10.2026);
-/// mit dem Canvas sind es ≈ 20 ms, und davon entfällt das meiste auf die
-/// Tabelle. Die Umrechnung Koordinate → Punkt ist die Mercator-Projektion
-/// von `MKMapPoint` über den sichtbaren `MKMapRect` – deckungsgleich mit
-/// MapKit, auch mitten im Ziehen (gegen Referenz-Annotationen geprüft).
-/// Drehen der Karte ist deshalb abgeschaltet (die Projektion setzt Norden
-/// oben voraus).
+/// Die Karte der ADS-B-Seite (Leaflet, siehe `LeafletMap`). Flugzeuge, Spuren und
+/// Flugplätze sind `MapFeature`s; an die Kartenseite geht je Takt nur, was sich
+/// geändert hat – früher baute MapKit bei jeder Aktualisierung (2× je Sekunde)
+/// alle Annotationen neu und blockierte bei 150 Flugzeugen ≈ 75 ms (25.10.2026),
+/// danach zeichnete ein eigener Canvas über der Karte.
 ///
 /// `Equatable`: das Elternview rendert alle 500 ms neu – die Karte nur, wenn
 /// sich an den gezeichneten Daten etwas geändert hat.
@@ -411,13 +405,8 @@ struct ADSBMapView: View, Equatable {
     /// Angeklickter Flugplatz (Infokarte); schließt sich mit einer Flugzeugauswahl.
     @State private var airport: Airport?
 
-    @State private var camera: MapCameraPosition = .automatic
-    @State private var viewport = MapViewport()
-    @State private var scrollZoom = MapScrollZoom()
+    @State private var map = MapController()
     @State private var pendingCenter: Aircraft.ID?
-    /// Bis der Nutzer die Karte bewegt oder etwas auswählt, folgt der
-    /// Ausschnitt allen Flugzeugen (wie `.automatic` bei MapKit-Annotationen).
-    @State private var followAll = true
 
     nonisolated static func == (a: ADSBMapView, b: ADSBMapView) -> Bool {
         a.planes == b.planes && a.showTrails == b.showTrails && a.showAirports == b.showAirports && a.running == b.running
@@ -426,40 +415,16 @@ struct ADSBMapView: View, Equatable {
     }
 
     var body: some View {
-        MapReader { proxy in
-            Map(position: $camera, interactionModes: [.pan, .zoom]) {
-                if let home {
-                    Marker("Standort", systemImage: "house.fill", coordinate: home)
-                        .tint(.brown)
-                }
-            }
-            .mapStyle(.standard(elevation: .flat, pointsOfInterest: .excludingAll))
-            .mapControls { MapZoomStepper(); MapScaleView() }
-            .onMapCameraChange(frequency: .continuous) { context in
-                scrollZoom.region = context.region
-                viewport.rect = context.rect
-            }
-            .overlay {
-                // Unter den Flugzeugen; hängt nicht an `planes` – neu gezeichnet wird
-                // nur beim Verschieben/Zoomen, nicht bei jeder Flugzeugmeldung.
-                if showAirports {
-                    AirportCanvas(viewport: viewport, selected: airport?.id).equatable()
-                }
-            }
-            .overlay {
-                TargetCanvas(planes: planes, showTrails: showTrails, selection: selection, viewport: viewport)
-            }
+        LeafletMap(features: features, controller: map,
+                   options: MapOptions(fitMaxZoom: 10, center: home.map(MapPoint.init) ?? MapPoint(51, 10), zoom: home == nil ? 5 : 8),
+                   onSelect: select)
             .overlay {
                 if let selected {
-                    AircraftInfoCard(info: selected, viewport: viewport) { selection = nil }
+                    AircraftInfoCard(info: selected, controller: map) { selection = nil }
                 } else if showAirports, let airport {
-                    AirportInfoCard(airport: airport, viewport: viewport) { self.airport = nil }
+                    AirportInfoCard(airport: airport, controller: map) { self.airport = nil }
                 }
             }
-            .onTapGesture { point in select(at: point, proxy: proxy) }
-            .scrollWheelZoom(scrollZoom) { region in followAll = false; camera = .region(region) }
-            .onChange(of: camera.positionedByUser) { _, byUser in if byUser { followAll = false } }
-            .onChange(of: planeIDsKey) { _, _ in if followAll { fitAll(animated: true) } }
             .onChange(of: selection) { _, id in
                 if id != nil { airport = nil }
                 centerOnSelection(id)
@@ -477,22 +442,25 @@ struct ADSBMapView: View, Equatable {
                 }
             }
             .overlay(alignment: .bottomLeading) {
-                if !followAll, !planes.isEmpty {
-                    Button("Alle Flugzeuge zeigen", systemImage: "scope") {
-                        followAll = true
-                        fitAll(animated: true)
-                    }
-                    .padding(10)
+                if !map.following, !planes.isEmpty {
+                    Button("Alle Flugzeuge zeigen", systemImage: "scope") { map.showAll() }
+                        .padding(10)
                 }
             }
-        }
     }
 
-    /// Wechselt, sobald ein Flugzeug hinzukommt oder verschwindet.
-    private var planeIDsKey: Int {
-        var hasher = Hasher()
-        for plane in planes { hasher.combine(plane.id) }
-        return hasher.finalize()
+    private var features: [MapFeature] {
+        var list = airportFeatures
+        if let home { list.append(.home(home)) }
+        list += MapFeature.targets(planes, showTrails: showTrails, selection: selection, prefix: "pl:")
+        return list
+    }
+
+    /// Flugplätze im zuletzt ruhenden Ausschnitt (nicht bei jedem Bild beim Ziehen).
+    private var airportFeatures: [MapFeature] {
+        guard showAirports, let bounds = map.settledViewport?.bounds else { return [] }
+        return MapFeature.airports(AirportFilter.visible(AirportDatabase.shared.airports, in: bounds),
+                                   selected: airport?.id, labelAll: bounds.latSpan <= 1.5)
     }
 
     /// Position des vorgemerkten Flugzeugs als vergleichbarer Schlüssel –
@@ -502,48 +470,18 @@ struct ADSBMapView: View, Equatable {
         return "\(plane.coordinate.latitude),\(plane.coordinate.longitude)"
     }
 
-    /// Klick auf die Karte: nächstes Flugzeug im Umkreis von 14 Punkten
-    /// auswählen, sonst den nächsten sichtbaren Flugplatz (10 Punkte), sonst
-    /// Auswahl aufheben.
-    private func select(at point: CGPoint, proxy: MapProxy) {
-        var best: (id: Aircraft.ID, distance: CGFloat)?
-        for plane in planes {
-            guard let p = proxy.convert(plane.coordinate, to: .local) else { continue }
-            let d = hypot(p.x - point.x, p.y - point.y)
-            if d <= 14, best == nil || d < best!.distance { best = (plane.id, d) }
-        }
-        selection = best?.id
-        guard best == nil, showAirports, let bounds = AirportFilter.Bounds(mapRect: viewport.rect) else {
+    /// Klick auf ein Flugzeug oder einen Flugplatz; ins Leere hebt die Auswahl auf.
+    private func select(_ key: String?) {
+        if let key, key.hasPrefix("pl:"), let id = UInt32(key.dropFirst(3)) {
+            selection = id
+        } else if let key, key.hasPrefix("ap:") {
+            let ident = String(key.dropFirst(3))
+            selection = nil
+            airport = AirportDatabase.shared.airports.first { $0.id == ident }
+        } else {
+            selection = nil
             airport = nil
-            return
         }
-        var nearest: (airport: Airport, distance: CGFloat)?
-        for candidate in AirportFilter.visible(AirportDatabase.shared.airports, in: bounds) {
-            guard let p = proxy.convert(candidate.coordinate, to: .local) else { continue }
-            let d = hypot(p.x - point.x, p.y - point.y)
-            if d <= 10, nearest == nil || d < nearest!.distance { nearest = (candidate, d) }
-        }
-        airport = nearest?.airport
-    }
-
-    /// Ausschnitt um alle Flugzeuge (und den Standort) mit etwas Rand.
-    private func fitAll(animated: Bool) {
-        var coordinates = planes.map(\.coordinate)
-        if let home { coordinates.append(home) }
-        guard let first = coordinates.first else { return }
-        var minLat = first.latitude, maxLat = first.latitude
-        var minLon = first.longitude, maxLon = first.longitude
-        for c in coordinates {
-            minLat = min(minLat, c.latitude); maxLat = max(maxLat, c.latitude)
-            minLon = min(minLon, c.longitude); maxLon = max(maxLon, c.longitude)
-        }
-        let region = MKCoordinateRegion(
-            center: CLLocationCoordinate2D(latitude: (minLat + maxLat) / 2, longitude: (minLon + maxLon) / 2),
-            span: MKCoordinateSpan(latitudeDelta: max((maxLat - minLat) * 1.3, 0.2),
-                                   longitudeDelta: max((maxLon - minLon) * 1.3, 0.2)))
-        scrollZoom.region = region
-        if animated { withAnimation(.easeInOut(duration: 0.4)) { camera = .region(region) } }
-        else { camera = .region(region) }
     }
 
     /// Reaktion auf eine Auswahl: sofort hinspringen, sonst vormerken.
@@ -557,31 +495,12 @@ struct ADSBMapView: View, Equatable {
     @discardableResult
     private func center(on id: Aircraft.ID?) -> Bool {
         guard let id, let plane = planes.first(where: { $0.id == id }) else { return false }
-        followAll = false
-        let span = scrollZoom.region?.span
-            ?? MKCoordinateSpan(latitudeDelta: 1.5, longitudeDelta: 1.5)
-        let region = MKCoordinateRegion(center: plane.coordinate, span: span)
-        scrollZoom.region = region
-        withAnimation(.easeInOut(duration: 0.4)) { camera = .region(region) }
+        map.center(on: plane.coordinate)
         return true
     }
 }
 
-/// Sichtbarer Kartenausschnitt in Kartenpunkten – eigenes Objekt, damit beim
-/// Ziehen nur der Canvas neu zeichnet und nicht die ganze Kartenansicht.
-@MainActor @Observable
-final class MapViewport {
-    var rect = MKMapRect()
-
-    /// Koordinate → Punkt in der Ansicht (Mercator, Norden oben).
-    nonisolated static func point(_ c: CLLocationCoordinate2D, rect: MKMapRect, size: CGSize) -> CGPoint {
-        let p = MKMapPoint(c)
-        return CGPoint(x: (p.x - rect.minX) * size.width / rect.width,
-                       y: (p.y - rect.minY) * size.height / rect.height)
-    }
-}
-
-/// Ein Ziel, das `TargetCanvas` über der Karte zeichnet (Flugzeug, Schiff …).
+/// Ein Ziel mit Spur auf der Karte (Flugzeug, Schiff …).
 protocol MapTarget: Identifiable, Equatable {
     var label: String { get }
     var coordinate: CLLocationCoordinate2D { get }
@@ -589,169 +508,85 @@ protocol MapTarget: Identifiable, Equatable {
     var heading: Double? { get }
     var stale: Bool { get }
     var trail: [CLLocationCoordinate2D] { get }
-    /// SF-Symbol und dessen eigene Richtung (Grad, 0 = zeigt nach Norden).
-    var symbolName: String { get }
-    var symbolDirection: Double { get }
+    /// Kartenzeichen (gerichtete zeigen nach Norden).
+    var symbol: MapSymbol { get }
     /// Kantenlänge des Symbols in Punkten (ausgewählt +4).
-    var symbolSize: CGFloat { get }
+    var symbolSize: Double { get }
 }
 
-/// Spuren, Symbole und Kennungen über der Karte – für ADS-B und AIS.
-struct TargetCanvas<Target: MapTarget>: View {
-    let planes: [Target]
-    let showTrails: Bool
-    let selection: Target.ID?
-    let viewport: MapViewport
-
-    var body: some View {
-        let rect = viewport.rect
-        Canvas(rendersAsynchronously: false) { context, size in
-            guard rect.width > 0, rect.height > 0 else { return }
-            func point(_ c: CLLocationCoordinate2D) -> CGPoint { MapViewport.point(c, rect: rect, size: size) }
-            let visible = CGRect(origin: .zero, size: size).insetBy(dx: -40, dy: -40)
-
-            if showTrails {
-                for plane in planes where plane.trail.count > 1 {
-                    var path = Path()
-                    var last = CGPoint(x: CGFloat.infinity, y: CGFloat.infinity)
-                    var anyVisible = false
-                    for (i, c) in plane.trail.enumerated() {
-                        let p = point(c)
-                        // Punkte unter 1,5 Pt Abstand bringen nichts, kosten aber Zeichenzeit.
-                        if i > 0, i < plane.trail.count - 1, abs(p.x - last.x) + abs(p.y - last.y) < 1.5 { continue }
-                        if visible.contains(p) { anyVisible = true }
-                        if i == 0 { path.move(to: p) } else { path.addLine(to: p) }
-                        last = p
-                    }
-                    guard anyVisible else { continue }
-                    let selected = plane.id == selection
-                    context.stroke(path, with: .color(selected ? .orange : .accentColor.opacity(0.5)),
-                                   lineWidth: selected ? 3 : 1.5)
-                }
+extension MapFeature {
+    /// Spuren, Symbole und Kennungen für ADS-B und AIS. Kennung und Auswahlwert
+    /// sind `prefix` + Ziel-ID; die Spur heißt `…/trail`.
+    @MainActor
+    static func targets<Target: MapTarget>(_ targets: [Target], showTrails: Bool, selection: Target.ID?,
+                                           prefix: String) -> [MapFeature] {
+        let accent = MapColor.accent
+        var trails: [MapFeature] = []
+        var symbols: [MapFeature] = []
+        trails.reserveCapacity(targets.count)
+        symbols.reserveCapacity(targets.count)
+        for target in targets {
+            let selected = target.id == selection
+            let key = "\(prefix)\(target.id)"
+            if showTrails, target.trail.count > 1 {
+                trails.append(.line("\(key)/trail", target.trail, color: selected ? MapColor.selected : accent,
+                                    width: selected ? 3 : 1.5, opacity: selected ? 1 : 0.5, selected: selected))
             }
-
-            var symbols: [String: GraphicsContext.ResolvedImage] = [:]
-            var labelBoxes: [CGRect] = []
-            var selectedPlane: (Target, CGPoint)?
-            func draw(_ plane: Target, at p: CGPoint, selected: Bool) {
-                let color: Color = selected ? .orange : plane.stale ? .secondary : .accentColor
-                let side: CGFloat = plane.symbolSize + (selected ? 4 : 0)
-                var image = symbols[plane.symbolName]
-                    ?? context.resolve(Image(systemName: plane.symbolName).renderingMode(.template))
-                symbols[plane.symbolName] = image
-                image.shading = .color(color)
-                context.drawLayer { layer in
-                    layer.translateBy(x: p.x, y: p.y)
-                    if let heading = plane.heading { layer.rotate(by: .degrees(heading - plane.symbolDirection)) }
-                    layer.draw(image, in: CGRect(x: -side / 2, y: -side / 2, width: side, height: side))
-                }
-                // Kennung darunter – nur, wo sie keine andere überdeckt.
-                var text = context.resolve(Text(plane.label).font(.caption2.weight(selected ? .semibold : .regular)))
-                text.shading = .color(plane.stale && !selected ? .secondary : .primary)
-                let measured = text.measure(in: CGSize(width: 200, height: 40))
-                let box = CGRect(x: p.x - measured.width / 2 - 2, y: p.y + 10,
-                                 width: measured.width + 4, height: measured.height + 1)
-                guard selected || !labelBoxes.contains(where: { $0.intersects(box) }) else { return }
-                labelBoxes.append(box)
-                context.fill(Path(roundedRect: box, cornerRadius: 3), with: .color(.labelBackground))
-                context.draw(text, at: CGPoint(x: box.midX, y: box.midY))
-            }
-            for plane in planes {
-                let p = point(plane.coordinate)
-                guard visible.contains(p) else { continue }
-                if plane.id == selection { selectedPlane = (plane, p); continue }
-                draw(plane, at: p, selected: false)
-            }
-            if let (plane, p) = selectedPlane { draw(plane, at: p, selected: true) }
+            var marker = MapFeature.marker(key, at: target.coordinate, symbol: target.symbol,
+                                           color: selected ? MapColor.selected : target.stale ? MapColor.stale : accent,
+                                           size: target.symbolSize, rotation: target.heading, label: target.label,
+                                           selected: selected, select: key)
+            if target.stale && !selected { marker.dimLabel = true }
+            symbols.append(marker)
         }
-        .allowsHitTesting(false)
-    }
-}
-
-/// Flugplätze über der Karte, dezent unter den Flugzeugen. Je Art ein eigenes
-/// Zeichen (Anklang an Luftfahrtkarten: Kreis = Flugplatz, „H“ = Hubschrauber);
-/// Kennungen nur, wo Platz ist – große Plätze zuerst, kleine erst nah heran.
-/// Höchstens `AirportFilter.defaultLimit` Plätze, nach Wichtigkeit.
-struct AirportCanvas: View, Equatable {
-    let viewport: MapViewport
-    let selected: Airport.ID?
-
-    nonisolated static func == (a: AirportCanvas, b: AirportCanvas) -> Bool {
-        a.viewport === b.viewport && a.selected == b.selected
+        return trails + symbols
     }
 
-    var body: some View {
-        let rect = viewport.rect
-        let airports = AirportDatabase.shared.airports
-        let selected = selected
-        Canvas(rendersAsynchronously: false) { context, size in
-            guard !airports.isEmpty, let bounds = AirportFilter.Bounds(mapRect: rect) else { return }
-            let visible = AirportFilter.visible(airports, in: bounds)
-            let labelSmall = bounds.latSpan <= 1.5
-            let tint = Color.indigo
-            var labelBoxes: [CGRect] = []
-            var heli = context.resolve(Text(verbatim: "H").font(.system(size: 7, weight: .bold)))
-            heli.shading = .color(tint)
-            let points = visible.map { ($0, MapViewport.point($0.coordinate, rect: rect, size: size)) }
-            // Rückwärts zeichnen: die wichtigsten liegen oben.
-            for (airport, p) in points.reversed() {
-                let isSelected = airport.id == selected
-                let color: Color = isSelected ? .orange : tint
-                switch airport.kind {
-                case .large, .medium:
-                    let d: CGFloat = airport.kind == .large ? 10 : 7
-                    let circle = Path(ellipseIn: CGRect(x: p.x - d / 2, y: p.y - d / 2, width: d, height: d))
-                    context.fill(circle, with: .color(color.opacity(0.85)))
-                    context.stroke(circle, with: .color(.white.opacity(0.9)), lineWidth: 1.2)
-                case .small, .seaplane:
-                    let d: CGFloat = 6
-                    let ring: Color = airport.kind == .seaplane && !isSelected ? .teal : color
-                    let circle = Path(ellipseIn: CGRect(x: p.x - d / 2, y: p.y - d / 2, width: d, height: d))
-                    context.fill(circle, with: .color(.white.opacity(0.6)))
-                    context.stroke(circle, with: .color(ring.opacity(0.8)), lineWidth: 1.5)
-                case .heliport:
-                    let d: CGFloat = 10
-                    let circle = Path(ellipseIn: CGRect(x: p.x - d / 2, y: p.y - d / 2, width: d, height: d))
-                    context.fill(circle, with: .color(.white.opacity(0.7)))
-                    context.stroke(circle, with: .color(color.opacity(0.7)), lineWidth: 1)
-                    context.draw(heli, at: p)
-                }
+    /// Flugplätze als dezente Zeichen unter den Zielen (Anklang an Luftfahrtkarten:
+    /// Kreis = Flugplatz, „H“ = Hubschrauber). Kennungen großer und mittlerer
+    /// Plätze immer, kleiner nur nah heran (`labelAll`); die Liste ist nach
+    /// Wichtigkeit sortiert, die ersten setzen sich bei Überlappung durch.
+    static func airports(_ airports: [Airport], selected: Airport.ID?, labelAll: Bool) -> [MapFeature] {
+        airports.enumerated().map { index, airport in
+            let isSelected = airport.id == selected
+            let symbol: MapSymbol
+            let size: Double
+            var color = isSelected ? MapColor.selected : MapColor.indigo
+            switch airport.kind {
+            case .large: symbol = .apFilled; size = 13
+            case .medium: symbol = .apFilled; size = 9
+            case .small: symbol = .apRing; size = 7
+            case .seaplane: symbol = .apRing; size = 7; if !isSelected { color = MapColor.teal }
+            case .heliport: symbol = .apHeli; size = 11
             }
-            // Kennungen rechts neben dem Zeichen (unter den Flugzeugen stehen deren Kennungen).
-            for (airport, p) in points {
-                let isSelected = airport.id == selected
-                guard isSelected || airport.kind == .large || airport.kind == .medium || labelSmall else { continue }
-                var text = context.resolve(Text(verbatim: airport.code)
-                    .font(.system(size: 9, weight: airport.kind == .large ? .semibold : .regular)))
-                text.shading = .color(isSelected ? .primary : .secondary)
-                let measured = text.measure(in: CGSize(width: 120, height: 30))
-                let box = CGRect(x: p.x + 7, y: p.y - measured.height / 2 - 0.5,
-                                 width: measured.width + 4, height: measured.height + 1)
-                guard isSelected || !labelBoxes.contains(where: { $0.intersects(box) }) else { continue }
-                labelBoxes.append(box)
-                context.fill(Path(roundedRect: box, cornerRadius: 3), with: .color(.labelBackground))
-                context.draw(text, at: CGPoint(x: box.midX, y: box.midY))
-            }
+            let showLabel = isSelected || airport.kind == .large || airport.kind == .medium || labelAll
+            var f = MapFeature.marker("ap:\(airport.id)", at: airport.coordinate, symbol: symbol, color: color, size: size,
+                                      label: showLabel ? airport.code : nil, select: "ap:\(airport.id)", layer: .ground)
+            f.labelPosition = "right"
+            f.labelStyle = "small"
+            f.dimLabel = !isSelected
+            f.labelPriority = -index
+            f.fit = false
+            if isSelected { f.emphasis = true; f.z = 1000 }
+            return f
         }
-        .allowsHitTesting(false)
     }
 }
 
 /// Kleine Infokarte zum angeklickten Flugplatz (Name, Art, Kennungen, Höhe).
 struct AirportInfoCard: View {
     let airport: Airport
-    let viewport: MapViewport
+    let controller: MapController
     let onClose: () -> Void
 
     private let width: CGFloat = 220
     @State private var height: CGFloat = 100
 
     var body: some View {
-        let rect = viewport.rect
         GeometryReader { geo in
             let size = geo.size
-            if rect.width > 0 {
-                let p = MapViewport.point(airport.coordinate, rect: rect, size: size)
+            if let view = controller.viewport {
+                let p = view.point(airport.coordinate)
                 let gap: CGFloat = 14, margin: CGFloat = 8
                 let x = p.x + gap + width + 20 + margin <= size.width ? p.x + gap : max(margin, p.x - gap - width - 20)
                 let y = min(max(p.y - gap, margin), max(margin, size.height - height - margin))
@@ -795,12 +630,6 @@ struct AirportInfoCard: View {
     }
 }
 
-extension Color {
-    /// Halbdurchsichtiger Hintergrund hinter den Kennungen, hell wie dunkel.
-    static let labelBackground = Color(nsColor: .windowBackgroundColor).opacity(0.75)
-}
-
-
 /// Steckbrief des ausgewählten Flugzeugs – vergleichbar, damit die Karte
 /// nur bei Änderungen neu baut.
 struct SelectedAircraftInfo: Equatable {
@@ -823,19 +652,17 @@ struct SelectedAircraftInfo: Equatable {
 /// weicht an den Rändern auf die andere Seite aus.
 struct AircraftInfoCard: View {
     let info: SelectedAircraftInfo
-    let viewport: MapViewport
+    let controller: MapController
     let onClose: () -> Void
 
     private let width: CGFloat = 230
     @State private var height: CGFloat = 200
 
     var body: some View {
-        let rect = viewport.rect
         GeometryReader { geo in
             let size = geo.size
-            if rect.width > 0 {
-                let p = MapViewport.point(CLLocationCoordinate2D(latitude: info.latitude, longitude: info.longitude),
-                                          rect: rect, size: size)
+            if let view = controller.viewport {
+                let p = view.point(CLLocationCoordinate2D(latitude: info.latitude, longitude: info.longitude))
                 let gap: CGFloat = 18, margin: CGFloat = 8
                 let x = p.x + gap + width + margin <= size.width ? p.x + gap
                     : max(margin, p.x - gap - width)
@@ -867,75 +694,6 @@ struct AircraftInfoCard: View {
             onClose: onClose)
     }
 }
-
-extension View {
-    /// Mausrad zoomt die Karte (siehe `MapScrollZoom`). Auf eine `Map` mit
-    /// Kamera-Bindung anwenden; `apply` setzt die neue Region. Der Monitor hängt an
-    /// einer unsichtbaren Ansicht hinter der Karte (`ScrollWheelArea`): nur Ereignisse
-    /// aus diesem Fenster und über der Karte zählen, und er verschwindet mit ihr.
-    func scrollWheelZoom(_ zoom: MapScrollZoom, apply: @escaping (MKCoordinateRegion) -> Void) -> some View {
-        MapReader { proxy in
-            self
-                .onMapCameraChange(frequency: .continuous) { zoom.region = $0.region }
-                .onContinuousHover { phase in
-                    if case .active(let point) = phase { zoom.cursor = point } else { zoom.cursor = nil }
-                }
-                .background(ScrollWheelArea(onRemove: { zoom.reset() }) { event in
-                    zoom.handle(event, convert: { proxy.convert($0, from: .local) }, apply: apply)
-                })
-                .onDisappear { zoom.reset() }
-        }
-    }
-}
-
-/// Zoomt die Karte mit dem Mausrad, und zwar um den Punkt unter dem Zeiger –
-/// MapKit verschiebt bei Mausrad sonst nur die Karte.
-@MainActor
-final class MapScrollZoom {
-    var region: MKCoordinateRegion?
-    /// Hover-Zustand über der Karte; `nil`, sobald der Zeiger sie verlässt oder sie verschwindet.
-    var cursor: CGPoint?
-
-    /// Hover zurücksetzen – beim Entfernen der Karte, sonst bliebe er stehen.
-    func reset() { cursor = nil }
-
-    /// Magic Mouse und Trackpad liefern beim Wischen fast immer auch einen
-    /// seitlichen Anteil. Der ging früher an MapKit, und die Karte schob hin und
-    /// her statt zu zoomen (Fund 28.10.2026). Über der Karte wird jedes
-    /// Scroll-Ereignis verbraucht; gezoomt wird nur mit dem senkrechten Anteil,
-    /// verschoben wird durch Ziehen. Liefert `true`, wenn das Ereignis verbraucht wurde.
-    func handle(_ event: ScrollWheelArea.Event, convert: (CGPoint) -> CLLocationCoordinate2D?,
-                apply: (MKCoordinateRegion) -> Void) -> Bool {
-        guard cursor != nil, let region else { return false }
-        guard let next = Self.zoomed(region, dx: event.dx, dy: event.dy, precise: event.precise,
-                                     anchor: convert(event.location) ?? region.center)
-        else { return true }
-        self.region = next
-        apply(next)
-        return true
-    }
-
-    /// Neue Region nach einem Mausrad-Schritt; `nil`, wenn sich nichts ändert.
-    nonisolated static func zoomed(_ region: MKCoordinateRegion, dx: Double, dy: Double, precise: Bool,
-                                   anchor: CLLocationCoordinate2D) -> MKCoordinateRegion? {
-        // Überwiegend seitlich: verbrauchen, aber nicht zoomen.
-        guard dy != 0, abs(dy) >= abs(dx) else { return nil }
-        let delta = dy
-        // Rastendes Mausrad liefert Zeilen, Trackpad/Magic Mouse Punkte.
-        let factor = exp(-delta * (precise ? 0.01 : 0.15))
-        let latDelta = min(max(region.span.latitudeDelta * factor, 0.002), 120)
-        let applied = latDelta / region.span.latitudeDelta
-        guard applied != 1 else { return nil }
-        let lonDelta = min(region.span.longitudeDelta * applied, 300)
-        // Punkt unter dem Zeiger bleibt stehen.
-        let center = CLLocationCoordinate2D(
-            latitude: anchor.latitude + (region.center.latitude - anchor.latitude) * applied,
-            longitude: anchor.longitude + (region.center.longitude - anchor.longitude) * applied)
-        return MKCoordinateRegion(center: center,
-                                  span: MKCoordinateSpan(latitudeDelta: latDelta, longitudeDelta: lonDelta))
-    }
-}
-
 
 /// Verweis auf den eigenen Standort in den Einstellungen – ersetzt die
 /// Standortfelder, die früher auf mehreren Seiten standen.

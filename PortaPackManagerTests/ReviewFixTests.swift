@@ -25,13 +25,11 @@ struct ReviewFixTests {
         #expect(step.next(.init(lna: 8, vga: 20, amplifier: false), levels: clipped, clipTicks: 3, raiseAllowed: false) != nil)
     }
 
-    @Test("Fernzugriff: Schlüsselvergleich")
+    @Test("Fernzugriff: Vergleich in konstanter Zeit")
     func token() {
-        #expect(RemoteHub.matches("abc123def456", "abc123def456"))
-        #expect(!RemoteHub.matches("abc123def457", "abc123def456"))
-        #expect(!RemoteHub.matches("abc", "abc123def456"))
-        #expect(!RemoteHub.matches(nil, "abc123def456"))
-        #expect(!RemoteHub.matches("", ""))
+        #expect(RemoteAccountBook.constantTimeEqual(Data("abc123def456".utf8), Data("abc123def456".utf8)))
+        #expect(!RemoteAccountBook.constantTimeEqual(Data("abc123def457".utf8), Data("abc123def456".utf8)))
+        #expect(!RemoteAccountBook.constantTimeEqual(Data("abc".utf8), Data("abc123def456".utf8)))
     }
 
     @Test("CSV: Funkfelder gequotet, Formeln entschärft")

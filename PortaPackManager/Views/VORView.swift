@@ -1,4 +1,4 @@
-import MapKit
+import CoreLocation
 import SwiftUI
 
 /// Funkfeuer (VOR): Radial messen, Kennung lesen, Kreuzpeilung auf der Karte.
@@ -8,8 +8,7 @@ struct VORView: View {
     @Bindable private var model = ReceiverStore.shared.vor
     @State private var database = NavaidDatabase.shared
     @State private var selection: Navaid.ID?
-    @State private var camera: MapCameraPosition = .automatic
-    @State private var scrollZoom = MapScrollZoom()
+    @State private var mapController = MapController()
     @AppStorage("homeLat") private var homeLat = 0.0
     @AppStorage("homeLon") private var homeLon = 0.0
 
@@ -59,37 +58,42 @@ struct VORView: View {
 
     // MARK: - Karte
 
+    private func mapFeatures(fix: VORFix?) -> [MapFeature] {
+        var list: [MapFeature] = []
+        if let home { list.append(.home(home, color: MapColor.blue)) }
+        for item in nearby {
+            let current = model.station?.id == item.navaid.id
+            var f = MapFeature.marker("nav:\(item.navaid.id)",
+                                      at: CLLocationCoordinate2D(latitude: item.navaid.latitude, longitude: item.navaid.longitude),
+                                      symbol: .hexagon, color: current ? MapColor.selected : MapColor.indigo,
+                                      size: current ? 20 : 12, label: item.navaid.ident, select: "nav:\(item.navaid.id)")
+            if current { f.emphasis = true; f.z = 1000 }
+            list.append(f)
+        }
+        for (k, bearing) in model.bearings.prefix(2).enumerated() {
+            list.append(.line("radial:\(k)", radialLine(bearing.navaid, trueRadial: bearing.trueRadial),
+                              color: k == 0 ? MapColor.selected : MapColor.purple, width: 2.5))
+        }
+        if let station = model.station, let radial = model.radial,
+           !model.bearings.contains(where: { $0.id == station.id }) {
+            list.append(.line("radial:live", radialLine(station, trueRadial: station.trueRadial(radial)),
+                              color: MapColor.selected, width: 2, opacity: 0.5, dash: [6, 4]))
+        }
+        if let fix {
+            list.append(.marker("fix", at: CLLocationCoordinate2D(latitude: fix.latitude, longitude: fix.longitude),
+                                symbol: .scope, color: MapColor.red, size: 24, label: String(localized: "Kreuzpeilung"), layer: .top))
+        }
+        return list
+    }
+
     private var map: some View {
         let fix = model.fix(homeLat: home?.latitude, homeLon: home?.longitude)
-        return Map(position: $camera) {
-            if let home {
-                Marker("Standort", systemImage: "house.fill", coordinate: home).tint(.blue)
-            }
-            ForEach(nearby, id: \.navaid.id) { item in
-                Annotation(item.navaid.ident, coordinate: CLLocationCoordinate2D(latitude: item.navaid.latitude, longitude: item.navaid.longitude)) {
-                    Image(systemName: "hexagon.fill")
-                        .font(model.station?.id == item.navaid.id ? .title3 : .caption)
-                        .foregroundStyle(model.station?.id == item.navaid.id ? .orange : .indigo)
-                        .onTapGesture { select(item.navaid) }
-                }
-            }
-            ForEach(Array(model.bearings.prefix(2).enumerated()), id: \.element.id) { k, bearing in
-                MapPolyline(coordinates: radialLine(bearing.navaid, trueRadial: bearing.trueRadial))
-                    .stroke(k == 0 ? Color.orange : Color.purple, lineWidth: 2.5)
-            }
-            if let station = model.station, let radial = model.radial,
-               !model.bearings.contains(where: { $0.id == station.id }) {
-                MapPolyline(coordinates: radialLine(station, trueRadial: station.trueRadial(radial)))
-                    .stroke(.orange.opacity(0.5), style: StrokeStyle(lineWidth: 2, dash: [6, 4]))
-            }
-            if let fix {
-                Annotation("Kreuzpeilung", coordinate: CLLocationCoordinate2D(latitude: fix.latitude, longitude: fix.longitude)) {
-                    Image(systemName: "scope").font(.title2).foregroundStyle(.red)
-                }
-            }
-        }
-        .mapStyle(.standard(elevation: .flat))
-        .scrollWheelZoom(scrollZoom) { camera = .region($0) }
+        return LeafletMap(features: mapFeatures(fix: fix), controller: mapController,
+                          options: MapOptions(fitMaxZoom: 11, center: home.map(MapPoint.init) ?? MapPoint(51, 10), zoom: home == nil ? 5 : 8),
+                          onSelect: { key in
+                              guard let key, key.hasPrefix("nav:") else { return }
+                              if let navaid = nearby.first(where: { "nav:\($0.navaid.id)" == key })?.navaid { select(navaid) }
+                          })
         .overlay(alignment: .topLeading) {
             if let fix {
                 VStack(alignment: .leading, spacing: 2) {
@@ -105,6 +109,12 @@ struct VORView: View {
                 .padding(8)
                 .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8))
                 .padding(10)
+            }
+        }
+        .overlay(alignment: .bottomLeading) {
+            if !mapController.following, !nearby.isEmpty {
+                Button("Alle Funkfeuer zeigen", systemImage: "scope") { mapController.showAll() }
+                    .padding(10)
             }
         }
     }

@@ -8,6 +8,10 @@ struct SondeHistoryView: View {
     @AppStorage("sondeHistoryChart") private var chart: Kind = .altitude
     /// Messpunkt unter dem Mauszeiger (Infobox im Diagramm).
     @State private var hovered: SondeSample?
+    /// Diagramm unter dem Mauszeiger – nur dort steht die Infobox. Temperatur und
+    /// Feuchte liegen übereinander und teilen `hovered`; zeichneten beide ihre Box,
+    /// ragte die untere ins obere Diagramm (zwei Kästen übereinander, Fund 30.10.2026).
+    @State private var hoveredChart: String?
 
     enum Kind: String, CaseIterable, Identifiable {
         case altitude, climb, weather, profile
@@ -111,10 +115,10 @@ struct SondeHistoryView: View {
                     LineMark(x: .value("Zeit", s.date), y: .value("Höhe (km)", s.altitude! / 1000))
                         .foregroundStyle(.blue)
                 }
-                timeRule
+                timeRule("altitude")
             }
             .chartYAxisLabel("km")
-            .chartOverlay { timeHover($0, data) }
+            .chartOverlay { timeHover($0, data, chart: "altitude") }
         }
     }
 
@@ -127,10 +131,10 @@ struct SondeHistoryView: View {
                     LineMark(x: .value("Zeit", s.date), y: .value("Steigen", s.verticalSpeed!))
                         .foregroundStyle(.green)
                 }
-                timeRule
+                timeRule("climb")
             }
             .chartYAxisLabel("m/s")
-            .chartOverlay { timeHover($0, data) }
+            .chartOverlay { timeHover($0, data, chart: "climb") }
         }
     }
 
@@ -146,20 +150,20 @@ struct SondeHistoryView: View {
                         LineMark(x: .value("Zeit", s.date), y: .value("Temperatur", s.temperature!))
                             .foregroundStyle(.red)
                     }
-                    timeRule
+                    timeRule("temperature")
                 }
                 .chartYAxisLabel("°C")
-                .chartOverlay { timeHover($0, temperature) }
+                .chartOverlay { timeHover($0, temperature, chart: "temperature") }
                 Chart {
                     ForEach(humidity, id: \.date) { s in
                         LineMark(x: .value("Zeit", s.date), y: .value("Feuchte", s.humidity!))
                             .foregroundStyle(.teal)
                     }
-                    timeRule
+                    timeRule("humidity")
                 }
                 .chartYAxisLabel("% rel. Feuchte")
                 .chartYScale(domain: 0...100)
-                .chartOverlay { timeHover($0, humidity) }
+                .chartOverlay { timeHover($0, humidity, chart: "humidity") }
             }
         }
     }
@@ -185,23 +189,23 @@ struct SondeHistoryView: View {
                             .symbolSize(6)
                             .foregroundStyle(.red)
                     }
-                    altitudeRule
+                    altitudeRule("profileTemperature")
                 }
                 .chartXAxisLabel("Temperatur (°C)")
                 .chartYAxisLabel("km")
-                .chartOverlay { altitudeHover($0, temperature) }
+                .chartOverlay { altitudeHover($0, temperature, chart: "profileTemperature") }
                 Chart {
                     ForEach(humidity, id: \.date) { s in
                         PointMark(x: .value("Feuchte", s.humidity!), y: .value("Höhe", s.altitude! / 1000))
                             .symbolSize(6)
                             .foregroundStyle(.teal)
                     }
-                    altitudeRule
+                    altitudeRule("profileHumidity")
                 }
                 .chartXAxisLabel("Feuchte (%)")
                 .chartXScale(domain: 0...100)
                 .chartYAxisLabel("km")
-                .chartOverlay { altitudeHover($0, humidity) }
+                .chartOverlay { altitudeHover($0, humidity, chart: "profileHumidity") }
             }
         }
     }
@@ -209,47 +213,56 @@ struct SondeHistoryView: View {
     // MARK: Infobox am Mauszeiger
 
     /// Senkrechte Linie samt Infobox am Messpunkt unter dem Mauszeiger.
-    @ChartContentBuilder private var timeRule: some ChartContent {
+    /// Die Linie steht in allen Diagrammen, die Box nur in `chart` unter dem Mauszeiger.
+    @ChartContentBuilder private func timeRule(_ chart: String) -> some ChartContent {
         if let s = hovered {
             RuleMark(x: .value("Zeit", s.date))
                 .foregroundStyle(.secondary.opacity(0.6))
                 .annotation(position: .top, spacing: 0, overflowResolution: .init(x: .fit(to: .chart), y: .disabled)) {
-                    SampleInfo(sample: s)
+                    if hoveredChart == chart { SampleInfo(sample: s) }
                 }
         }
     }
 
     /// Waagerechte Linie samt Infobox in der Höhe unter dem Mauszeiger (Profil).
-    @ChartContentBuilder private var altitudeRule: some ChartContent {
+    @ChartContentBuilder private func altitudeRule(_ chart: String) -> some ChartContent {
         if let s = hovered, let altitude = s.altitude {
             RuleMark(y: .value("Höhe", altitude / 1000))
                 .foregroundStyle(.secondary.opacity(0.6))
                 .annotation(position: .top, alignment: .leading, spacing: 2,
                             overflowResolution: .init(x: .fit(to: .chart), y: .fit(to: .chart))) {
-                    SampleInfo(sample: s)
+                    if hoveredChart == chart { SampleInfo(sample: s) }
                 }
         }
     }
 
     /// Nächster Messpunkt zur Zeit unter dem Mauszeiger.
-    private func timeHover(_ proxy: ChartProxy, _ data: [SondeSample]) -> some View {
+    private func timeHover(_ proxy: ChartProxy, _ data: [SondeSample], chart: String) -> some View {
         GeometryReader { geo in
             Rectangle().fill(.clear).contentShape(Rectangle())
                 .onContinuousHover { phase in
                     guard case .active(let point) = phase, let frame = proxy.plotFrame,
-                          let date: Date = proxy.value(atX: point.x - geo[frame].origin.x) else { hovered = nil; return }
+                          let date: Date = proxy.value(atX: point.x - geo[frame].origin.x) else {
+                        if hoveredChart == chart { hovered = nil; hoveredChart = nil }
+                        return
+                    }
+                    hoveredChart = chart
                     hovered = data.min { abs($0.date.timeIntervalSince(date)) < abs($1.date.timeIntervalSince(date)) }
                 }
         }
     }
 
     /// Nächster Messpunkt zur Höhe unter dem Mauszeiger.
-    private func altitudeHover(_ proxy: ChartProxy, _ data: [SondeSample]) -> some View {
+    private func altitudeHover(_ proxy: ChartProxy, _ data: [SondeSample], chart: String) -> some View {
         GeometryReader { geo in
             Rectangle().fill(.clear).contentShape(Rectangle())
                 .onContinuousHover { phase in
                     guard case .active(let point) = phase, let frame = proxy.plotFrame,
-                          let km: Double = proxy.value(atY: point.y - geo[frame].origin.y) else { hovered = nil; return }
+                          let km: Double = proxy.value(atY: point.y - geo[frame].origin.y) else {
+                        if hoveredChart == chart { hovered = nil; hoveredChart = nil }
+                        return
+                    }
+                    hoveredChart = chart
                     hovered = data.min { abs(($0.altitude ?? 0) / 1000 - km) < abs(($1.altitude ?? 0) / 1000 - km) }
                 }
         }

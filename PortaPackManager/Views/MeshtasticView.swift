@@ -1,4 +1,4 @@
-import MapKit
+import CoreLocation
 import SwiftUI
 
 struct MeshtasticView: View {
@@ -10,8 +10,7 @@ struct MeshtasticView: View {
     @State private var nodeOrder: [ColumnSort<MeshtasticNode>] = []
     @State private var lineOrder: [ColumnSort<MeshtasticLogLine>] = []
     @State private var textOnly = false
-    @State private var camera: MapCameraPosition = .automatic
-    @State private var scrollZoom = MapScrollZoom()
+    @State private var mapController = MapController()
     @AppStorage("homeLat") private var homeLat = 0.0
     @AppStorage("homeLon") private var homeLon = 0.0
 
@@ -25,17 +24,22 @@ struct MeshtasticView: View {
         } else {
             ControlsSplit(width: 290, issue: model.error) {
                 VSplitView {
-                    HSplitView {
-                        nodeTable.frame(minWidth: 380)
-                        map.frame(minWidth: 260)
+                    HStack(spacing: 0) {
+                        nodeTable.frame(minWidth: 340, maxWidth: .infinity, maxHeight: .infinity)
+                        Divider()
+                        map.frame(minWidth: 300, maxWidth: .infinity, maxHeight: .infinity)
                     }
                     .frame(minHeight: 220)
-                    HSplitView {
-                        logTable.frame(minWidth: 380)
-                        detail.frame(minWidth: 260, idealWidth: 320)
+                    HStack(spacing: 0) {
+                        logTable.frame(minWidth: 340, maxWidth: .infinity, maxHeight: .infinity)
+                        Divider()
+                        detail.frame(width: 300).frame(maxHeight: .infinity)
                     }
                     .frame(minHeight: 200)
                 }
+                // Kein HSplitView im VSplitView: das ließ AppKit die Constraints endlos
+                // neu rechnen (Absturz beim Öffnen, 30.10.2026 – wie Smart Home 28.10.).
+                // Innen 340 + Trenner 1 + 300 = 641 < 660 außen.
                 .frame(minWidth: 660)
             } controls: {
                 controls
@@ -99,32 +103,27 @@ struct MeshtasticView: View {
     private func center(on id: MeshtasticNode.ID?) {
         guard let id, let node = model.nodes.first(where: { $0.id == id }),
               let lat = node.latitude, let lon = node.longitude else { return }
-        let span = scrollZoom.region?.span ?? MKCoordinateSpan(latitudeDelta: 0.5, longitudeDelta: 0.5)
-        let region = MKCoordinateRegion(center: CLLocationCoordinate2D(latitude: lat, longitude: lon), span: span)
-        scrollZoom.region = region
-        withAnimation(.easeInOut(duration: 0.4)) { camera = .region(region) }
+        mapController.center(on: CLLocationCoordinate2D(latitude: lat, longitude: lon))
+    }
+
+    private var mapFeatures: [MapFeature] {
+        let accent = MapColor.accent
+        var list: [MapFeature] = []
+        if let home { list.append(.home(home)) }
+        for node in positioned {
+            let selected = selectedNode == node.id
+            let stale = Date().timeIntervalSince(node.lastSeen) > 3600
+            list.append(.marker("node:\(node.id)", at: CLLocationCoordinate2D(latitude: node.latitude!, longitude: node.longitude!),
+                                symbol: .antenna, color: selected ? MapColor.selected : stale ? MapColor.stale : accent,
+                                size: 20, label: node.shortName ?? node.idString, selected: selected, select: String(node.id)))
+        }
+        return list
     }
 
     private var map: some View {
-        MapReader { proxy in
-            Map(position: $camera, selection: $selectedNode) {
-                if let home {
-                    Marker("Standort", systemImage: "house.fill", coordinate: home).tint(.brown)
-                }
-                ForEach(positioned) { node in
-                    Annotation(node.shortName ?? node.idString,
-                               coordinate: CLLocationCoordinate2D(latitude: node.latitude!, longitude: node.longitude!)) {
-                        Image(systemName: "dot.radiowaves.left.and.right")
-                            .font(.title3)
-                            .foregroundStyle(selectedNode == node.id ? Color.orange
-                                             : Date().timeIntervalSince(node.lastSeen) > 3600 ? Color.secondary : Color.accentColor)
-                    }
-                    .tag(node.id)
-                }
-            }
-            .mapStyle(.standard(elevation: .flat, pointsOfInterest: .excludingAll))
-            .mapControls { MapZoomStepper(); MapCompass(); MapScaleView() }
-            .scrollWheelZoom(scrollZoom) { camera = .region($0) }
+        LeafletMap(features: mapFeatures, controller: mapController,
+                   options: MapOptions(center: home.map(MapPoint.init) ?? MapPoint(51, 10), zoom: home == nil ? 5 : 9),
+                   onSelect: { key in selectedNode = key.flatMap { UInt32($0) } })
             .overlay(alignment: .topLeading) {
                 if positioned.isEmpty {
                     Text(model.running ? "Noch keine Position empfangen" : "Mit „Start“ beginnt der Empfang.")
@@ -133,7 +132,12 @@ struct MeshtasticView: View {
                         .padding(10)
                 }
             }
-        }
+            .overlay(alignment: .bottomLeading) {
+                if !mapController.following, !positioned.isEmpty {
+                    Button("Alle Knoten zeigen", systemImage: "scope") { mapController.showAll() }
+                        .padding(10)
+                }
+            }
     }
 
     // MARK: - Pakete

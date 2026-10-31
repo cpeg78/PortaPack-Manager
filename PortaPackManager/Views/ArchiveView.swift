@@ -1,5 +1,5 @@
 import AppKit
-import MapKit
+import CoreLocation
 import SwiftUI
 
 /// Archiv der Sichtungen (Flugzeuge oder Schiffe) je Tag: Tabelle, Spur der
@@ -8,8 +8,7 @@ struct ArchiveView: View {
     let archive: TrafficArchive
     let aircraft: Bool
 
-    @State private var trackCamera: MapCameraPosition = .automatic
-    @State private var scrollZoom = MapScrollZoom()
+    @State private var mapController = MapController()
     @State private var days: [String] = []
     @State private var day = ""
     @State private var items: [ArchiveSighting] = []
@@ -198,23 +197,25 @@ struct ArchiveView: View {
     @ViewBuilder private var trackMap: some View {
         if let s = items.first(where: { $0.id == selection }), s.track.count > 0 {
             let coordinates = s.track.map { CLLocationCoordinate2D(latitude: $0[0], longitude: $0[1]) }
-            Map(position: $trackCamera) {
-                if coordinates.count > 1 {
-                    MapPolyline(coordinates: coordinates).stroke(.orange, lineWidth: 3)
-                    TrackArrowMarks(points: coordinates)
-                }
-                Marker(s.name ?? s.key, systemImage: aircraft ? "airplane" : "ferry", coordinate: coordinates.last!)
-            }
-            .mapStyle(.standard(elevation: .flat, pointsOfInterest: .excludingAll))
-            // `.id` an die Karte selbst, vor den Mausrad-Zoom: dahinter hing der
-            // Monitor je nach Reihenfolge von `onAppear`/`onDisappear` am alten Kartenleben.
-            .id(s.id)
-            .scrollWheelZoom(scrollZoom) { trackCamera = .region($0) }
-            .onChange(of: s.id, initial: true) { _, _ in trackCamera = .automatic }
+            LeafletMap(features: trackFeatures(s, coordinates), controller: mapController,
+                       options: MapOptions(fitMaxZoom: 12, center: MapPoint(coordinates.last!), zoom: 8))
+                .onChange(of: s.id, initial: true) { _, _ in mapController.showAll(animated: false) }
         } else {
             ContentUnavailableView(selection == nil ? "Eine Sichtung wählen" : "Keine Position gemeldet",
                                    systemImage: "point.topleft.down.to.point.bottomright.curvepath")
         }
+    }
+
+    private func trackFeatures(_ s: ArchiveSighting, _ coordinates: [CLLocationCoordinate2D]) -> [MapFeature] {
+        var list: [MapFeature] = []
+        if coordinates.count > 1 {
+            var line = MapFeature.line("track", coordinates, color: MapColor.selected, width: 3, arrows: true)
+            line.fit = true
+            list.append(line)
+        }
+        list.append(.badge("last", at: coordinates.last!, symbol: aircraft ? .plane : .ship, color: MapColor.red,
+                           label: s.name ?? s.key))
+        return list
     }
 
     /// Exportiert die geladenen Sichtungen (bei „Alle Tage“ alle Tage, älteste zuerst);

@@ -14,10 +14,13 @@ enum RemotePage {
     /// Zahlenformat der Texte, die der Server für die Seite fertig formatiert.
     static var locale: Locale { Locale(identifier: language == "en" ? "en_US" : "de_DE") }
 
-    /// Die ausgelieferte Seite: Schlüssel (`__K__`), Sprache (`__LANG__`) und – für
-    /// Englisch – das Wörterbuch (`__I18N__`, JSON in einem `<script type="application/json">`;
-    /// `JSONSerialization` maskiert `/`, ein `</script>` im Text kann den Block nicht schließen).
-    static func page(token: String, language: String = RemotePage.language) -> String {
+    /// Die ausgelieferte Seite: angemeldetes Konto (`__USER__`, nur `[A-Za-z0-9._-]`,
+    /// siehe `RemoteAccountBook.isValidName`), Rolle (`__ROLE__`), Sprache (`__LANG__`)
+    /// und – für Englisch – das Wörterbuch (`__I18N__`, JSON in einem
+    /// `<script type="application/json">`; `JSONSerialization` maskiert `/`, ein
+    /// `</script>` im Text kann den Block nicht schließen).
+    static func page(user: String, role: RemoteAccount.Role, language: String = RemotePage.language) -> String {
+        let user = RemoteAccountBook.isValidName(user) ? user : ""
         let lang = language == "en" ? "en" : "de"
         var dictionary = "{}"
         if lang == "en", let data = try? JSONSerialization.data(withJSONObject: RemotePageEnglish.dictionary, options: [.sortedKeys]),
@@ -27,41 +30,73 @@ enum RemotePage {
         return html
             .replacingOccurrences(of: "__I18N__", with: dictionary)
             .replacingOccurrences(of: "__LANG__", with: lang)
-            .replacingOccurrences(of: "__K__", with: token)
+            .replacingOccurrences(of: "__USER__", with: user)
+            .replacingOccurrences(of: "__ROLE__", with: role.rawValue)
     }
 
-    /// Web-App-Manifest (Android/Chrome; iOS nutzt die Meta-Tags). Die
-    /// Startadresse trägt den Schlüssel.
-    static func manifest(token: String, language: String = RemotePage.language) -> String {
+    /// Web-App-Manifest (Android/Chrome; iOS nutzt die Meta-Tags). Die Web-App
+    /// meldet sich beim ersten Start selbst an (eigene Cookies).
+    static func manifest(language: String = RemotePage.language) -> String {
         let name = language == "en" ? "PortaPack Remote Access" : "PortaPack Fernzugriff"
         return """
-        {"name":"\(name)","short_name":"PortaPack","start_url":"/?k=\(token)","scope":"/",
+        {"name":"\(name)","short_name":"PortaPack","start_url":"/","scope":"/",
          "display":"standalone","background_color":"#000000","theme_color":"#1c1c1e",
          "icons":[{"src":"/icon-180.png","sizes":"180x180","type":"image/png"},
                   {"src":"/icon-512.png","sizes":"512x512","type":"image/png","purpose":"any"}]}
         """
     }
 
-    /// Seite ohne gültigen Schlüssel (403) – in der Sprache der App.
-    static func forbidden(language: String = RemotePage.language) -> String {
-        language == "en" ? forbiddenEnglish : forbiddenGerman
+    /// Anmeldeseite (auch statt der Seite, solange niemand angemeldet ist). Ein echtes
+    /// Formular, damit iOS und Browser anbieten, das Passwort zu sichern.
+    /// `message`: Fehlertext; `noAccounts`: am Mac ist noch kein Konto angelegt.
+    static func login(language: String = RemotePage.language, message: String? = nil, name: String = "",
+                      noAccounts: Bool = false) -> String {
+        let en = language == "en"
+        let title = en ? "PortaPack Remote Access" : "PortaPack Fernzugriff"
+        let info = noAccounts
+            ? (en ? "No account has been set up yet. Create one on the Mac under <b>Remote Access ▸ Accounts</b>."
+                  : "Es ist noch kein Konto angelegt. Leg am Mac unter <b>Fernzugriff ▸ Konten</b> eines an.")
+            : (en ? "Sign in with an account created on the Mac under Remote Access."
+                  : "Melde dich mit einem Konto an, das am Mac unter Fernzugriff angelegt ist.")
+        let error = message.map { "<p class=\"err\">\(escape($0))</p>" } ?? ""
+        let form = noAccounts ? "" : """
+            <form method="post" action="/login">
+            <label>\(en ? "User name" : "Benutzername")<input name="name" autocomplete="username" autocapitalize="none" autocorrect="off" spellcheck="false" required maxlength="32" value="\(escape(name))"></label>
+            <label>\(en ? "Password" : "Passwort")<input name="password" type="password" autocomplete="current-password" required maxlength="200"></label>
+            <button type="submit">\(en ? "Sign in" : "Anmelden")</button>
+            </form>
+            """
+        return """
+        <!doctype html><html lang="\(en ? "en" : "de")"><head><meta charset="utf-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+        <meta name="apple-mobile-web-app-capable" content="yes"><meta name="mobile-web-app-capable" content="yes">
+        <meta name="apple-mobile-web-app-title" content="PortaPack"><meta name="theme-color" content="#1c1c1e">
+        <link rel="manifest" href="/manifest.webmanifest"><link rel="apple-touch-icon" href="/icon-180.png">
+        <title>PortaPack</title>
+        <style>
+        :root { color-scheme: light dark; --bg:#f2f2f7; --card:#fff; --text:#1c1c1e; --muted:#6e6e73; --line:#d1d1d6; --accent:#0a84ff; }
+        @media (prefers-color-scheme: dark) { :root { --bg:#000; --card:#1c1c1e; --text:#f2f2f7; --muted:#98989d; --line:#38383a; } }
+        body { margin:0; min-height:100vh; display:flex; align-items:center; justify-content:center; background:var(--bg); color:var(--text); font:16px -apple-system, system-ui, sans-serif; padding:16px; box-sizing:border-box; }
+        main { width:100%; max-width:360px; background:var(--card); border-radius:16px; padding:24px; box-sizing:border-box; }
+        h1 { font-size:22px; margin:0 0 8px; } p { color:var(--muted); margin:0 0 18px; line-height:1.4; }
+        label { display:block; font-size:14px; color:var(--muted); margin-bottom:14px; }
+        input { display:block; width:100%; box-sizing:border-box; margin-top:6px; padding:12px; font-size:17px; border:1px solid var(--line); border-radius:10px; background:var(--bg); color:var(--text); }
+        button { width:100%; padding:13px; font-size:17px; font-weight:600; border:0; border-radius:10px; background:var(--accent); color:#fff; cursor:pointer; margin-top:6px; }
+        .err { color:#ff3b30; }
+        </style></head><body><main>
+        <h1>\(title)</h1>
+        \(error)<p>\(info)</p>
+        \(form)
+        </main></body></html>
+        """
     }
 
-    static let forbiddenGerman = """
-    <!doctype html><html lang="de"><meta charset="utf-8"><meta name="viewport" content="width=device-width">
-    <title>PortaPack</title><body style="font:16px system-ui;padding:2em;max-width:30em">
-    <h2>Zugangsschlüssel fehlt</h2>
-    <p>Öffne die Adresse mit dem Schlüssel, wie sie in der App unter <b>Fernzugriff</b> steht
-    (…<code>/?k=…</code>), oder scanne dort den QR-Code.</p></body>
-    """
-
-    static let forbiddenEnglish = """
-    <!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width">
-    <title>PortaPack</title><body style="font:16px system-ui;padding:2em;max-width:30em">
-    <h2>Access key missing</h2>
-    <p>Open the address with the key as shown in the app under <b>Remote Access</b>
-    (…<code>/?k=…</code>), or scan the QR code there.</p></body>
-    """
+    /// HTML-Maskierung für Texte, die in die Anmeldeseite eingesetzt werden.
+    static func escape(_ text: String) -> String {
+        text.replacingOccurrences(of: "&", with: "&amp;").replacingOccurrences(of: "<", with: "&lt;")
+            .replacingOccurrences(of: ">", with: "&gt;").replacingOccurrences(of: "\"", with: "&quot;")
+            .replacingOccurrences(of: "'", with: "&#39;")
+    }
 
     static let html = #"""
     <!doctype html>
@@ -76,7 +111,7 @@ enum RemotePage {
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
     <link rel="apple-touch-icon" href="/icon-180.png">
     <link rel="icon" type="image/png" href="/icon-180.png">
-    <link rel="manifest" href="/manifest.webmanifest?k=__K__">
+    <link rel="manifest" href="/manifest.webmanifest">
     <title>PortaPack</title>
     <meta name="referrer" content="no-referrer">
     <link rel="stylesheet" href="/leaflet.css">
@@ -107,6 +142,11 @@ enum RemotePage {
     .tabs button.on small { color:#fff; }
     .iconbtn { border:0; border-radius:8px; background:var(--line); color:var(--text); width:34px; height:28px; margin-left:6px; display:inline-flex; align-items:center; justify-content:center; cursor:pointer; vertical-align:middle; padding:0; }
     .iconbtn.on { background:var(--accent); color:#fff; }
+    /* Konto unten im Menü; „Nur ansehen“ blendet Start/Stopp, Optimieren und das globale Stopp aus. */
+    .tabs .who { display:flex; align-items:center; gap:10px; border-top:1px solid var(--line); margin-top:4px; padding:10px 12px 4px; }
+    .tabs .who span { flex:1; min-width:0; color:var(--muted); font-size:14px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+    .tabs .who input { border:0; border-radius:8px; background:var(--line); color:var(--text); padding:7px 12px; font:14px -apple-system, system-ui, sans-serif; cursor:pointer; }
+    .viewer #runbar [data-run], .viewer [data-stop], .viewer [data-gain] { display:none !important; }
     .status { margin-left:auto; color:var(--muted); font-size:14px; }
     @media (max-width: 560px) {
       /* Kompakt (27.10.2026: Reiter, Statuszeile und Optimieren-Leiste nahmen der Karte zu viel Höhe). */
@@ -177,6 +217,7 @@ enum RemotePage {
     #card table { border-collapse:collapse; width:100%; margin-top:6px; }
     #card td { padding:2px 0; vertical-align:top; }
     #card td:first-child { color:var(--muted); padding-right:10px; white-space:nowrap; }
+    .sym { display:block; overflow:visible; filter:drop-shadow(0 0 1px rgba(255,255,255,.95)) drop-shadow(0 1px 1px rgba(0,0,0,.35)); }
     .lbl { font:600 11px -apple-system, system-ui; color:#000; background:rgba(255,255,255,.8); padding:0 3px; border-radius:3px; white-space:nowrap; position:absolute; top:20px; left:50%; transform:translateX(-50%); }
     .stale .lbl { color:#666; }
     #radio { flex:1; overflow:auto; padding:12px; padding-bottom:max(12px, env(safe-area-inset-bottom)); display:none; }
@@ -253,6 +294,11 @@ enum RemotePage {
     .mapbtns a.on { background:var(--accent); color:#fff; }
     .archbar { padding:8px 12px; border-bottom:1px solid var(--line); display:flex; gap:8px; align-items:center; position:sticky; top:0; background:var(--card); z-index:1; }
     .archbar select { font:inherit; flex:1; }
+    .daypick { position:relative; flex:1; min-width:0; }
+    .daypick span { display:block; text-align:center; font-weight:600; padding:4px 6px; border-radius:8px; background:var(--line); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+    .daypick input { position:absolute; inset:0; width:100%; height:100%; opacity:0; border:0; padding:0; margin:0; cursor:pointer; }
+    .archbar .iconbtn { margin-left:0; flex:none; font-size:18px; }
+    .archbar .iconbtn:disabled { opacity:.35; cursor:default; }
     .sortbar { display:flex; gap:4px; padding:6px 8px; border-bottom:1px solid var(--line); position:sticky; top:0; background:var(--card); z-index:1; }
     .sortbar button { flex:1; border:0; background:var(--bg); color:var(--text); padding:6px 4px; border-radius:7px; font:13px -apple-system, system-ui, sans-serif; cursor:pointer; }
     .sortbar button.on { background:var(--accent); color:#fff; font-weight:600; }
@@ -324,6 +370,7 @@ enum RemotePage {
         <button data-tab="smart868" title="Smart Home 868 MHz" aria-label="Smart Home 868 MHz"><svg width="24" height="20" viewBox="0 0 24 20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-3px"><path d="M3 10l9-7 9 7"/><path d="M5.5 8.5V18h13V8.5"/><path d="M10 18v-5h4v5"/></svg><small>Smart Home 868</small></button>
         <button data-tab="zigbee" title="Zigbee: Geräte und Netzkarte" aria-label="Zigbee"><svg width="24" height="20" viewBox="0 0 24 20" fill="currentColor" stroke="currentColor" stroke-width="1.8" style="vertical-align:-3px"><path d="M12 4L5 15M12 4l7 11M5 15h14" fill="none"/><circle cx="12" cy="4" r="3"/><circle cx="5" cy="15" r="3"/><circle cx="19" cy="15" r="3"/></svg><small>Zigbee</small></button>
         <button data-tab="ft8" title="FT8/WSPR" aria-label="FT8/WSPR"><svg width="24" height="20" viewBox="0 0 24 20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-3px"><circle cx="12" cy="10" r="8"/><path d="M4 10h16M12 2c3 3 3 13 0 16M12 2c-3 3-3 13 0 16"/></svg><small>FT8/WSPR</small></button>
+        <form class="who" method="post" action="/logout"><span id="whoami"></span><input type="submit" id="logoutbtn" value="Abmelden"></form>
       </nav>
       <span class="status" id="status"></span>
     </header>
@@ -394,7 +441,11 @@ enum RemotePage {
     <div id="err"></div>
     <script type="application/json" id="i18n">__I18N__</script>
     <script>
-    const K = '__K__';
+    // Angemeldetes Konto und Rolle (RemotePage.page). „view“ = nur ansehen: Der Mac
+    // lehnt jedes Umschalten ab, die Seite blendet die Bedienknöpfe aus.
+    const USER = '__USER__';
+    const ROLE = '__ROLE__' === 'view' ? 'view' : 'control';
+    if (ROLE === 'view') document.documentElement.classList.add('viewer');
     // Sprache der App, beim Ausliefern eingesetzt (RemotePage.page): Deutsch ist
     // Schlüssel und Rückfall, Englisch kommt als Wörterbuch (RemotePageEnglish).
     // t("Text mit {0}", x) setzt Platzhalter ein – Sätze immer als Ganzes übersetzen.
@@ -426,17 +477,8 @@ enum RemotePage {
         const v = el.getAttribute(a); if (v && EN[v]) el.setAttribute(a, EN[v]);
       }));
     })(document.body);
-    // Das Cookie setzt der Server beim Ausliefern der Seite (HttpOnly, SameSite=Strict) –
-    // Skripte kommen nicht daran. Schlüssel aus Adresszeile und Verlauf nehmen:
-    // geteilte Bildschirmfotos und der Browserverlauf verrieten ihn sonst. Die
-    // Web-App vom Home-Bildschirm startet über das Manifest (start_url mit Schlüssel).
-    try {
-      const here = new URL(location.href);
-      if (here.searchParams.has('k')) {
-        here.searchParams.delete('k');
-        history.replaceState(history.state, '', here.pathname + here.search + here.hash);
-      }
-    } catch (e) {}
+    // Angemeldet ist, wer das Sitzungs-Cookie hat (vom Server gesetzt, HttpOnly,
+    // SameSite=Strict) – Skripte kommen nicht daran.
     // Namen wie im Menü (Kopf „Gerade läuft: …“).
     const TITLES = { adsb: t('Flugzeuge'), ais: t('Schiffe'), dab: t('Digitalradio (DAB+)'), acars: t('Flugzeug-Datenfunk'), spectrum: t('Spektrum'), wx: t('Wetter & Satelliten'), zigbee: 'Zigbee', airband: t('Flugfunk (Sprechfunk)'),
       fm: t('Radio (UKW/AM)'), sensors: t('Funksensoren'), smart868: t('Smart Home 868'), dsc: t('Seefunk-Notruf (DSC)'), ft8: 'FT8/WSPR', occupancy: t('Belegungsmonitor') };
@@ -456,8 +498,9 @@ enum RemotePage {
     // Mac ab – ein <img> oder Formular einer anderen Seite (auch eines anderen Ports
     // derselben Adresse) kann ihn nicht setzen.
     async function api(path, params = {}) {
-      params.k = K;
       const r = await fetch(path + '?' + new URLSearchParams(params), { credentials: 'same-origin', headers: { 'X-PortaPack': '1' } });
+      // Abgemeldet (Passwort geändert, Konto gelöscht): zurück zur Anmeldung.
+      if (r.status === 401) { location.replace('/'); throw new Error(tt('Bitte neu anmelden.')); }
       if (!r.ok) throw new Error(await r.text());
       return r.json();
     }
@@ -487,23 +530,50 @@ enum RemotePage {
       if (state && state.home) pts = pts.concat([state.home]);
       if (pts.length) map.fitBounds(pts, { padding: [30, 30], maxZoom: 12 });
     }
-    // Richtungspfeile entlang einer Bahn ([[lat, lon], …]) in eine Layer-Gruppe.
-    function trackArrows(pts, color, group, limit) {
-      if (!pts || pts.length < 2) return;
-      const km = (a, b) => map.distance(L.latLng(a[0], a[1]), L.latLng(b[0], b[1])) / 1000;
-      let total = 0; for (let i = 1; i < pts.length; i++) total += km(pts[i - 1], pts[i]);
-      if (!total) return;
-      const max = limit || 20, spacing = Math.max(3, total / max);
-      let run = spacing / 2, n = 0;
-      for (let i = 1; i < pts.length && n < max; i++) {
-        const a = pts[i - 1], b = pts[i], d = km(a, b);
-        if (!d) continue;
-        run += d; if (run < spacing) continue; run = 0; n++;
-        const deg = Math.atan2((b[1] - a[1]) * Math.cos(a[0] * Math.PI / 180), b[0] - a[0]) * 180 / Math.PI;
-        L.marker([(a[0] + b[0]) / 2, (a[1] + b[1]) / 2], { interactive: false, keyboard: false,
-          icon: L.divIcon({ className: 'trkarrow', iconSize: [12, 12],
-            html: '<div style="transform:rotate(' + deg.toFixed(0) + 'deg);color:' + color + '">▲</div>' }) }).addTo(group);
+    // Richtungspfeile entlang einer Bahn ([[lat, lon], …]) in eine Layer-Gruppe der
+    // Karte `m`. Fester Abstand auf dem Bildschirm (ARROW_SPACING Pixel) wie in der
+    // Mac-App (ppm-map.js): herausgezoomt weniger, hineingezoomt mehr Pfeile – bei
+    // jedem „zoomend“ neu gesetzt (Nutzerwunsch 30.10.2026; vorher fester km-Abstand).
+    const ARROW_SPACING = 60;
+    function arrowMarks(pixels, spacing, limit) {
+      const out = [];
+      if (!pixels || pixels.length < 2 || !(spacing > 0)) return out;
+      let next = spacing / 2, walked = 0;
+      for (let i = 1; i < pixels.length && out.length < limit; i++) {
+        const a = pixels[i - 1], b = pixels[i], dx = b[0] - a[0], dy = b[1] - a[1];
+        const len = Math.sqrt(dx * dx + dy * dy);
+        if (!len) continue;
+        const angle = Math.atan2(dx, -dy) * 180 / Math.PI;
+        while (walked + len >= next && out.length < limit) {
+          const f = (next - walked) / len;
+          out.push({ x: a[0] + dx * f, y: a[1] + dy * f, angle });
+          next += spacing;
+        }
+        walked += len;
       }
+      return out;
+    }
+    function placeTrackArrows(set) {
+      set.layer.clearLayers();
+      const z = set.map.getZoom();
+      const px = set.pts.map(p => { const q = set.map.project(L.latLng(p[0], p[1]), z); return [q.x, q.y]; });
+      for (const a of arrowMarks(px, ARROW_SPACING, set.limit)) {
+        L.marker(set.map.unproject(L.point(a.x, a.y), z), { interactive: false, keyboard: false,
+          icon: L.divIcon({ className: 'trkarrow', iconSize: [12, 12],
+            html: '<div style="transform:rotate(' + a.angle.toFixed(0) + 'deg);color:' + set.color + '">▲</div>' }) }).addTo(set.layer);
+      }
+    }
+    function trackArrows(pts, color, group, limit, m) {
+      m = m || map;
+      if (!pts || pts.length < 2) return;
+      const set = { pts, color, map: m, limit: limit || 200, layer: L.layerGroup().addTo(group) };
+      placeTrackArrows(set);
+      if (!m._ppmArrows) {
+        m._ppmArrows = new Set();
+        // Bahnen, deren Gruppe nicht mehr auf der Karte liegt, fallen dabei heraus.
+        m.on('zoomend', () => { for (const s of m._ppmArrows) { if (m.hasLayer(s.layer)) placeTrackArrows(s); else m._ppmArrows.delete(s); } });
+      }
+      m._ppmArrows.add(set);
     }
     // ---------- Archiv ----------
     const archive = { on: false, data: null, sel: null, track: null, line: null };
@@ -535,15 +605,24 @@ enum RemotePage {
     }
     // Während eine Auswahlliste im Bereich offen ist, nicht neu zeichnen – das
     // innerHTML schloss sie sonst bei jeder Abfrage wieder (Fund 28.10.2026).
-    function selecting(box) { const a = document.activeElement; return !!a && a.tagName === 'SELECT' && box.contains(a); }
+    function selecting(box) { const a = document.activeElement; return !!a && (a.tagName === 'SELECT' || a.type === 'date') && box.contains(a); }
     function renderArchive() {
       const d = archive.data, side = $('side');
       if (!d) { side.innerHTML = '<div class="empty">' + t('Lade Archiv …') + '</div>'; return; }
       if (selecting(side)) return;
       const dayTitle = s => { const dt = new Date(s + 'T12:00'); const today = new Date(); const y = new Date(Date.now() - 864e5);
         return dt.toDateString() === today.toDateString() ? t('Heute') : dt.toDateString() === y.toDateString() ? t('Gestern') : dt.toLocaleDateString(LOCALE, { weekday: 'short', day: 'numeric', month: 'short' }); };
-      let html = '<div class="archbar"><select id="archday">' + d.days.map(x => '<option value="' + esc(x) + '"' + (x === d.day ? ' selected' : '') + '>' + esc(dayTitle(x)) + '</option>').join('') +
-        '</select><span class="hint">' + (tab === 'adsb' ? t('{0} Flugzeuge', d.items.length) : t('{0} Schiffe', d.items.length)) + '</span></div>';
+      // Tag blättern statt einer immer längeren Auswahlliste (Nutzer 31.10.2026: „wird
+      // schnell unübersichtlich“): ‹ › springen zum vorigen/nächsten Tag mit Daten, der
+      // Tag selbst öffnet den Kalender des Systems; ein Tag ohne Daten springt zum nächstliegenden.
+      const at = d.days.indexOf(d.day);   // days: neuester zuerst
+      const older = at >= 0 && at < d.days.length - 1 ? d.days[at + 1] : null;
+      const newer = at > 0 ? d.days[at - 1] : null;
+      const dayBtn = (to, sym, title) => '<button class="iconbtn" data-day="' + esc(to || '') + '" title="' + title + '" aria-label="' + title + '"' + (to ? '' : ' disabled') + '>' + sym + '</button>';
+      let html = '<div class="archbar">' + dayBtn(older, '‹', t('Vorheriger Tag')) +
+        '<label class="daypick"><span>' + esc(dayTitle(d.day)) + '</span><input type="date" id="archday" value="' + esc(d.day) + '"' +
+        (d.days.length ? ' min="' + esc(d.days[d.days.length - 1]) + '" max="' + esc(d.days[0]) + '"' : '') + ' aria-label="' + t('Tag wählen') + '"></label>' +
+        dayBtn(newer, '›', t('Nächster Tag')) + '<span class="hint">' + (tab === 'adsb' ? t('{0} Flugzeuge', d.items.length) : t('{0} Schiffe', d.items.length)) + '</span></div>';
       if (!d.items.length) html += '<div class="empty">' + t('An diesem Tag nichts empfangen.') + '</div>';
       html += d.items.map(it => {
         const sub = [it.type, it.route, fmtTime(it.first) + '–' + fmtTime(it.last),
@@ -552,18 +631,45 @@ enum RemotePage {
           '<span class="r">' + (it.minDistanceKm != null ? it.minDistanceKm.toFixed(0) + ' km' : '') + '</span></div>';
       }).join('');
       const top = side.scrollTop; side.innerHTML = html; side.scrollTop = top;
-      $('archday').onchange = e => { e.target.blur(); archive.sel = null; archive.track = null; if (archive.line) { map.removeLayer(archive.line); archive.line = null; } side.scrollTop = 0; loadArchive(e.target.value); };
+      const goDay = day => { archive.sel = null; archive.track = null; if (archive.line) { map.removeLayer(archive.line); archive.line = null; } side.scrollTop = 0; loadArchive(day); };
+      $('archday').onchange = e => {
+        e.target.blur();
+        const want = e.target.value;
+        if (!want || !d.days.length) return;
+        const dist = x => Math.abs(new Date(x + 'T12:00') - new Date(want + 'T12:00'));
+        goDay(d.days.reduce((best, x) => dist(x) < dist(best) ? x : best, d.days[0]));
+      };
+      side.querySelectorAll('[data-day]').forEach(el => el.onclick = () => { if (el.dataset.day) goDay(el.dataset.day); });
       side.querySelectorAll('.row').forEach(el => el.onclick = () => { archive.sel = el.dataset.id; loadArchive(d.day, el.dataset.id); });
     }
     let markers = new Map(), trail = null, homeMarker = null;
-    const PLANE = '<path d="M12 2c.8 0 1.3.7 1.3 1.6V9l7.7 4.6v2l-7.7-2.3v4.9l2.2 1.7V21L12 20l-3.5 1v-1.1l2.2-1.7v-4.9L3 15.6v-2L10.7 9V3.6C10.7 2.7 11.2 2 12 2z"/>';
-    const SHIP = '<path d="M12 2l5 14-5-3-5 3z"/>';
-    function icon(kind, heading, color, label, stale) {
-      const shape = kind === 'adsb' ? PLANE : (heading == null ? '<circle cx="12" cy="12" r="5"/>' : SHIP);
-      const rot = heading == null ? 0 : heading;
-      return L.divIcon({ className: stale ? 'stale' : '', iconSize: [24, 24], iconAnchor: [12, 12],
-        html: '<svg width="24" height="24" viewBox="0 0 24 24" style="transform:rotate(' + rot + 'deg)" fill="' + color + '" stroke="#fff" stroke-width="1">' + shape + '</svg>' +
-              (label ? '<span class="lbl">' + esc(label) + '</span>' : '') });
+    // Dieselben Symbole wie die Mac-Karte (ppm-map.js): dunkle Kontur, damit Flugzeuge
+    // und Schiffe auf Wasser, Wald und Wiesen nicht untergehen (30.10.2026).
+    const EDGE = ' stroke="#1d1d1f" stroke-opacity=".7" stroke-width="1.4" stroke-linejoin="round"';
+    const ARCS = d => '<path d="' + d + '" fill="none" stroke="#1d1d1f" stroke-opacity=".7" stroke-width="4.4" stroke-linecap="round"/>' +
+      '<path d="' + d + '" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round"/>';
+    const SYM = {
+      plane: '<path d="M12 1.5c.9 0 1.5.9 1.5 2V9l8 4.6v2.2l-8-2.4v5l2.6 2v1.7L12 21.2l-4.1.9v-1.7l2.6-2v-5l-8 2.4v-2.2l8-4.6V3.5c0-1.1.6-2 1.5-2z"' + EDGE + '/>',
+      hull: '<path d="M12 1.5c2.6 2.4 4.2 5.3 4.2 8.8V21.3a1.2 1.2 0 0 1-1.2 1.2H9a1.2 1.2 0 0 1-1.2-1.2V10.3c0-3.5 1.6-6.4 4.2-8.8z"' + EDGE + ' stroke-width="1.6"/>',
+      dot: '<circle cx="12" cy="12" r="7"' + EDGE + '/>',
+      antenna: '<circle cx="12" cy="12" r="3.1"' + EDGE + '/>' + ARCS('M8.2 8a5.5 5.5 0 0 0 0 8M15.8 8a5.5 5.5 0 0 1 0 8M5 5a9.8 9.8 0 0 0 0 14M19 5a9.8 9.8 0 0 1 0 14'),
+      beacon: '<path d="M10 9.5h4l1.6 11.5H8.4z"' + EDGE + '/><rect x="9" y="3" width="6" height="5" rx="1"' + EDGE + '/>' + ARCS('M5.5 4.5l-2-1M18.5 4.5l2-1M5.5 7.5H3M18.5 7.5H21'),
+      balloon: '<path d="M12 18.5v4" fill="none" stroke="#1d1d1f" stroke-opacity=".7" stroke-width="2.6" stroke-linecap="round"/><path d="M12 18.5v4" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>' +
+        '<ellipse cx="12" cy="9" rx="7" ry="8"' + EDGE + '/><path d="M10.6 16.6h2.8L12 18.8z"' + EDGE + '/>',
+      descent: '<circle cx="12" cy="12" r="10.5"' + EDGE + '/><path d="M12 6v10M7.5 11.5L12 16l4.5-4.5" fill="none" stroke="#fff" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>'
+    };
+    function symSvg(name, size, color, rot) {
+      return '<svg class="sym" width="' + size + '" height="' + size + '" viewBox="0 0 24 24" fill="currentColor" style="color:' + color +
+        (rot ? ';transform:rotate(' + rot + 'deg)' : '') + '">' + SYM[name] + '</svg>';
+    }
+    function icon(kind, it, color, label, stale) {
+      let name, size, rot = 0;
+      if (kind === 'adsb') { name = 'plane'; size = 26; rot = it.track ?? 90; }
+      else if (it.fixed) { name = it.fixed === 'base' ? 'antenna' : 'beacon'; size = 20; }
+      else if (it.heading == null) { name = 'dot'; size = 14; }
+      else { name = 'hull'; size = 26; rot = it.heading; }
+      return L.divIcon({ className: stale ? 'stale' : '', iconSize: [size, size], iconAnchor: [size / 2, size / 2],
+        html: symSvg(name, size, color, rot) + (label ? '<span class="lbl" style="top:' + (size - 2) + 'px">' + esc(label) + '</span>' : '') });
     }
     function items() {
       if (!state) return [];
@@ -579,8 +685,7 @@ enum RemotePage {
         const key = tab + ':' + it.id; seen.add(key);
         const isSel = sel === key;
         const color = isSel ? '#ff9f0a' : stale(it) ? '#8e8e93' : '#0a84ff';
-        const heading = tab === 'adsb' ? (it.track ?? 90) : it.heading;
-        const ic = icon(tab, heading, color, label(it), stale(it));
+        const ic = icon(tab, it, color, label(it), stale(it));
         let m = markers.get(key);
         if (!m) { m = L.marker([it.lat, it.lon], { icon: ic }).addTo(layer); m.on('click', () => select(key)); markers.set(key, m); }
         else { m.setLatLng([it.lat, it.lon]); m.setIcon(ic); }
@@ -591,7 +696,7 @@ enum RemotePage {
       const cur = list.find(it => tab + ':' + it.id === sel);
       if (cur && cur.trail && cur.trail.length > 1) {
         trail = L.layerGroup([L.polyline(cur.trail, { color: '#ff9f0a', weight: 3 })]).addTo(layer);
-        trackArrows(cur.trail, '#ff9f0a', trail, 12);
+        trackArrows(cur.trail, '#ff9f0a', trail);
       }
       if (state.home && !homeMarker) homeMarker = L.circleMarker(state.home, { radius: 6, color: '#a2845e', fillOpacity: .8 }).addTo(map).bindTooltip(t('Standort'));
       if (!fitted[tab] && list.length) {
@@ -717,7 +822,7 @@ enum RemotePage {
     // ---------- Digitalradio ----------
     // Gemeinsamer Ton für Digitalradio, Radio (UKW/AM) und Flugfunk (/audio.aac).
     const player = new Audio(); player.preload = 'none';
-    function startAudio() { player.src = '/audio.aac?k=' + encodeURIComponent(K) + '&t=' + Date.now(); player.play().catch(showError); }
+    function startAudio() { player.src = '/audio.aac?t=' + Date.now(); player.play().catch(showError); }
     function stopAudio() { player.pause(); player.removeAttribute('src'); player.load(); }
     // Anhören im Browser endet mit „Ton aus“ – „Stopp“ heißt nur das Beenden des Empfangs (Kopf oben).
     const audioLabel = () => player.paused ? t('🔈 Hier anhören') : t('🔇 Ton aus');
@@ -849,7 +954,7 @@ enum RemotePage {
         if (s.track.length > 1) {
           const tp = s.track.map(q => [q[0], q[1]]);
           L.polyline(tp, { color: accent, weight: 3, opacity: 0.8 }).addTo(g);
-          trackArrows(tp, accent, g, 12);
+          trackArrows(tp, accent, g, 0, m);
         }
         if (s.lat == null || s.lon == null) continue;
         bounds.push([s.lat, s.lon]);
@@ -861,8 +966,9 @@ enum RemotePage {
         }
         const alt = s.altitude == null ? '' : ' · ' + (s.altitude / 1000).toFixed(1) + ' km';
         const vs = s.verticalSpeed == null ? '' : ' ' + (s.verticalSpeed > 0 ? '↑' : '↓') + Math.abs(s.verticalSpeed).toFixed(1) + ' m/s';
-        L.circleMarker([s.lat, s.lon], { radius: 7, color: '#fff', weight: 2, fillColor: s.burst ? warn : accent, fillOpacity: 1 })
-          .bindTooltip(esc(s.serial + alt + vs), { permanent: true, direction: 'right', offset: [8, 0], className: 'sp-tip' }).addTo(g);
+        L.marker([s.lat, s.lon], { keyboard: false, icon: L.divIcon({ className: '', iconSize: [26, 26], iconAnchor: [13, 13],
+            html: symSvg(s.burst ? 'descent' : 'balloon', 26, s.burst ? warn : accent) }) })
+          .bindTooltip(esc(s.serial + alt + vs), { permanent: true, direction: 'right', offset: [12, 0], className: 'sp-tip' }).addTo(g);
       }
       // Nur beim ersten Mal einpassen – danach bleibt der Ausschnitt des Nutzers.
       if (!sondeUI.fitted && !sondeUI.selData && m.getContainer().offsetWidth) {
@@ -892,7 +998,7 @@ enum RemotePage {
       if (!pts.length) return;
       const sel = sondeColor('--sel');
       L.polyline(pts, { color: sel, weight: 3 }).addTo(sondeUI.track);
-      trackArrows(pts, sel, sondeUI.track);
+      trackArrows(pts, sel, sondeUI.track, 0, m);
       L.circleMarker(pts[0], { radius: 5, color: sel, weight: 2, fillColor: '#fff', fillOpacity: 1 })
         .bindTooltip(t('Erster Empfang'), { className: 'sp-tip' }).addTo(sondeUI.track);
       L.circleMarker(pts[pts.length - 1], { radius: 5, color: '#fff', weight: 2, fillColor: sel, fillOpacity: 1 })
@@ -992,6 +1098,20 @@ enum RemotePage {
       if (sondeUI.map) sondeUI.map.invalidateSize({ pan: false });
       if (Date.now() - sondeUI.liveAt > 8000) sondeLoadLive();
     }
+    // Statuszeile im Wetter-Reiter: der nächste Termin, den der Plan wirklich
+    // aufnimmt – ein geplanter Überflug (nicht schon begonnen) oder, wenn
+    // Radiosonden an sind, das nächste Sondenfenster. Vorher stand hier der erste
+    // Überflug der Liste, auch ein laufender oder gar nicht geplanter (Fund 30.10.2026).
+    function wxNext() {
+      const now = Date.now();
+      const pass = (plan.passes || []).find(x => x.planned && x.start > now);
+      const win = plan.autoSonde ? (plan.sondeWindows || []).find(x => x.end > now) : null;
+      if (win && (!pass || win.start <= pass.start)) {
+        return win.start <= now ? tt('Sondenfenster bis {0}', fmtTime(win.end)) : tt('Nächstes Sondenfenster {0}', fmtTime(win.start));
+      }
+      if (pass) return tt('Nächster Überflug {0}', fmtTime(pass.start));
+      return plan.autoMeteor || plan.autoAmateur || plan.autoSonde ? tt('Kein Termin geplant') : tt('Empfangsplan aus');
+    }
     function renderBalloons(p) {
       const live = p.balloons || [], flights = p.flights || [];
       queueMicrotask(sondeMount);
@@ -1040,7 +1160,7 @@ enum RemotePage {
       if (!groups.size) imgs += '<div class="empty">' + t('Noch keine Bilder.') + '</div>';
       else imgs += '<div class="gallery">' + [...groups.values()].map(list =>
         list.map(img => '<figure data-name="' + esc(img.name) + '" data-cap="' + esc(fmtDay(img.date) + ' ' + fmtTime(img.date) + ' · ' + img.composite) + '">' +
-          '<img loading="lazy" src="/img?k=' + encodeURIComponent(K) + '&w=360&n=' + encodeURIComponent(img.name) + '" alt="">' +
+          '<img loading="lazy" src="/img?w=360&n=' + encodeURIComponent(img.name) + '" alt="">' +
           '<figcaption>' + esc(fmtDay(img.date) + ' ' + fmtTime(img.date)) + '<br>' + esc(img.composite) + '</figcaption></figure>').join('')).join('') + '</div>';
       html += wxBox('images', t('Empfangene Bilder'), imgs, groups.size || null);
       let passes = '';
@@ -1085,7 +1205,7 @@ enum RemotePage {
       }
       box.querySelectorAll('figure').forEach(f => f.onclick = () => {
         const v = $('viewer');
-        v.querySelector('img').src = '/img?k=' + encodeURIComponent(K) + '&w=1600&n=' + encodeURIComponent(f.dataset.name);
+        v.querySelector('img').src = '/img?w=1600&n=' + encodeURIComponent(f.dataset.name);
         v.querySelector('.cap').textContent = f.dataset.cap + ' – ' + t('zum Schließen tippen');
         v.style.display = 'flex';
       });
@@ -2372,7 +2492,7 @@ enum RemotePage {
         const key = occ.hours + '|' + w + '|' + r.name + '|' + r.first;
         if (key !== occ.imgKey || Date.now() - occ.imgAt > 30000) {
           occ.imgKey = key; occ.imgAt = Date.now();
-          img.src = '/occupancy.png?' + new URLSearchParams({ k: K, w, h, hours: occ.hours, t: Date.now() });
+          img.src = '/occupancy.png?' + new URLSearchParams({ w, h, hours: occ.hours, t: Date.now() });
         }
       }
       // Aktivste Frequenzen – Antippen öffnet sie im Radio.
@@ -2616,7 +2736,7 @@ enum RemotePage {
                : tab === 'ais' ? tt('{0} Schiffe', state.ais.vessels.length) + ' · ' + tt('{0} Meldungen', state.ais.messages)
                : tab === 'acars' ? (acars && acars.running ? tt('{0} Nachrichten · {1} Rahmen · {2} Flugzeuge', acars.messages, acars.frames, acars.aircraft) : tt('Flugzeug-Datenfunk aus'))
                : tab === 'spectrum' ? (state.mode === 'spectrum' && spec ? spec.centerMHz.toFixed(3) + ' MHz · ' + spec.rateMHz + ' MHz' : t('Spektrum aus'))
-               : tab === 'wx' ? (plan && plan.status ? plan.status : plan && plan.passes.length ? tt('Nächster Überflug {0}', fmtTime(plan.passes[0].start)) : tt('Wetter'))
+               : tab === 'wx' ? (plan && plan.status ? plan.status : plan ? wxNext() : tt('Wetter'))
                : state.mode === 'dab' ? tt('Kanal {0}', state.dab.channel) + ' · ' + (state.dab.listeners ? tt('{0} Hörer', state.dab.listeners) : tt('niemand hört zu'))
                : t('Digitalradio aus');
       const live = tab === 'wx' ? !!(plan && plan.status) : state.mode === tab;
@@ -2714,6 +2834,9 @@ enum RemotePage {
       layer.clearLayers(); markers = new Map(); trail = null; if (tab === 'wx') plan = null; render(); if (tab === 'wx') renderWeather(); poll(true);
       if (tab === 'spectrum') { if (!specPresets) loadSpecPresets(); specPoll(); }
     });
+    // Konto und Abmelden unten im Menü; „Nur ansehen“ als Hinweis dazu.
+    $('whoami').textContent = ROLE === 'view' ? tt('{0} · nur ansehen', USER) : USER;
+    $('logoutbtn').value = tt('Abmelden');
     poll();
     if (tab === 'spectrum') { loadSpecPresets(); specPoll(); }
     </script>

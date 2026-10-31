@@ -156,7 +156,9 @@ enum RemoteAccessPolicy {
     nonisolated static func origin(for path: String) -> Origin {
         if path.hasPrefix("/api/") { return .action }
         switch path {
-        case "/audio.aac", "/img", "/occupancy.png": return .resource
+        // Anmelden/Abmelden: echte Formulare (iOS bietet dann an, das Passwort zu
+        // sichern) – ohne eigenen Kopf, aber nicht von fremden Seiten.
+        case "/audio.aac", "/img", "/occupancy.png", "/login", "/logout": return .resource
         default: return .open
         }
     }
@@ -201,9 +203,57 @@ enum RemoteAccessPolicy {
         ("Referrer-Policy", "no-referrer"),
     ]
 
-    /// Schlüssel-Cookie, vom Server gesetzt: für Skripte unsichtbar (`HttpOnly`),
+    /// Sitzungs-Cookie, vom Server gesetzt: für Skripte unsichtbar (`HttpOnly`),
     /// nur aus der eigenen Site (`SameSite=Strict`), ein Jahr gültig.
     nonisolated static func sessionCookie(token: String) -> String {
-        "k=\(token); Path=/; Max-Age=31536000; HttpOnly; SameSite=Strict"
+        "s=\(token); Path=/; Max-Age=31536000; HttpOnly; SameSite=Strict"
+    }
+
+    /// Löscht beim Abmelden das Sitzungs-Cookie und das alte Schlüssel-Cookie `k`.
+    static let clearedCookies = [
+        "s=; Path=/; Max-Age=0; HttpOnly; SameSite=Strict",
+        "k=; Path=/; Max-Age=0; HttpOnly; SameSite=Strict",
+    ]
+
+    /// Sitzungsschlüssel aus dem `Cookie`-Kopf.
+    nonisolated static func sessionToken(cookieHeader: String?) -> String? {
+        cookieHeader?.split(separator: ";").map { $0.trimmingCharacters(in: .whitespaces) }
+            .first { $0.hasPrefix("s=") }.map { String($0.dropFirst(2)) }
+    }
+
+    // MARK: - Rollen
+
+    /// Lesende Parameter je Route – was ein Konto „Nur ansehen“ mitschicken darf.
+    /// Alles andere (Umschalten, Abstimmen, Plan, Löschen, Suchlauf) verlangt
+    /// „Bedienen“. Eine neue Route ist damit von selbst gesperrt, bis sie hier steht.
+    static let readOnlyParameters: [String: Set<String>] = [
+        "/api/state": ["sel"],
+        "/api/archive": ["kind", "day", "id"],
+        "/api/acars": ["since"],
+        "/api/spectrum": [],
+        "/api/spectrum/presets": [],
+        "/api/fm": [],
+        "/api/sensors": [],
+        "/api/smart868": ["dev"],
+        "/api/dsc": [],
+        "/api/ft8": ["cq"],
+        "/api/occupancy": ["hours"],
+        "/occupancy.png": ["w", "h", "hours", "m"],
+        "/api/airband": [],
+        "/api/airband/search": ["q"],
+        "/api/zigbee": ["pan"],
+        "/api/sondes": ["serial"],
+        "/api/airports": ["bbox"],
+        "/api/plan": [],
+        "/img": ["n", "w"],
+        "/audio.aac": [],
+        // `k`: alte Lesezeichen mit dem früheren Schlüssel – wirkungslos, aber harmlos.
+        "/": ["k"], "/index.html": ["k"], "/manifest.webmanifest": ["k"],
+    ]
+
+    /// Braucht die Anfrage die Rolle „Bedienen“? `t` (Cache-Bust) zählt nie.
+    nonisolated static func requiresControl(path: String, query: [String: String]) -> Bool {
+        guard let allowed = readOnlyParameters[path] else { return true }
+        return query.keys.contains { $0 != "t" && !allowed.contains($0) }
     }
 }

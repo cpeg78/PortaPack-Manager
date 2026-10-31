@@ -180,6 +180,7 @@
 "%lld GB" = "%lld GB";
 "%lld Geräte" = "%lld devices";
 "%lld Geräte (%lld mit Namen)" = "%lld devices (%lld with names)";
+"%lld Geräte angemeldet" = "%lld devices signed in";
 "%lld Kanäle gefunden, %lld davon mit lesbaren Sendern" = "%lld channels found, %lld of them with readable stations";
 "%lld Kanäle mit Funkverkehr" = "%lld channels with traffic";
 "%lld Kanäle sind ausgeblendet – stell „Mindestens“ kleiner." = "%lld channels are hidden – lower “Minimum”.";
@@ -429,9 +430,13 @@
 "Alle %lld zeigen" = "Show All %lld";
 "Alle (SF7–12 gleichzeitig)" = "All (SF7–12 at once)";
 "Alle Downloads löschen?" = "Delete All Downloads?";
+"Alle Drohnen zeigen" = "Show all drones";
 "Alle Empfänger starten mit niedrigerer Verstärkung. Ändern in den Einstellungen (Antenne & Gerät)." = "All receivers start with lower gain. Change this in Settings (Antenna & Device).";
 "Alle Flugzeuge zeigen" = "Show All Aircraft";
+"Alle Funkfeuer zeigen" = "Show all beacons";
+"Alle Geräte dieses Kontos werden abgemeldet." = "All devices of this account will be signed out.";
 "Alle Kanäle durchsuchen" = "Scan All Channels";
+"Alle Knoten zeigen" = "Show all nodes";
 "Alle Marker entfernen" = "Remove all markers";
 "Alle Rahmen" = "All frames";
 "Alle Rufe zeigen" = "Show All Calls";
@@ -524,10 +529,12 @@
 "App starten" = "Start App";
 "AppSKey (32 Hex)" = "AppSKey (32 hex)";
 "AppSKey: 32 Hex-Zeichen erwartet." = "AppSKey: 32 hex characters expected.";
+"Apple (eingebaut)" = "Apple (built-in)";
 "Apple AirPlay-Quelle" = "Apple AirPlay source";
 "Apple AirPlay-Ziel" = "Apple AirPlay target";
 "Apple „Wo ist?“ (AirTag o. ä.)" = "Apple “Find My” (AirTag or similar)";
 "Apple-Gerät (Nearby Info)" = "Apple device (Nearby Info)";
+"Apple: schnell, im System enthalten. Whisper: meist genauer bei Rauschen und Funkkürzeln; das Modell lädt die App einmalig herunter (whisper.cpp, rechnet auf dem Mac)." = "Apple: fast, built into the system. Whisper: usually more accurate with noise and radio jargon; the app downloads the model once (whisper.cpp, runs on the Mac).";
 "Apps installiert" = "Apps installed";
 "Apps kopieren" = "Copy Apps";
 "Apps werden installiert" = "Installing apps";
@@ -559,6 +566,7 @@
 "Auf dem Gerät liegen %lld statt %lld Bytes – die Übertragung ist unvollständig." = "The device has %lld instead of %lld bytes – the transfer is incomplete.";
 "Auf dem Gerät läuft %@, neuer als %@ – Abschließen würde auf die ältere Version zurückgehen." = "The device is running %@, newer than %@ – finishing would go back to the older version.";
 "Auf dem Gerät läuft bereits %@ – es gibt nichts mehr nachzuholen." = "The device is already running %@ – there’s nothing left to catch up on.";
+"Auf dem Handy meldest du dich mit Benutzername und Passwort an und bleibst angemeldet. „Nur ansehen“ zeigt alles, darf aber nichts umschalten oder einstellen. Ein neues Passwort und „Überall abmelden“ melden alle Geräte des Kontos ab. Die Seite läuft im Heimnetz unverschlüsselt (http) – von unterwegs nur über ein VPN wie Tailscale." = "On your phone you sign in with user name and password and stay signed in. “View only” shows everything but can’t switch or change anything. A new password and “Sign Out Everywhere” sign out all devices of the account. In your home network the page runs unencrypted (http) – from outside only through a VPN such as Tailscale.";
 "Auf den Mac laden …" = "Download to Mac …";
 "Auf der ADS-B-Karte zeigen" = "Show on ADS-B map";
 "Auf diesem Kanal sendet hier nichts – wähl einen anderen oder starte den Sendersuchlauf." = "Nothing is transmitting on this channel here – choose another one or start the station scan.";
@@ -592,12 +600,14 @@
 "Aus dem Heimatstandort berechnet – nur für Entfernung und Richtung, wird nirgends hin gesendet." = "Calculated from your home location – only for distance and direction, never sent anywhere.";
 "Aus der Ferne gewählt" = "Selected remotely";
 "Aus der Liste entfernen" = "Remove from List";
+"Aus – durchgehend horchen" = "Off – listen continuously";
 "Aus – es wird nichts gesendet" = "Off – nothing is sent";
 "Aus „%@“ kommen nur Dateien dazu, die hier fehlen. Nichts wird überschrieben oder gelöscht." = "Only files missing here are added from “%@”. Nothing is overwritten or deleted.";
 "Aus: je Gerät nur die zwei besten Verbindungen – das Gerüst des Netzes. An: jede gemeldete Verbindung." = "Off: only the two best links per device – the backbone of the network. On: every reported link.";
 "Ausgabe" = "Release";
 "Ausgelassen – mit dem Schalter wieder einplanen." = "Skipped – use the switch to schedule it again.";
 "Ausgelöst" = "Triggered";
+"Ausgewogen (Small, empfohlen)" = "Balanced (Small, recommended)";
 "Ausrichtung" = "Pointing";
 "Ausschnitt" = "Span";
 "Auswahl" = "Selection";
@@ -663,6 +673,7 @@
 "Beacons" = "Beacons";
 "Beantworte oder bestätige Notrufe nie selbst – das ist Sache der Küstenfunkstellen und Schiffe mit Funkzeugnis. Gib Gehörtes nicht weiter." = "Never answer or acknowledge distress calls yourself – that’s up to coast stations and ships with a radio license. Don’t pass on what you hear.";
 "Bearbeiten …" = "Edit …";
+"Bedienen" = "Control";
 "Bedienfeld" = "Controls";
 "Bedienfeld ausblenden" = "Hide Controls";
 "Bedienfeld einblenden" = "Show Controls";
@@ -709,6 +720,8 @@
 "Benutzer" = "User";
 "Benutzer oder Passwort falsch" = "Wrong user name or password";
 "Benutzercode" = "User code";
+"Benutzername" = "User name";
+"Benutzername oder Passwort stimmt nicht." = "User name or password is incorrect.";
 "Beobachte PCI %lld auf %@ MHz" = "Watching PCI %lld on %@ MHz";
 "Beobachten beenden" = "Stop watching";
 "Bereich" = "Section";
@@ -764,6 +777,7 @@
 "Binärsensor: ausgelöst" = "Binary sensor: triggered";
 "Binärsensor: ruhig" = "Binary sensor: idle";
 "Bis (MHz)" = "To (MHz)";
+"Bis zur ersten Sonde abwechseln" = "Alternate until the first sonde";
 "Bisher nur Reifendrucksensoren gehört (%lld). Um sie zu sehen, schalte unter „Anzeige“ „Reifendruck (TPMS) ausblenden“ aus." = "So far only tire pressure sensors heard (%lld). To see them, turn off “Hide tire pressure (TPMS)” under “Display”.";
 "Bit 0 ist nicht 0" = "Bit 0 is not 0";
 "Bit 15" = "Bit 15";
@@ -781,6 +795,7 @@
 "Bits 45–49" = "Bits 45–49";
 "Bits 50–57" = "Bits 50–57";
 "Bittakt" = "Bit sync";
+"Bitte anmelden." = "Please sign in.";
 "Bitte eine gültige NORAD-Nummer und eine Frequenz zwischen 30 und 1000 MHz eingeben." = "Please enter a valid NORAD number and a frequency between 30 and 1000 MHz.";
 "Bitte in MHz eingeben, zwischen 400 und 406 – ein Bereich „von–bis“ oder eine Frequenz (dann ±5 kHz)." = "Please enter in MHz, between 400 and 406 – a range “from–to” or a single frequency (then ±5 kHz).";
 "Bitte wählen" = "Please choose";
@@ -903,8 +918,10 @@
 "Das Gerät startet neu … (%lld s)" = "The device is restarting … (%lld s)";
 "Das Handy nutzt gerade %@. Fernbetrieb beenden und %@ starten?" = "The phone is using %1$@. End the remote session and start %2$@?";
 "Das Handy nutzt gerade den Fernzugriff (%@)." = "The phone is currently using remote access (%@).";
+"Das Modell ließ sich nicht laden (HTTP %lld)." = "The model couldn’t be downloaded (HTTP %lld).";
 "Das Paket enthält keine Apps." = "The package contains no apps.";
 "Das Paket für die SD-Karte ließ sich nicht entpacken: %@" = "The package for the SD card could not be unpacked: %@";
+"Das Passwort braucht mindestens %lld Zeichen." = "The password needs at least %lld characters.";
 "Das Profil steht auf dem Gerät oder in der Anleitung. Beim Anlernen übernimmt die App es selbst." = "The profile is printed on the device or in its manual. When pairing, the app picks it up automatically.";
 "Das Protokoll als 802.15.4 mit FCS – in Wireshark mit hinterlegtem Netzwerkschlüssel entschlüsselt lesbar." = "The log as 802.15.4 with FCS – readable decrypted in Wireshark once the network key is entered there.";
 "Das Radial ist missweisend, also auf magnetisch Nord bezogen. Die Missweisung der Station steht in der Funkfeuer-Liste." = "The radial is magnetic, i.e. referenced to magnetic north. The station’s declination is listed in the beacon list.";
@@ -918,7 +935,9 @@
 "Das Signal kommt sehr leise an. Erhöhe die Verstärkung (erst VGA, dann LNA) oder drück „Signal optimieren“." = "The signal is very weak. Increase the gain (VGA first, then LNA) or press “Optimize Signal”.";
 "Das Spektrum zeigt, wo gerade gesendet wird. Dafür muss das PortaPack im HackRF-Modus laufen." = "The spectrum shows where something is transmitting right now. The PortaPack must be running in HackRF mode.";
 "Das Trust Center überträgt den Netzwerkschlüssel beim Anlernen, verschlüsselt mit dem Standard-Link-Key. Geräte mit eigenem Install-Code brauchen diesen als Link-Key." = "The Trust Center sends the network key during pairing, encrypted with the default link key. Devices with their own install code need it as the link key.";
+"Das Whisper-Modell ließ sich nicht laden." = "The Whisper model couldn’t be loaded.";
 "Das ZIP-Paket ist beschädigt (%@)." = "The ZIP archive is damaged (%@).";
+"Das geladene Modell ist beschädigt (Prüfsumme stimmt nicht) und wurde verworfen." = "The downloaded model is damaged (checksum mismatch) and was discarded.";
 "Datei aircraftDatabase.csv von opensky-network.org" = "File aircraftDatabase.csv from opensky-network.org";
 "Datei nicht gefunden: %@" = "File not found: %@";
 "Datei nicht lesbar: %@" = "File not readable: %@";
@@ -962,6 +981,7 @@
 "Den gewählten Flug samt Messdaten aus dem Archiv entfernen" = "Remove the selected flight and its measurements from the archive";
 "Der Antennen-Check misst nacheinander die wichtigsten Bänder – von UKW-Radio bis GPS – und sagt dir, wofür deine Antenne taugt. Dafür muss das PortaPack im HackRF-Modus laufen." = "The antenna check measures the most important bands one after another – from FM radio to GPS – and tells you what your antenna is good for. The PortaPack must be running in HackRF mode for this.";
 "Der Audiodekoder ließ sich nicht einrichten (%d)." = "The audio decoder couldn’t be set up (%d).";
+"Der Benutzername darf 1–32 Zeichen lang sein: Buchstaben, Ziffern, Punkt, Unterstrich, Bindestrich." = "The user name may be 1–32 characters long: letters, digits, period, underscore, hyphen.";
 "Der Broker antwortet nicht mehr" = "The broker is no longer responding";
 "Der Broker hat die Verbindung geschlossen" = "The broker closed the connection";
 "Der DFU-Modus ist nur für Notfälle, etwa wenn sich die Firmware nicht mehr installieren lässt. Das Gerät ist danach für diese App nicht erreichbar; Aus- und Einschalten führt zurück zu Mayhem." = "DFU mode is for emergencies only, e.g. when the firmware can no longer be installed. The device is then not reachable for this app; switching it off and on returns to Mayhem.";
@@ -1083,6 +1103,10 @@
 "Die Grundlinie wird nur außerhalb dieses Bereichs angepasst." = "The baseline is only fitted outside this range.";
 "Die Kalibrierdaten kommen über 51 Rahmen verteilt; die Feuchte ist eine Näherung. RS41-Höhen beziehen sich auf das Ellipsoid (in Deutschland etwa 45–50 m über Meereshöhe)." = "Calibration data is spread over 51 frames; humidity is an approximation. RS41 altitudes refer to the ellipsoid (about 45–50 m above sea level in Germany).";
 "Die Karte nutzt die beiden jüngsten." = "The map uses the two most recent.";
+"Die Konten ließen sich nicht im Schlüsselbund sichern." = "The accounts couldn’t be saved to the keychain.";
+"Die Konten sind im Schlüsselbund gerade nicht lesbar – der Fernzugriff ist ausgesetzt. Die App versucht es von selbst erneut." = "The accounts in the keychain can’t be read right now – remote access is paused. The app keeps trying by itself.";
+"Die Konten sind im Schlüsselbund gerade nicht lesbar." = "The accounts in the keychain can’t be read right now.";
+"Die Konten sind im Schlüsselbund gerade nicht lesbar. Der Fernzugriff ist ausgesetzt und startet von selbst, sobald sie wieder gelesen werden können." = "The accounts in the keychain can’t be read right now. Remote access is paused and resumes on its own as soon as they can be read again.";
 "Die Lautstärke regelt sich selbst (AGC). Feinabstimmung: kleinste Ziffern der Frequenz mit dem Mausrad." = "The volume adjusts itself (AGC). Fine tuning: the smallest digits of the frequency with the scroll wheel.";
 "Die Linie ist ein winziger Buckel im Rauschen, oft unter 1 % des Systemrauschens. Den LNA versorgst du über die Antennenspeisung (Bias-Tee)." = "The line is a tiny bump in the noise, often below 1 % of the system noise. You power the LNA via the antenna power (bias tee).";
 "Die Listen der Funkfeuer und Flugplätze (OurAirports) lädt die App nur auf Knopfdruck – auf den Seiten Funkfeuer und Flugzeuge. Dabei geht nur die Anfrage selbst hinaus, kein Standort; danach liegen sie auf dem Mac." = "The app downloads the radio beacon and airport lists (OurAirports) only when you ask – on the Radio Beacons and Aircraft pages. Only the request itself is sent, never your location; afterwards the lists stay on the Mac.";
@@ -1092,6 +1116,7 @@
 "Die Messung ist fehlgeschlagen." = "The measurement failed.";
 "Die NOAA-Satelliten sind abgeschaltet – Wetterbilder gibt es nur noch von METEOR." = "The NOAA satellites have been shut down – weather images are only available from METEOR now.";
 "Die Optimierung läuft schon." = "Optimization is already running.";
+"Die Passwörter stimmen nicht überein." = "The passwords don’t match.";
 "Die Quarzkorrektur steht unter „Antenne & Gerät“." = "Crystal correction is under “Antenna & Device”.";
 "Die SD-Karte antwortet nicht mehr und ließ sich nicht auswerfen. Schalte das PortaPack aus und wieder ein – danach „Erneuern abschließen“." = "The SD card no longer responds and could not be ejected. Turn the PortaPack off and on again – then “Finish Renewal”.";
 "Die SD-Karte ist als Laufwerk am Mac. Zum Beenden drück „Auswerfen & zurück zu Mayhem“ – das Gerät startet dann neu." = "The SD card is mounted as a drive on the Mac. To finish, press “Eject & Return to Mayhem” – the device then restarts.";
@@ -1147,12 +1172,15 @@
 "Diese Seite" = "This page";
 "Diese Seite lässt sich nicht von selbst starten." = "This page cannot start by itself.";
 "Diese SigMF-Datei enthält nur Metadaten, keine Abtastwerte." = "This SigMF file contains only metadata, no samples.";
+"Diesen Benutzernamen gibt es schon." = "This user name already exists.";
 "Diesen Favoriten gibt es nicht mehr." = "This favorite no longer exists.";
 "Diesen Termin aufnehmen oder auslassen" = "Record or skip this event";
 "Dieser Mac hat kein Bluetooth LE." = "This Mac doesn't have Bluetooth LE.";
 "Dieser Satellit ist nicht im Empfangsplan." = "This satellite isn’t in the Reception Schedule.";
 "Dieser Schlüssel ist schon hinterlegt." = "This key is already stored.";
 "Dieses Flugzeug wird gerade nicht per ADS-B empfangen (ADS-B muss dafür laufen)." = "This aircraft isn’t currently being received via ADS-B (ADS-B must be running for this).";
+"Dieses Konto darf nur ansehen, nichts umschalten oder einstellen." = "This account may only view – it can’t switch or change anything.";
+"Dieses Konto gibt es nicht mehr." = "This account no longer exists.";
 "Digitaleingänge" = "Digital inputs";
 "Digitalradio" = "Digital Radio";
 "Digitalradio (DAB+)" = "Digital Radio (DAB+)";
@@ -1252,6 +1280,7 @@
 "Eingeschaltet" = "Powered on";
 "Einmal von OurAirports laden (≈ 3 MB). Dein Standort wird dabei nicht gesendet." = "Download once from OurAirports (≈ 3 MB). Your location is not sent.";
 "Einmalig vom System, danach arbeitet die Erkennung ohne Internet." = "Downloaded once by the system; afterwards recognition works without internet.";
+"Einmalig von Hugging Face (%@), danach arbeitet die Erkennung ohne Internet." = "Once from Hugging Face (%@); after that recognition works without internet.";
 "Einschaltdauer" = "On time";
 "Einspielen" = "Restore";
 "Einstellungen" = "Settings";
@@ -1583,6 +1612,7 @@
 "Gefundene Kanäle und Einträge im Verlauf übernimmst du per Rechtsklick." = "Right-click found channels and history entries to add them.";
 "Gehört" = "Heard";
 "Geladen am" = "Loaded on";
+"Geladene Modelle löschen" = "Delete Downloaded Models";
 "Gelandet (ON)" = "Landed (ON)";
 "Gelesen werden nur die öffentlichen Kennungen der Basisstationen – keine Nutzerdaten, keine Telefone." = "Only the public identifiers of the base stations are read – no user data, no phones.";
 "Gemeldete Geräte (%lld)" = "Reported devices (%lld)";
@@ -1681,6 +1711,8 @@
 "Glättung %@ kHz" = "Smoothing %@ kHz";
 "Govee-Thermometer" = "Govee thermometer";
 "Green-Power-Gerät" = "Green Power device";
+"Groß (Large v3 Turbo)" = "Large (Large v3 Turbo)";
+"Groß, ungepackt (Large v3 Turbo)" = "Large, unquantized (Large v3 Turbo)";
 "Großer Flughafen" = "Large airport";
 "Grund" = "Reason";
 "Grundberührung" = "Grounding";
@@ -2019,6 +2051,7 @@
 "Klasse %lld" = "Class %lld";
 "Klasse nicht angegeben" = "Class not specified";
 "Klassik" = "Classical";
+"Klein und schnell (Base)" = "Small and fast (Base)";
 "Klick ins Wärmebild, um eine Frequenz zu wählen." = "Click in the heat map to choose a frequency.";
 "Klick stimmt ab, ⌥-Klick setzt einen Marker (bis zu vier), Rechtsklick: im Radio hören, merken." = "Click tunes, ⌥-click sets a marker (up to four), right-click: listen in Radio, save.";
 "Klicke auf „Start“, dann hört die App auf den Kanälen des gewählten Satelliten mit." = "Press “Start” and the app listens on the selected satellite’s channels.";
@@ -2057,6 +2090,11 @@
 "Kontakt (D5-00-01)" = "Contact (D5-00-01)";
 "Kontakt geschlossen" = "Contact closed";
 "Kontakt offen" = "Contact open";
+"Konten" = "Accounts";
+"Konto" = "Account";
+"Konto hinzufügen" = "Add Account";
+"Konto hinzufügen …" = "Add Account…";
+"Konto „%@“ löschen?" = "Delete account “%@”?";
 "Koordinator" = "Coordinator";
 "Koordinator-Neuausrichtung" = "Coordinator realignment";
 "Kopfbereiche mitten in der Datendatei („core:header_bytes“ in späteren Erfassungen) werden nicht unterstützt." = "Headers in the middle of the data file (“core:header_bytes” in later captures) are not supported.";
@@ -2195,7 +2233,7 @@
 "Löschen" = "Delete";
 "Löschen ist während eines laufenden Vorgangs gesperrt." = "Deleting is blocked while an operation is running.";
 "Löschen und neu schreiben" = "Erase and rewrite";
-"Löschen …" = "Delete …";
+"Löschen …" = "Delete…";
 "Löscht den Verlauf samt aller Mitschnitte" = "Deletes the history including all recordings";
 "Lüfter" = "Fan";
 "Lüfterzustand" = "Fan state";
@@ -2273,6 +2311,7 @@
 "Milchstraße am höchsten: Az %.0f°, El %.0f° (l = %.0f°)" = "Milky Way at its highest: Az %.0f°, El %.0f° (l = %.0f°)";
 "Militär" = "Military";
 "Mindestens" = "Minimum";
+"Mindestens ein Konto muss bedienen dürfen." = "At least one account must be allowed to control.";
 "Mindesthöhe %lld°" = "Minimum elevation %lld°";
 "Minute %lld" = "Minute %lld";
 "Minute mit %lld statt 59 Sekunden" = "Minute with %lld instead of 59 seconds";
@@ -2458,6 +2497,7 @@
 "Noch kein Bild" = "No Image Yet";
 "Noch kein Check" = "No check yet";
 "Noch kein Funkruf. DAPNET sendet je nach Sender nur alle paar Minuten – eine 70-cm-Antenne hilft." = "No page yet. Depending on the transmitter, DAPNET only sends every few minutes – a 70 cm antenna helps.";
+"Noch kein Konto – ohne Konto kann sich niemand anmelden." = "No account yet – without an account nobody can sign in.";
 "Noch kein Paket. Knoten melden sich nur alle paar Minuten bis Stunden – hab etwas Geduld." = "No packet yet. Nodes only report every few minutes to hours – be patient.";
 "Noch kein Ruf auf Kanal 70. Solche Rufe sind selten – nahe an Küste oder Fluss einige pro Stunde, meist Tests und Routinerufe." = "No call on channel 70 yet. Such calls are rare – a few per hour near a coast or river, mostly tests and routine calls.";
 "Noch kein Ruf mit Position" = "No call with position yet";
@@ -2528,6 +2568,7 @@
 "Nur Sprache zählen" = "Count speech only";
 "Nur Textnachrichten" = "Text messages only";
 "Nur Ton" = "Tone only";
+"Nur ansehen" = "View only";
 "Nur aus der Fernzugriffsseite" = "Only from the remote access page";
 "Nur ausgewähltes Gerät" = "Selected device only";
 "Nur die Seite öffnen" = "Just Open the Page";
@@ -2607,6 +2648,9 @@
 "Part-ID" = "Part ID";
 "Passagierschiff" = "Passenger";
 "Passwort" = "Password";
+"Passwort wiederholen" = "Repeat password";
+"Passwort ändern" = "Change Password";
+"Passwort ändern …" = "Change Password…";
 "Pausen" = "Gaps";
 "Pegel" = "Level";
 "Pegel %.0f dBFS · Anschlag %.2f %%" = "Level %.0f dBFS · clipped %.2f %%";
@@ -2655,6 +2699,7 @@
 "Position ohne GPS-Fix" = "Position without GPS fix";
 "Position und Bewegung" = "Position and Movement";
 "Position von" = "Position of";
+"Position zeigen" = "Show position";
 "Position/Vektor" = "Location/vector";
 "Positionsabfrage/-meldung" = "Position request/report";
 "Positionsbericht" = "Position report";
@@ -2730,6 +2775,7 @@
 "Radiosonden an SondeHub hochladen" = "Upload radiosondes to SondeHub";
 "Radiosonden bis %@: wartet – laut SondeHub keine Sonde im Umkreis von %lld km" = "Radiosondes until %@: waiting – SondeHub reports no sonde within %lld km";
 "Radiosonden …" = "Radiosondes …";
+"Radiosonden: noch keine Sonde gehört – nächster Versuch um %@" = "Radiosondes: no sonde heard yet – next attempt at %@";
 "Rahmen" = "Frames";
 "Rahmen (%lld)" = "Frames (%lld)";
 "Rahmen als Hex kopieren" = "Copy Frame as Hex";
@@ -3060,6 +3106,7 @@
 "So weit muss ein Signal über dem Rauschen liegen, damit der Kanal aufgeht. Kleiner = empfindlicher, aber mehr Fehlalarme. Den Rauschboden jedes Kanals lernt die App selbst." = "How far a signal must be above the noise for the channel to open. Lower = more sensitive, but more false alarms. The app learns each channel’s noise floor by itself.";
 "Sobald eine Sonde zu hören ist, siehst du hier Höhe, Steigen, Temperatur und Feuchte im Verlauf." = "As soon as a sonde can be heard, you’ll see its altitude, climb rate, temperature and humidity over time here.";
 "Software-Version" = "Software version";
+"Solange noch keine Sonde dekodiert ist, läuft der vorherige Empfänger (z. B. ADS-B) weiter, und der HackRF horcht nur in diesem Abstand 1½ min nach Sonden. Ist eine Sonde da, bleibt er dabei." = "Until a sonde has been decoded, the previous receiver (e.g. ADS-B) keeps running and the HackRF only listens for sondes for 1½ min at this interval. Once a sonde is received, it stays on it.";
 "Sollwert" = "Setpoint";
 "Sollwert %@" = "Setpoint %@";
 "Sollwert setzen: %@" = "Set setpoint: %@";
@@ -3101,6 +3148,7 @@
 "Sport" = "Sport";
 "Sportboot" = "Pleasure craft";
 "Sprache" = "Language";
+"Spracherkennung" = "Speech recognition";
 "Spracherkennung nicht bereit: %@" = "Speech recognition not ready: %@";
 "Spracherkennung wird vorbereitet …" = "Preparing speech recognition …";
 "Sprachmodell wird geladen …" = "Downloading speech model …";
@@ -3617,6 +3665,7 @@
 "Wettersatelliten senden nur beim Überflug (rund 10 min) – ohne Überflug sagt die Messung nichts. Rundstrahler hören sie ohnehin schlecht." = "Weather satellites only transmit during a pass (about 10 min) – without a pass the measurement says nothing. Omnidirectional antennas hear them poorly anyway.";
 "Wetterstationen lassen meist um 00 und 12 Uhr UTC Sonden steigen, manche auch um 06 und 18 Uhr. Ein Flug dauert 1,5–2 Stunden, bis der Ballon in 25–35 km Höhe platzt." = "Weather stations usually launch sondes at 00 and 12 UTC, some also at 06 and 18. A flight lasts 1.5–2 hours until the balloon bursts at 25–35 km altitude.";
 "Wetterstationen und Thermometer" = "Weather stations and thermometers";
+"Whisper" = "Whisper";
 "Wichtige zuerst" = "Important first";
 "Wie auf der Fernsehseite: 4,571 MHz über der Kanalmitte, 2·64/7 MS/s, Basisbandfilter 20 MHz." = "As on the TV page: 4.571 MHz above the channel center, 2·64/7 MS/s, baseband filter 20 MHz.";
 "Wie das System" = "System default";
@@ -3727,6 +3776,7 @@
 "Zu jeder Sekunde sinkt der Träger für 100 ms (0) oder 200 ms (1), in Sekunde 59 nicht (Minutenmarke). Die 59 Bits tragen die Zeit der folgenden Minute. Unter 1 MHz arbeitet der HackRF außerhalb seiner Spezifikation. Die angezeigte Abweichung der Mac-Uhr enthält die USB-Verzögerung (einige 10 ms)." = "Every second the carrier drops for 100 ms (0) or 200 ms (1), except in second 59 (minute marker). The 59 bits carry the time of the following minute. Below 1 MHz the HackRF operates outside its specification. The displayed Mac clock deviation includes the USB delay (a few tens of ms).";
 "Zu kurz (unter 0,8 s), nur Rauschen oder unverständlich." = "Too short (under 0.8 s), only noise or unintelligible.";
 "Zu schwach für" = "Too weak for";
+"Zu viele Fehlversuche – versuch es in %lld s erneut." = "Too many failed attempts – try again in %lld s.";
 "Zu viele Hörer" = "Too many listeners";
 "Zu weit von den anderen Kanälen entfernt – gleichzeitig gehen nur Kanäle bis 1,6 MHz Abstand." = "Too far from the other channels – only channels up to 1.6 MHz apart work at the same time.";
 "Zu wenig Platz %@: nötig %@, frei %@. Es wurde nichts gelöscht." = "Not enough space %@: needs %@, free %@. Nothing was deleted.";
@@ -3776,6 +3826,7 @@
 "ab %@" = "from %@";
 "aktuell" = "current";
 "alle" = "all";
+"alle %lld min" = "every %lld min";
 "alle Verträge kündigen" = "cancel all contracts";
 "am Boden" = "on the ground";
 "an %@" = "to %@";
@@ -3895,6 +3946,7 @@
 "nein" = "no";
 "nicht 59 Bits" = "not 59 bits";
 "nicht angegeben" = "not specified";
+"nicht angemeldet" = "not signed in";
 "nicht autorisiert" = "not authorized";
 "nicht berechtigt" = "not authorized";
 "nicht eingerastet" = "not locked";
@@ -4008,6 +4060,7 @@
 "· abgebrochen, unvollständig" = "· canceled, incomplete";
 "· importiert aus %@" = "· imported from %@";
 "· mit externem LNA" = "· with external LNA";
+"Ändern" = "Change";
 "Änderung der Steigrate" = "Vertical rate change";
 "Änderungen" = "Changes";
 "Äquator (J2000)" = "Equatorial (J2000)";
@@ -4020,6 +4073,7 @@
 "Über den HackRF-Modus (Notweg)" = "Via HackRF mode (emergency path)";
 "Über die USB-Verbindung nicht erreichbar: %@. Benenne die Datei am Gerät um oder öffne die SD-Karte als Laufwerk (Übersicht › „SD-Karte als Laufwerk“)." = "Not accessible over the USB connection: %@. Rename the file on the device or open the SD card as a drive (Overview › “SD Card as Drive”).";
 "Über ±5 ppm stellst du besser die Quarzkorrektur ein (Einstellungen › Antenne & Gerät)." = "Above ±5 ppm, better set the crystal correction (Settings › Antenna & Device).";
+"Überall abmelden" = "Sign Out Everywhere";
 "Überflüge" = "Passes";
 "Überflüge (nächste 48 h)" = "Passes (next 48 h)";
 "Überflüge ab %lld° empfängt der Empfangsplan automatisch." = "The Reception Schedule automatically receives passes from %lld° up.";

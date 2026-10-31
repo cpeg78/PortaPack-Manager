@@ -2,7 +2,7 @@ import Foundation
 import Network
 import os
 
-/// Kleiner HTTP/1.1-Server (nur GET/POST ohne Körper) für den Fernzugriff.
+/// Kleiner HTTP/1.1-Server (GET, POST mit kleinem Formular-Körper) für den Fernzugriff.
 /// Normale Antworten mit Länge und `Connection: close`; Audio-Abrufe bleiben
 /// offen und bekommen jeden ADTS-Rahmen über `broadcast` (wie Icecast).
 final class RemoteHTTPServer: @unchecked Sendable {
@@ -11,6 +11,19 @@ final class RemoteHTTPServer: @unchecked Sendable {
         var path = ""
         var query: [String: String] = [:]
         var headers: [String: String] = [:]
+        /// Gegenstelle als `RemoteAccessPolicy.peerKey` (für die Anmeldebremse).
+        var peer: String?
+        /// Körper eines POST (Anmeldeformular), höchstens `maximumBody` Bytes.
+        var body = Data()
+
+        /// Felder eines `application/x-www-form-urlencoded`-Körpers.
+        var form: [String: String] {
+            var components = URLComponents()
+            components.percentEncodedQuery = String(decoding: body, as: UTF8.self).replacingOccurrences(of: "+", with: "%20")
+            var fields: [String: String] = [:]
+            for item in components.queryItems ?? [] { fields[item.name] = item.value ?? "" }
+            return fields
+        }
     }
 
     enum Response: Sendable {
@@ -51,6 +64,8 @@ final class RemoteHTTPServer: @unchecked Sendable {
     static let connectionTimeout: TimeInterval = 30
     /// Höchstens so viele gleichzeitige Audioströme (jeder kostet Sendepuffer).
     static let maximumStreams = 8
+    /// Größter angenommener Körper (Anmeldeformular: Name und Passwort).
+    static let maximumBody = 4096
     /// Nur Gegenstellen aus Heimnetz und VPN annehmen (`RemoteAccessPolicy.isHomeOrVPN`).
     private var localOnly = true
     private static let log = Logger(subsystem: "de.christiangolz.portapackmanager", category: "Fernzugriff")
@@ -163,12 +178,38 @@ final class RemoteHTTPServer: @unchecked Sendable {
             if let data { buffer.append(data) }
             if let end = buffer.range(of: Data("\r\n\r\n".utf8)) {
                 self.open[ObjectIdentifier(connection)]?.headerDone = true
-                let request = Self.parse(buffer[..<end.lowerBound])
-                self.respond(to: request, on: connection)
+                var request = Self.parse(buffer[..<end.lowerBound])
+                request.peer = self.open[ObjectIdentifier(connection)]?.peer
+                let length = Int(request.headers["content-length"] ?? "") ?? 0
+                guard (0...Self.maximumBody).contains(length) else {
+                    self.send(.text(413, "Payload Too Large"), on: connection, head: false)
+                    return
+                }
+                self.receiveBody(connection, request: request, buffer: Data(buffer[end.upperBound...]), length: length)
             } else if error != nil || complete || buffer.count > 16_384 {
                 connection.cancel()
             } else {
                 self.receiveHeader(connection, buffer: buffer)
+            }
+        }
+    }
+
+    /// Liest den Körper bis `length` Bytes (die Gesamtfrist der Verbindung gilt weiter).
+    private func receiveBody(_ connection: NWConnection, request: Request, buffer: Data, length: Int) {
+        if buffer.count >= length {
+            var request = request
+            request.body = Data(buffer.prefix(length))
+            respond(to: request, on: connection)
+            return
+        }
+        connection.receive(minimumIncompleteLength: 1, maximumLength: Self.maximumBody) { [weak self] data, _, complete, error in
+            guard let self else { return }
+            var buffer = buffer
+            if let data { buffer.append(data) }
+            if buffer.count < length, error != nil || complete {
+                connection.cancel()
+            } else {
+                self.receiveBody(connection, request: request, buffer: buffer, length: length)
             }
         }
     }
@@ -281,11 +322,15 @@ final class RemoteHTTPServer: @unchecked Sendable {
     private static func reason(_ status: Int) -> String {
         switch status {
         case 200: "OK"
+        case 303: "See Other"
         case 400: "Bad Request"
+        case 401: "Unauthorized"
         case 403: "Forbidden"
         case 404: "Not Found"
         case 409: "Conflict"
+        case 413: "Content Too Large"
         case 421: "Misdirected Request"
+        case 429: "Too Many Requests"
         case 503: "Service Unavailable"
         default: "Error"
         }

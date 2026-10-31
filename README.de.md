@@ -82,9 +82,9 @@ Webseite für Handy und Tablet – nichts zu installieren, auf dem iPhone einfac
 - **Start, Stopp, Signal optimieren** – das Handy schaltet den HackRF selbst
   um. Frequenzspeicher, Flugfunk-Kanalliste und Empfangsplan teilen sich Mac
   und Handy; Plan-Termine lassen sich vom Handy überspringen.
-- **Sicher ab Werk:** Zugangsschlüssel in der Adresse (Einrichtung per
-  QR-Code), nur Geräte aus Heimnetz oder VPN (z. B. Tailscale), Schlüssel für
-  Zigbee oder Zähler verlassen den Mac nie.
+- **Sicher ab Werk:** Anmeldung mit eigenen Konten (Benutzername und
+  Passwort, Rollen „Bedienen“ und „Nur ansehen“), nur Geräte aus Heimnetz oder
+  VPN (z. B. Tailscale), Schlüssel für Zigbee oder Zähler verlassen den Mac nie.
 - Deutsch und Englisch, hell und dunkel.
 
 ![Flugzeuge: Karte mit Flugplätzen, Typ, Betreiber und Strecke](Docs/Bilder/flugzeuge.jpg)
