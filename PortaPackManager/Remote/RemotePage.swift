@@ -261,6 +261,8 @@ enum RemotePage {
     #wfcanvas { width:100%; flex:1; min-height:120px; display:block; background:#000; }
     #wx { flex:1; overflow:auto; padding:12px; padding-bottom:max(12px, env(safe-area-inset-bottom)); display:none; }
     .box { background:var(--card); border-radius:12px; margin-bottom:12px; overflow:hidden; }
+    .sect { margin:18px 4px 6px; font:700 13px -apple-system, system-ui, sans-serif; text-transform:uppercase; letter-spacing:.04em; color:var(--muted); }
+    .sect:first-child { margin-top:4px; }
     .box h4 { margin:0; padding:8px 12px; font-size:13px; color:var(--muted); border-bottom:1px solid var(--line); }
     /* Einklappbare Kästen im Wetter-Reiter (<details>). */
     details.box > summary { list-style:none; cursor:pointer; -webkit-user-select:none; user-select:none; }
@@ -1180,12 +1182,15 @@ enum RemotePage {
       let html = '';
       if (p.status) html += '<div class="box"><div class="running" style="display:flex;align-items:center;gap:8px"><span style="flex:1">● ' + esc(p.status) + '</span>' +
         '<button id="skipjob" class="skip">' + t('Überspringen') + '</button></div></div>';
+      // Erst die Planung (was, wann, wie), dann das Empfangene – vorher wechselten
+      // sich beide ab (Nutzer 31.10.2026: „schlecht strukturiert“).
+      html += '<div class="sect">' + t('Planung') + '</div>';
       html += '<div class="box"><h4>' + t('Automatisch empfangen') + '</h4>' +
         '<label class="sw"><span>' + t('🛰 Wettersatelliten (METEOR)') + '</span><input type="checkbox" id="am"' + (p.autoMeteor ? ' checked' : '') + '></label>' +
         '<label class="sw"><span>' + t('Mindesthöhe') + '</span><select id="minel">' + [10,15,20,25,30,35,40,50,60].map(v => '<option' + (v === p.minElevation ? ' selected' : '') + ' value="' + v + '">' + v + '°</option>').join('') + '</select></label>' +
         '<label class="sw"><span>' + t('🎈 Radiosonden') + '</span><input type="checkbox" id="as"' + (p.autoSonde ? ' checked' : '') + '></label>' +
         '<label class="sw"><span>' + esc(t('📡 ISS & Amateurfunksatelliten')) + '</span><input type="checkbox" id="aa"' + (p.autoAmateur ? ' checked' : '') + '></label></div>';
-      html += renderBalloons(p);
+      let done = renderBalloons(p);
       // Bilder je Überflug gruppiert, bevorzugt das Farbbild als Vorschau.
       const groups = new Map();
       for (const img of p.images) { if (!groups.has(img.pass)) groups.set(img.pass, []); groups.get(img.pass).push(img); }
@@ -1195,7 +1200,7 @@ enum RemotePage {
         list.map(img => '<figure data-name="' + esc(img.name) + '" data-cap="' + esc(fmtDay(img.date) + ' ' + fmtTime(img.date) + ' · ' + img.composite) + '">' +
           '<img loading="lazy" src="/img?w=360&n=' + encodeURIComponent(img.name) + '" alt="">' +
           '<figcaption>' + esc(fmtDay(img.date) + ' ' + fmtTime(img.date)) + '<br>' + esc(img.composite) + '</figcaption></figure>').join('')).join('') + '</div>';
-      html += wxBox('images', t('Empfangene Bilder'), imgs, groups.size || null);
+      done += wxBox('images', t('Empfangene Bilder'), imgs, groups.size || null);
       let passes = '';
       if (!p.homeSet) passes += '<div class="empty">' + t('Für die Vorhersage fehlt der Standort in der App.') + '</div>';
       else if (!p.passes.length) passes += '<div class="empty">' + esc(p.tleError || t('Bahndaten werden geladen …')) + '</div>';
@@ -1233,9 +1238,10 @@ enum RemotePage {
           '<div class="sub">' + esc(g.rms == null ? tt('Kein Sondenempfang – die Werte gelten beim nächsten Fenster.') : tt('Pegel {0} dBFS', g.rms.toFixed(1)) + clip) + '</div>' +
           (g.note ? '<div class="sub">' + esc(tt('Zuletzt automatisch: {0}', g.note)) + '</div>' : ''));
       }
-      html += wxBox('log', t('Verlauf'), p.history.length ? p.history.map(h =>
+      done += wxBox('log', t('Verlauf'), p.history.length ? p.history.map(h =>
         '<div class="item"><div class="grow"><div>' + esc(h.title) + '</div><div class="sub">' + esc(fmtDay(h.date) + ' ' + fmtTime(h.date) + ' · ' + h.result) + '</div></div></div>').join('')
         : '<div class="empty">' + t('Noch nichts aufgenommen.') + '</div>', p.history.length || null);
+      html += '<div class="sect">' + t('Empfangen') + '</div>' + done;
       html += '<div class="hint">' + t('Satellitenzeiten in Ortszeit des Handys. Die Termine laufen in der App auf dem Mac – er muss wach bleiben.') + '</div>';
       // Beim Neuzeichnen die Bildlaufposition halten (Abfrage alle paar Sekunden).
       const top = box.scrollTop; box.innerHTML = html; box.scrollTop = top;

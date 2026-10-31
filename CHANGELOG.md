@@ -28,7 +28,9 @@ All notable changes to PortaPack Manager. Versions follow
 
 - **Remote access schedule:** tap a satellite pass or sonde window to see day,
   time (also UTC), duration and – for sonde windows – the SondeHub forecast,
-  and skip it or schedule it again, like the switch on the Mac.
+  and skip it or schedule it again, like the switch on the Mac. The weather
+  tab is grouped: schedule first (automatic reception, passes, sonde windows,
+  sonde gain), then what was received (balloons, images, history).
 
 - **Remote access with accounts:** sign in with user name and password instead
   of an access key in the address. Several accounts with the roles “Control” and

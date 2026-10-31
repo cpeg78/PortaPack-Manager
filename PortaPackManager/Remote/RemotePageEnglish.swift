@@ -52,6 +52,8 @@ enum RemotePageEnglish {
         ("{0} Schiffe", "{0} ships"),
         ("An diesem Tag nichts empfangen.", "Nothing received on this day."),
         ("Vorheriger Tag", "Previous day"),
+        ("Empfangen", "Received"),
+        ("Planung", "Schedule"),
         ("Ausgelassen.", "Skipped."),
         ("ausgelassen", "skipped"),
         ("Dauer", "Duration"),
