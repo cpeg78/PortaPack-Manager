@@ -276,6 +276,17 @@ enum RemotePage {
     .item .sub { color:var(--muted); font-size:13px; }
     .item .el { font-variant-numeric:tabular-nums; }
     .rec { color:var(--accent); }
+    .job { cursor:pointer; }
+    .job .chev { color:var(--muted); transition:transform .15s; }
+    .job.open .chev { transform:rotate(90deg); }
+    .jobmore { padding:4px 12px 10px 42px; border-bottom:1px solid var(--line); font-size:14px; }
+    .jobmore table { border-collapse:collapse; margin-bottom:6px; }
+    .jobmore td { padding:1px 10px 1px 0; vertical-align:top; }
+    .jobmore td:first-child { color:var(--muted); }
+    .jobmore .sub { color:var(--muted); font-size:13px; margin:4px 0; }
+    .jobmore button { border:0; border-radius:8px; padding:7px 14px; margin-top:6px; background:var(--line); color:var(--text); font:600 14px -apple-system, system-ui, sans-serif; cursor:pointer; }
+    .viewer .jobmore button { display:none; }
+    .off { color:var(--muted); font-size:13px; }
     .sw { display:flex; justify-content:space-between; align-items:center; padding:10px 12px; border-bottom:1px solid var(--line); }
     .sw input[type=checkbox] { width:22px; height:22px; }
     .sw select { font:inherit; }
@@ -1139,6 +1150,28 @@ enum RemotePage {
       const heard = live.filter(b => b.age < 300).length;
       return wxBox('balloons', t('Wetterballons'), body, heard ? t('{0} live', heard) : (flights.length || null));
     }
+    // Termine (Überflüge, Sondenfenster): Antippen klappt Details auf, dort lässt sich
+    // der Termin auslassen bzw. wieder einplanen – wie der Schalter am Mac (31.10.2026).
+    const jobOpen = new Set();
+    function jobMark(j, planned) {
+      if (j.active) return '<span class="rec" title="' + t('läuft gerade') + '">▶</span>';
+      if (j.skipped) return '<span class="off">' + t('ausgelassen') + '</span>';
+      return planned ? '<span class="rec" title="' + t('wird aufgenommen') + '">●</span>' : '';
+    }
+    function jobDetails(j, rows, note, switchable, extra) {
+      const utc = ms => new Date(ms).toISOString().slice(11, 16);
+      const min = Math.round((j.end - j.start) / 60000);
+      const all = [[t('Tag'), new Date(j.start).toLocaleDateString(LOCALE, { weekday: 'long', day: 'numeric', month: 'long' })],
+        [t('Zeit'), fmtTime(j.start) + '–' + fmtTime(j.end)], ['UTC', utc(j.start) + '–' + utc(j.end)],
+        [t('Dauer'), min >= 60 ? tt('{0} h {1} min', Math.floor(min / 60), min % 60) : tt('{0} min', min)]].concat(rows);
+      const state = j.active ? t('Läuft gerade.') : j.skipped ? t('Ausgelassen.') : switchable ? t('Geplant.') : '';
+      let button = '';
+      if (j.active) button = '<button data-skipnow>' + t('Überspringen') + '</button>';
+      else if (j.skipped) button = '<button data-skipid="' + esc(j.id) + '" data-on="0">' + t('Wieder einplanen') + '</button>';
+      else if (switchable) button = '<button data-skipid="' + esc(j.id) + '" data-on="1">' + t('Überspringen') + '</button>';
+      return '<div class="jobmore"><table>' + all.map(r => '<tr><td>' + esc(r[0]) + '</td><td>' + esc(r[1]) + '</td></tr>').join('') + '</table>' +
+        (note ? '<div class="sub">' + esc(note) + '</div>' : '') + (state ? '<div class="sub">' + esc(state) + '</div>' : '') + (extra || '') + button + '</div>';
+    }
     function renderWeather() {
       const box = $('wx');
       if (!plan) { box.innerHTML = '<div class="empty">' + t('Lade Plan …') + '</div>'; return; }
@@ -1166,17 +1199,30 @@ enum RemotePage {
       let passes = '';
       if (!p.homeSet) passes += '<div class="empty">' + t('Für die Vorhersage fehlt der Standort in der App.') + '</div>';
       else if (!p.passes.length) passes += '<div class="empty">' + esc(p.tleError || t('Bahndaten werden geladen …')) + '</div>';
-      passes += p.passes.map(x => '<div class="item"><span>' + (x.daylight ? '☀︎' : '☾') + '</span><div class="grow"><div>' + esc(x.satellite) + '</div>' +
+      passes += p.passes.map(x => '<div class="item job' + (jobOpen.has(x.id) ? ' open' : '') + '" data-job="' + esc(x.id) + '"><span>' + (x.daylight ? '☀︎' : '☾') + '</span><div class="grow"><div>' + esc(x.satellite) + '</div>' +
         '<div class="sub">' + esc(fmtDay(x.start) + ' · ' + fmtTime(x.start) + '–' + fmtTime(x.end) + ' · ' + x.from + ' → ' + x.to) + '</div></div>' +
-        '<span class="el">' + x.maxElevation + '°</span>' + (x.planned ? '<span class="rec" title="' + t('wird aufgenommen') + '">●</span>' : '') + '</div>').join('');
+        '<span class="el">' + x.maxElevation + '°</span>' + jobMark(x, x.planned) + '<span class="chev">›</span></div>' +
+        (jobOpen.has(x.id) ? jobDetails(x, [
+          [t('Höchster Stand'), x.maxElevation + '°'], [t('Richtung'), x.from + ' → ' + x.to],
+          [t('Licht'), x.daylight ? t('Tag (sichtbares Bild)') : t('Nacht (Infrarot)')]],
+          x.wanted ? '' : tt('Unter der Mindesthöhe von {0}° – wird nicht aufgenommen.', p.minElevation), x.wanted || x.skipped) : '')).join('');
       html += wxBox('passes', t('Überflüge (nächste 48 h)'), passes, p.passes.length || null);
-      html += wxBox('windows', t('Sondenfenster'), (p.sondeWindows.length ? p.sondeWindows.map(w =>
-        '<div class="item"><span>🎈</span><div class="grow">' + esc(fmtDay(w.start) + ' · ' + fmtTime(w.start) + '–' + fmtTime(w.end)) + '</div>' + (p.autoSonde ? '<span class="rec">●</span>' : '') + '</div>').join('')
-        : '<div class="empty">' + t('Keine Startzeiten gewählt.') + '</div>') +
-        ((p.sondeForecast || []).length ? '<div class="sub" style="margin-top:6px">' + t('Vorhersage (SondeHub-Bahnrechner):') + '</div>' + p.sondeForecast.map(f =>
+      // Vorhersage gehört zu einem Fenster – dort in den Details, sonst wie bisher unten.
+      const fcWin = p.sondeForecastFor != null && p.sondeWindows.some(w => w.start === p.sondeForecastFor) ? p.sondeForecastFor : null;
+      const fcList = () => (p.sondeForecast || []).map(f =>
           '<div class="item"><span>' + (f.from ? '✓' : '✗') + '</span><div class="grow"><div>' + esc(f.site + (f.frequency ? ' · ' + f.frequency.toFixed(1) + ' MHz' : '')) + '</div>' +
           '<div class="sub">' + esc((f.from ? tt('in Reichweite {0}–{1}', fmtTime(f.from), fmtTime(f.to)) : tt('nicht in Reichweite')) + ' · ' +
-          tt('nächster Punkt {0} km um {1} in {2} km Höhe', f.closestKm, fmtTime(f.closestAt), (f.closestAltitude / 1000).toFixed(1)) + ' · ' + tt('Landung {0} km', f.landingKm)) + '</div></div></div>').join('') : ''), p.sondeWindows.length || null);
+          tt('nächster Punkt {0} km um {1} in {2} km Höhe', f.closestKm, fmtTime(f.closestAt), (f.closestAltitude / 1000).toFixed(1)) + ' · ' + tt('Landung {0} km', f.landingKm)) + '</div></div></div>').join('');
+      html += wxBox('windows', t('Sondenfenster'), (p.sondeWindows.length ? p.sondeWindows.map(w =>
+        '<div class="item job' + (jobOpen.has(w.id) ? ' open' : '') + '" data-job="' + esc(w.id) + '"><span>🎈</span><div class="grow">' + esc(fmtDay(w.start) + ' · ' + fmtTime(w.start) + '–' + fmtTime(w.end)) + '</div>' +
+          jobMark(w, p.autoSonde && !w.skipped) + '<span class="chev">›</span></div>' +
+        (jobOpen.has(w.id) ? jobDetails(w, [],
+          (p.sondeOnlyInRange ? tt('Startet nur, wenn SondeHub eine Sonde in {0} km meldet – sonst läuft der bisherige Empfang weiter.', p.sondeRangeKm) : ''),
+          p.autoSonde || w.skipped,
+          w.start === fcWin && (p.sondeForecast || []).length ? '<div class="sub">' + t('Vorhersage (SondeHub-Bahnrechner):') + '</div>' + fcList()
+            : '<div class="sub">' + t('Die Flugvorhersage holt die App kurz vor dem Fenster.') + '</div>') : '')).join('')
+        : '<div class="empty">' + t('Keine Startzeiten gewählt.') + '</div>') +
+        (fcWin == null && (p.sondeForecast || []).length ? '<div class="sub" style="margin-top:6px">' + t('Vorhersage (SondeHub-Bahnrechner):') + '</div>' + fcList() : ''), p.sondeWindows.length || null);
       const g = p.sondeGain;
       if (g) {
         const clip = g.clipped == null ? '' : ' · ' + tt('{0} % am Anschlag', (g.clipped * 100).toFixed(2));
@@ -1193,6 +1239,13 @@ enum RemotePage {
       html += '<div class="hint">' + t('Satellitenzeiten in Ortszeit des Handys. Die Termine laufen in der App auf dem Mac – er muss wach bleiben.') + '</div>';
       // Beim Neuzeichnen die Bildlaufposition halten (Abfrage alle paar Sekunden).
       const top = box.scrollTop; box.innerHTML = html; box.scrollTop = top;
+      box.querySelectorAll('.job').forEach(el => el.onclick = () => {
+        const id = el.dataset.job;
+        if (jobOpen.has(id)) jobOpen.delete(id); else jobOpen.add(id);
+        renderWeather();
+      });
+      box.querySelectorAll('[data-skipid]').forEach(b => b.onclick = () => { b.disabled = true; loadPlan({ skipid: b.dataset.skipid, on: b.dataset.on }); });
+      box.querySelectorAll('[data-skipnow]').forEach(b => b.onclick = () => { b.disabled = true; b.textContent = t('Beende …'); loadPlan({ skip: 1 }); setTimeout(() => loadPlan(), 2500); });
       if ($('skipjob')) $('skipjob').onclick = e => { e.target.disabled = true; e.target.textContent = t('Beende …'); loadPlan({ skip: 1 }); setTimeout(() => loadPlan(), 2500); };
       $('am').onchange = e => loadPlan({ meteor: e.target.checked ? 1 : 0 });
       $('as').onchange = e => loadPlan({ sonde: e.target.checked ? 1 : 0 });

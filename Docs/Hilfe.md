@@ -392,6 +392,10 @@ und Wetterballons führen mit „Empfangsplan …“ hierher.
 - **Überspringen** beendet eine laufende Aufnahme – im roten Band unten, auf
   dieser Seite oder im Fernzugriff. Der Termin startet dann nicht wieder, und
   der vorherige Empfang läuft weiter.
+- **Künftige Termine auslassen:** Am Mac mit dem Schalter rechts in der
+  Planliste, im Fernzugriff durch Antippen eines Überflugs oder Sondenfensters –
+  dort stehen auch Dauer, Zeit in UTC und die Vorhersage, dazu „Überspringen“
+  bzw. „Wieder einplanen“.
 - **Nach jedem Termin** startet wieder, was vorher lief – egal, ob Flugzeuge
   vom Handy oder Fernsehen am Mac. Tippst du in der Zwischenzeit am Handy auf
   Stopp oder startest selbst etwas, kommt nichts von selbst zurück.

@@ -15,8 +15,19 @@ enum RemoteWeather {
             let daylight: Bool
             let planned: Bool
             let from: String, to: String
+            /// Termin-Kennung (`Job.id`) für `skipid=`; `wanted`: erfüllt die Bedingungen
+            /// (Mindesthöhe), `skipped`: von Hand ausgelassen, `active`: läuft gerade.
+            let id: String
+            let wanted: Bool
+            let skipped: Bool
+            let active: Bool
         }
-        struct Window: Encodable { let start: Double, end: Double }
+        struct Window: Encodable {
+            let start: Double, end: Double
+            let id: String
+            let skipped: Bool
+            let active: Bool
+        }
         struct Forecast: Encodable {
             let site: String; let frequency: Double?; let launch: Double
             let closestKm: Int; let closestAt: Double; let closestAltitude: Int; let landingKm: Int
@@ -50,6 +61,11 @@ enum RemoteWeather {
         let passes: [Pass]
         let sondeWindows: [Window]
         let sondeForecast: [Forecast]
+        /// Beginn des Sondenfensters, für das `sondeForecast` gerechnet wurde.
+        let sondeForecastFor: Double?
+        /// Fenster starten nur, wenn SondeHub eine Sonde im Umkreis meldet.
+        let sondeOnlyInRange: Bool
+        let sondeRangeKm: Int
         let sondeGain: SondeGain
         let history: [Entry]
         let images: [Image]
@@ -90,12 +106,18 @@ enum RemoteWeather {
         text.flatMap(Double.init).flatMap { $0.isFinite ? $0 : nil }
     }
 
-    /// Wendet `meteor=0|1`, `sonde=0|1`, `minel=<Grad>` und die Sondenverstärkung
+    /// Wendet `skipid=<Termin>&on=1|0` (einzelnen Termin auslassen bzw. wieder
+    /// einplanen, wie der Schalter in der Planliste am Mac), `meteor=0|1`, `sonde=0|1`, `minel=<Grad>` und die Sondenverstärkung
     /// `slna=` (0–40, Schritt 8), `svga=` (0–62, gerade), `sauto=0|1` an und liefert den Plan.
     static func plan(_ query: [String: String]) -> Data {
         let planner = ReceptionPlanner.shared
         // Laufende Aufnahme überspringen (der Plan beendet sie im Hintergrund).
         if query["skip"] == "1" { Task { await planner.skipActive() } }
+        if let id = query["skipid"] {
+            let end = planner.sondeWindows.first { ReceptionPlanner.jobID(window: $0) == id }?.end
+                ?? planner.passes.first { ReceptionPlanner.jobID(pass: $0) == id }?.end
+            if let end { planner.setSkipped(id, end: end, query["on"] != "0") }
+        }
         if let value = query["meteor"] { planner.autoMeteor = value == "1" }
         if let value = query["sonde"] { planner.autoSonde = value == "1" }
         if let value = query["amateur"] { planner.autoAmateur = value == "1" }
@@ -111,17 +133,25 @@ enum RemoteWeather {
             minElevation: Int(planner.minElevation), status: planner.status,
             homeSet: ReceptionPlanner.home != nil, tleError: planner.tleError,
             passes: planner.passes.map {
-                .init(satellite: $0.satellite.name, start: ms($0.start), end: ms($0.end),
-                      maxElevation: Int($0.maxElevation.rounded()), daylight: $0.daylight,
-                      planned: planner.isPlanned($0) && !planner.isSkipped(ReceptionPlanner.jobID(pass: $0)),
-                      from: GeoMath.compass($0.startAzimuth), to: GeoMath.compass($0.endAzimuth))
+                let id = ReceptionPlanner.jobID(pass: $0)
+                return .init(satellite: $0.satellite.name, start: ms($0.start), end: ms($0.end),
+                             maxElevation: Int($0.maxElevation.rounded()), daylight: $0.daylight,
+                             planned: planner.isPlanned($0) && !planner.isSkipped(id),
+                             from: GeoMath.compass($0.startAzimuth), to: GeoMath.compass($0.endAzimuth),
+                             id: id, wanted: planner.isPlanned($0), skipped: planner.isSkipped(id), active: planner.isActive(id))
             },
-            sondeWindows: planner.sondeWindows.map { .init(start: ms($0.start), end: ms($0.end)) },
+            sondeWindows: planner.sondeWindows.map {
+                let id = ReceptionPlanner.jobID(window: $0)
+                return .init(start: ms($0.start), end: ms($0.end), id: id,
+                             skipped: planner.isSkipped(id), active: planner.isActive(id))
+            },
             sondeForecast: planner.sondeForecast.map {
                 .init(site: $0.site, frequency: $0.frequencyMHz, launch: ms($0.launch), closestKm: Int($0.closestKm),
                       closestAt: ms($0.closestAt), closestAltitude: Int($0.closestAltitude), landingKm: Int($0.landingKm),
                       from: $0.inRange.map { ms($0.lowerBound) }, to: $0.inRange.map { ms($0.upperBound) })
             },
+            sondeForecastFor: planner.sondeForecastWindow.map(ms),
+            sondeOnlyInRange: planner.sondeOnlyInRange, sondeRangeKm: Int(planner.sondeRangeKm),
             sondeGain: .init(lna: Int(sonde.lnaGain), vga: Int(sonde.vgaGain), auto: sonde.autoBackoff, note: sonde.gainNote,
                              rms: levels.map { ($0.rmsDBFS * 10).rounded() / 10 }, clipped: levels.map(\.clipped)),
             history: planner.history.prefix(30).map { .init(date: ms($0.date), title: $0.title, result: $0.result) },

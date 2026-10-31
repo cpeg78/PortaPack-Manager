@@ -52,6 +52,22 @@ enum RemotePageEnglish {
         ("{0} Schiffe", "{0} ships"),
         ("An diesem Tag nichts empfangen.", "Nothing received on this day."),
         ("Vorheriger Tag", "Previous day"),
+        ("Ausgelassen.", "Skipped."),
+        ("ausgelassen", "skipped"),
+        ("Dauer", "Duration"),
+        ("Die Flugvorhersage holt die App kurz vor dem Fenster.", "The app fetches the flight forecast shortly before the window."),
+        ("Geplant.", "Scheduled."),
+        ("Höchster Stand", "Max. elevation"),
+        ("Licht", "Light"),
+        ("Läuft gerade.", "Running now."),
+        ("läuft gerade", "running now"),
+        ("Nacht (Infrarot)", "Night (infrared)"),
+        ("Richtung", "Direction"),
+        ("Startet nur, wenn SondeHub eine Sonde in {0} km meldet – sonst läuft der bisherige Empfang weiter.", "Starts only if SondeHub reports a sonde within {0} km – otherwise the current reception keeps running."),
+        ("Tag", "Day"),
+        ("Tag (sichtbares Bild)", "Day (visible image)"),
+        ("Unter der Mindesthöhe von {0}° – wird nicht aufgenommen.", "Below the minimum elevation of {0}° – not recorded."),
+        ("Wieder einplanen", "Schedule again"),
         ("Nächster Tag", "Next day"),
         ("Tag wählen", "Choose day"),
         ("Standort", "Location"),
@@ -401,6 +417,7 @@ enum RemotePageEnglish {
 
     /// Bewusst unübersetzt: Eigennamen, Abkürzungen, Symbole.
     static let unchanged: Set<String> = [
+        "{0} h {1} min", "{0} min",
         "+", "ACARS", "Band", "FT8/WSPR", "Format", "LNA", "Mono", "Name", "Name (optional)", "PortaPack",
         "Position", "Router", "SOS", "Smart Home 868", "Smart Home 868 MHz", "Status", "Stereo", "VGA", "Zigbee",
         "max. {0} m", "{0} live", "−", "▶︎", "▶︎ Start", "▾", "◀︎", "♫", "⚓︎", "✈︎", "⤢"

@@ -389,6 +389,9 @@ Weather Balloons pages lead here with “Reception Schedule …”.
 - **Skip** ends a running recording – in the red banner at the bottom, on this
   page or in Remote Access. The entry won't start again, and the previous
   reception carries on.
+- **Leave out future entries:** on the Mac with the switch on the right of the
+  schedule list, in Remote Access by tapping a pass or sonde window – it also
+  shows duration, UTC time and the forecast, plus “Skip” or “Schedule again”.
 - **After every entry**, whatever was running before starts again – whether
   aircraft from the phone or TV on the Mac. If you tap Stop on the phone or
   start something yourself in the meantime, nothing comes back by itself.
