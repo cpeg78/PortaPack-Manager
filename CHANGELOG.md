@@ -14,6 +14,21 @@ All notable changes to PortaPack Manager. Versions follow
   versions. Only changed targets are sent to the map; direction arrows on tracks
   keep a fixed on-screen spacing and thin out when zooming out. GPS gets a
   “Show position” button; drones, Meshtastic and VOR get “Show all …”.
+  Zooming with mouse wheel and trackpad is smooth instead of stepwise.
+
+- **Map symbols easier to see:** ships get their own hull symbol; aircraft,
+  ships, APRS stations, repeaters, beacons and radiosondes have a dark outline
+  and stand out on water, forest and fields – on the Mac and on the remote
+  access page alike. The phone map shows base stations and aids to navigation
+  with their own symbols and radiosondes as balloons. Map labels can be clicked
+  to select the target.
+
+- **Remote access archive:** step through the days with ‹ › or pick a day from
+  the calendar instead of an ever-growing list.
+
+- **Remote access schedule:** tap a satellite pass or sonde window to see day,
+  time (also UTC), duration and – for sonde windows – the SondeHub forecast,
+  and skip it or schedule it again, like the switch on the Mac.
 
 - **Remote access with accounts:** sign in with user name and password instead
   of an access key in the address. Several accounts with the roles “Control” and
