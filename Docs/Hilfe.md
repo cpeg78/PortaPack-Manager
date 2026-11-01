@@ -45,7 +45,6 @@ Hier startest du mit einem Klick und siehst, wie es dem Gerät geht.
   Kacheln tragen Namen und Symbol der Seite in der Seitenleiste.
 - **Verbindung** – in welchem Modus das Gerät ist; **Technische Details**
   (eingeklappt) nennen Firmware, Seriennummer und Funkmodul.
-- **Standort** – der eingetragene Standort; ändern über „Einstellungen …“.
 - **Gerät steuern** – „Status aktualisieren“ (⌘R), „Uhr stellen“, „Zurück zu
   Mayhem (Neustart)“, „SD-Karte als Laufwerk“ und „Ersteinrichtung …“.
 - **Fehlerbehebung** (eingeklappt) – „USB neu anmelden“ (hilft, wenn die
@@ -340,6 +339,10 @@ Schiffe mit Name, Typ, Ziel, Ankunftszeit und Foto auf der Karte.
 Positions- und Wettermeldungen von Funkamateuren auf 144,800 MHz, auf der Karte.
 Je nach Gegend kommen nur ein paar Pakete pro Stunde. Mit **Kanal mithören**
 hörst du die Pakete als Pfeifen; Spuren schaltest du unter „Anzeige“.
+Unter **Frequenz** gibt es auch **433,775 MHz (LoRa-APRS)**: dort senden
+LoRa-Tracker und -iGates, die Stationen landen in derselben Liste und Karte.
+Auch im Fernzugriff gibt es einen Reiter **APRS** mit Karte, Stationsliste und
+Kanalwahl – Antippen einer Station zeigt Kommentar, Pfad und ihre Spur.
 
 <a id="pager"></a>
 ## Funkruf (POCSAG)
@@ -612,7 +615,9 @@ hörst du ihn – bei mehreren gleichzeitig den lautesten.
   öfter Fehlalarm.
 - **Ausschnitt:** Die App hört 8 MHz auf einmal. Liegen deine Kanäle weiter
   auseinander, schalte vor dem Start „Breiter Ausschnitt (16 MHz)“ ein (braucht
-  mehr Rechenleistung). Kanäle außerhalb nennt das Bedienfeld.
+  mehr Rechenleistung). Genutzt wird er nur, wenn deine Liste wirklich nicht in
+  8 MHz passt – sonst bleibt es beim schmalen Ausschnitt mit halber Rechenlast.
+  Kanäle außerhalb nennt das Bedienfeld.
 
 ### Aktive Kanäle finden
 
@@ -1075,7 +1080,7 @@ bestätigen.
 - Oben links öffnet der Knopf mit dem Namen des Empfängers das Menü mit allen
   Reitern: Flugzeuge, Flugzeug-Datenfunk, Flugfunk, Schiffe, Seefunk-Notruf,
   Wetter & Satelliten, Digitalradio, Radio, Spektrum, Belegungsmonitor,
-  Funksensoren, Smart Home 868, Zigbee und FT8/WSPR.
+  Funksensoren, Smart Home 868, Zigbee, APRS und FT8/WSPR.
 - **Start** schaltet den HackRF auf diesen Empfänger um, **Stopp** beendet ihn.
   Das Quadrat oben rechts beendet jeden Empfang – auch einen am Mac gestarteten,
   danach startet nichts von selbst wieder. Die Antenne daneben ist „Signal
@@ -1083,6 +1088,9 @@ bestätigen.
 - Bei Radio, Digitalradio und Flugfunk spielt **Hier anhören** den Ton auf dem
   Handy; **Ton aus** stellt nur den Ton ab, der Empfang läuft weiter.
 - Die Kästen klappst du mit einem Tipp auf die Überschrift auf und zu.
+- Das Infoblatt eines Flugzeugs oder Schiffs ziehst du am Griff oben größer
+  oder kleiner (ein Tipp auf den Griff schaltet klein – halb – groß weiter).
+  **✕** blendet es aus; das Ziel bleibt gewählt und rückt in die Kartenmitte.
 - Frequenzspeicher, Flugfunk-Kanalliste und Empfangsplan teilen sich Mac und Handy.
   Im Reiter Radio steht der Frequenzspeicher zum Antippen und Abstimmen;
   bearbeiten und löschen geht am Mac.

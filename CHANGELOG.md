@@ -3,6 +3,56 @@
 All notable changes to PortaPack Manager. Versions follow
 [Semantic Versioning](https://semver.org).
 
+## 1.1.1 – 2026-11-01
+
+### Added
+
+- **APRS in remote access:** new tab with a map of the stations (same symbols
+  as on the Mac), a station list with distance and comment, the latest
+  packets and the channel choice. Tap a station to see its details and track.
+
+- **LoRa APRS:** the APRS receiver also listens on 433.775 MHz (LoRa, SF12,
+  125 kHz) – the usual 70 cm APRS in Europe. Stations show up in the same list
+  and map, on the Mac and in remote access. A second 433.775 MHz channel
+  (“FM APRS”) decodes classic AFSK 1200 there. The chosen channel is remembered.
+
+### Changed
+
+- **WLAN uses half the CPU:** the OFDM preamble check no longer recomputes the
+  same sine/cosine values thousands of times per second (measured on a real
+  recording: 48 → 21 % of a core, identical frames).
+
+- **Airband uses less CPU:** “Wide span (16 MHz)” is now only used when the
+  channel list doesn’t fit into 8 MHz; otherwise the narrow span runs with half
+  the load.
+
+- **FT8/WSPR map:** stations can be clicked on the Mac map to select their
+  latest decode, and they are drawn larger; on the phone they show the antenna
+  symbol with call sign instead of small dots.
+
+- **Remote access info sheet:** on the phone the sheet of an aircraft or ship
+  can be dragged at its handle to small, half or large size (tapping the handle
+  steps through them); closing it keeps the target selected and centred on the
+  map.
+
+- **Remote access weather tab:** a skipped sonde window no longer shows up as
+  “Sonde window until …” in the status line, and skipped entries are greyed out.
+  An open window that waits because no sonde is in range says “waiting” instead
+  of the blue dot; its details give the reason.
+
+- **Overview:** the “Location” section is gone – the location is set in the
+  settings.
+
+### Fixed
+
+- **Sidebar:** a selected entry further down the list scrolls into view instead
+  of staying hidden below the visible area.
+
+- **Ship photos:** the photo credit shows only the photographer and licence
+  (at most 80 characters) instead of a whole licence text some authors put
+  into the Wikimedia Commons author field; on the phone it takes at most two
+  lines.
+
 ## 1.1.0 – 2026-10-31
 
 ### Changed

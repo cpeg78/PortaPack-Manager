@@ -243,6 +243,17 @@ struct APRSPacket: Sendable, Equatable {
         return packet
     }
 
+    /// LoRa-APRS-Nutzlast: `<` 0xFF 0x01, dann eine TNC2-Zeile (manche Sender
+    /// lassen den Vorspann weg oder hängen CR/LF an).
+    static func parse(loRa payload: [UInt8]) -> APRSPacket? {
+        var bytes = payload[...]
+        if bytes.starts(with: [0x3C, 0xFF, 0x01]) { bytes = bytes.dropFirst(3) }
+        while let last = bytes.last, last == 0x0D || last == 0x0A || last == 0 { bytes = bytes.dropLast() }
+        // Kommentare sind meist UTF-8, aber nicht immer – sonst byteweise als Latin-1.
+        let line = String(bytes: bytes, encoding: .utf8) ?? String(bytes.map { Character(Unicode.Scalar($0)) })
+        return parse(tnc2: line)
+    }
+
     /// Paket aus einer TNC2-Zeile (für Drittanbieter-Pakete und Tests).
     static func parse(tnc2 line: String) -> APRSPacket? {
         guard let colon = line.firstIndex(of: ":"), let gt = line.firstIndex(of: ">"), gt < colon else { return nil }

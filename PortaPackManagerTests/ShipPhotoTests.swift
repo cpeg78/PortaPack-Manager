@@ -21,6 +21,15 @@ struct ShipPhotoTests {
         #expect(subs == ["Category:Peter Pan (ship, 2022)"])
     }
 
+    @Test("Urheber: nur der erste Absatz, ohne ©, nie ein ganzer Lizenztext")
+    func shortArtist() {
+        let html = "<p>© <a href=\"x\">Ra Boe / Wikipedia</a>  \n</p>\n<div class=\"plainlinks\"><a href=\"y\"><span>Create the proper attribution</span></a></div><div>This file is licensed …</div>"
+        #expect(ShipPhotoLookup.shortArtist(html) == "Ra Boe / Wikipedia")
+        #expect(ShipPhotoLookup.shortArtist("<a href=\"//x\">SVWerder2010</a>") == "SVWerder2010")
+        #expect(ShipPhotoLookup.shortArtist(String(repeating: "Wort ", count: 40)).count == 80)
+        #expect(ShipPhotoLookup.shortArtist("") == "")
+    }
+
     @Test("ETA aus Meldung 5")
     func eta() {
         #expect(AISETA(month: 10, day: 24, hour: 14, minute: 30)?.text == "24.10. 14:30 UTC")

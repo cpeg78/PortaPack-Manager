@@ -81,6 +81,7 @@ enum LaunchStart {
         case .dsc: .dsc
         case .ft8: .ft8
         case .occupancy: .occupancy
+        case .aprs: .aprs
         default: nil
         }
     }
@@ -89,7 +90,7 @@ enum LaunchStart {
     /// Nicht: METEOR und Amateurfunk (nur beim Überflug sinnvoll, macht der Plan),
     /// Antennen-Check (einmalig), Geräteseiten.
     nonisolated static let localItems: Set<SidebarItem> = [
-        .spectrum, .tv, .aprs, .pager, .flarm, .ble, .wifi, .drones, .meshtastic, .lorawan,
+        .spectrum, .tv, .pager, .flarm, .ble, .wifi, .drones, .meshtastic, .lorawan,
         .dcf77, .gps, .vor, .cells, .hydrogen, .sonde, .recorder,
     ]
 

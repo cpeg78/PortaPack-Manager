@@ -148,6 +148,10 @@ final class WLANOFDMDemodulator {
     static let plateauThreshold: Float = 0.5
 
     private(set) var preambles = 0
+    /// Arbeitspuffer der Präambelsuche, über Blöcke wiederverwendet (vorher je Block
+    /// acht neue Felder à ≈ 0,5 MB samt Nullfüllen – 31.10.2026).
+    private var prodRe: [Float] = [], prodIm: [Float] = [], mags: [Float] = []
+    private var cRe: [Float] = [], cIm: [Float] = [], p: [Float] = [], m: [Float] = [], p2: [Float] = []
     private(set) var signalErrors = 0
     private(set) var fcsErrors = 0
 
@@ -163,9 +167,9 @@ final class WLANOFDMDemodulator {
         guard count > window + 16 + 400, from < count else { return ([], from) }
         let metricCount = count - 16 - window + 1
         // C[n] = Σ x[n+k]·conj(x[n+k+16]), P[n] = Σ |x[n+k+16]|² über k < 48.
-        var prodRe = [Float](repeating: 0, count: count - 16)
-        var prodIm = [Float](repeating: 0, count: count - 16)
-        var mags = [Float](repeating: 0, count: count - 16)
+        WLANScratch.size(&prodRe, count - 16); WLANScratch.size(&prodIm, count - 16); WLANScratch.size(&mags, count - 16)
+        WLANScratch.size(&cRe, metricCount); WLANScratch.size(&cIm, metricCount); WLANScratch.size(&p, metricCount)
+        WLANScratch.size(&m, metricCount); WLANScratch.size(&p2, metricCount)
         var a = DSPSplitComplex(realp: UnsafeMutablePointer(mutating: re + 16), imagp: UnsafeMutablePointer(mutating: im + 16))
         var b = DSPSplitComplex(realp: UnsafeMutablePointer(mutating: re), imagp: UnsafeMutablePointer(mutating: im))
         prodRe.withUnsafeMutableBufferPointer { pr in
@@ -175,20 +179,15 @@ final class WLANOFDMDemodulator {
                 vDSP_zvmags(&a, 1, &mags, 1, vDSP_Length(count - 16))
             }
         }
-        var cRe = [Float](repeating: 0, count: metricCount)
-        var cIm = [Float](repeating: 0, count: metricCount)
-        var p = [Float](repeating: 0, count: metricCount)
         vDSP_vswsum(prodRe, 1, &cRe, 1, vDSP_Length(metricCount), vDSP_Length(window))
         vDSP_vswsum(prodIm, 1, &cIm, 1, vDSP_Length(metricCount), vDSP_Length(window))
         vDSP_vswsum(mags, 1, &p, 1, vDSP_Length(metricCount), vDSP_Length(window))
-        var m = [Float](repeating: 0, count: metricCount)
         cRe.withUnsafeMutableBufferPointer { r in
             cIm.withUnsafeMutableBufferPointer { i in
                 var c = DSPSplitComplex(realp: r.baseAddress!, imagp: i.baseAddress!)
                 vDSP_zvmags(&c, 1, &m, 1, vDSP_Length(metricCount))
             }
         }
-        var p2 = [Float](repeating: 0, count: metricCount)
         vDSP_vsq(p, 1, &p2, 1, vDSP_Length(metricCount))
         var eps = Float(1e-12)
         vDSP_vsadd(p2, 1, &eps, &p2, 1, vDSP_Length(metricCount))
@@ -243,18 +242,25 @@ final class WLANOFDMDemodulator {
         var best = from, bestValue: Float = 0
         var ltfEnergy: Float = 0
         for k in 0..<64 { ltfEnergy += ltf.re[k] * ltf.re[k] + ltf.im[k] * ltf.im[k] }
+        // Ablage einmal je Abtastwert herausdrehen statt für jede Lage n erneut: jeder Wert
+        // kommt in bis zu 128 Lagen vor (vorher ≈ 25 000 sin/cos je Präambel, und Präambel-
+        // Fehlalarme gibt es tausende pro Sekunde – 31.10.2026). Gleiche Formel → gleiche Werte.
+        let span = min(to + 127, count) - from
+        var rotRe = [Float](repeating: 0, count: span), rotIm = [Float](repeating: 0, count: span)
+        for j in 0..<span {
+            let phase = -2 * Float.pi * cfo * Float(from + j)
+            let c = cos(phase), s = sin(phase)
+            rotRe[j] = re[from + j] * c - im[from + j] * s
+            rotIm[j] = re[from + j] * s + im[from + j] * c
+        }
         for n in from..<to {
             guard n + 128 <= count else { break }
             var total: Float = 0
             for half in 0..<2 {
                 var sr: Float = 0, si: Float = 0, energy: Float = 0
-                let base = n + 64 * half
+                let base = n + 64 * half - from
                 for k in 0..<64 {
-                    // Ablage herausdrehen, damit die Korrelation nicht auseinanderläuft.
-                    let phase = -2 * Float.pi * cfo * Float(base + k)
-                    let c = cos(phase), s = sin(phase)
-                    let xr = re[base + k] * c - im[base + k] * s
-                    let xi = re[base + k] * s + im[base + k] * c
+                    let xr = rotRe[base + k], xi = rotIm[base + k]
                     sr += xr * ltf.re[k] + xi * ltf.im[k]
                     si += xi * ltf.re[k] - xr * ltf.im[k]
                     energy += xr * xr + xi * xi

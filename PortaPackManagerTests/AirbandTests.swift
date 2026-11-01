@@ -155,6 +155,11 @@ struct AirbandTests {
         #expect(!channels.contains { $0.index == w.center })
         let wide = AirbandWindow.best(for: channels, bins: 1920)
         #expect(wide.covers(channels[2].index))
+        // 16 MHz nur, wenn es mehr Listenkanäle abdeckt (sonst halbe Rechenlast).
+        let near = Array(channels.prefix(3))
+        #expect(!AirbandModel.needsWide(near, allowed: true))
+        #expect(AirbandModel.needsWide(near + [AirbandChannel(index: AirbandGrid.index(parsing: "126.0")!, name: "")], allowed: true))
+        #expect(!AirbandModel.needsWide(channels + [AirbandChannel(index: AirbandGrid.index(parsing: "124.0")!, name: "")], allowed: false))
         // Suchlauf deckt das Band ab (mit beiden Versätzen auch die Mitten).
         var covered = Set<Int>()
         for shift in 0..<2 { for w in AirbandWindow.sweep(bins: 960, shift: shift) { covered.formUnion(AirbandGrid.range.filter(w.covers)) } }

@@ -105,7 +105,7 @@ final class ShipPhotoLookup {
                 let raw = (meta?[key] as? [String: Any])?["value"] as? String ?? ""
                 return stripHTML(raw)
             }
-            let artist = value("Artist")
+            let artist = shortArtist((meta?["Artist"] as? [String: Any])?["value"] as? String ?? "")
             let license = value("LicenseShortName")
             let author = [artist.isEmpty ? String(localized: "unbekannt") : artist, license].filter { !$0.isEmpty }
                 .joined(separator: ", ")
@@ -114,6 +114,19 @@ final class ShipPhotoLookup {
                                  help: String(localized: "Foto auf Wikimedia Commons öffnen"))
         }
         return nil
+    }
+
+    /// Manche Fotografen schreiben ihren ganzen Lizenztext ins Feld „Artist“
+    /// (Fund 01.11.2026: Seitenlanger Bildnachweis unter einem Schiffsfoto).
+    /// Es zählt nur der erste Absatz, ohne „©“, höchstens 80 Zeichen.
+    static func shortArtist(_ html: String) -> String {
+        let blocks = html.replacingOccurrences(of: "<br\\s*/?>|</?(p|div|li|ul|ol|table|tr|td)\\b[^>]*>", with: "\n",
+                                               options: [.regularExpression, .caseInsensitive])
+        let first = blocks.split(separator: "\n").map { stripHTML(String($0)) }.first { !$0.isEmpty } ?? ""
+        var name = first.replacingOccurrences(of: "^(©|\\(c\\))\\s*", with: "", options: [.regularExpression, .caseInsensitive])
+            .replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
+        if name.count > 80 { name = String(name.prefix(79)).trimmingCharacters(in: .whitespaces) + "…" }
+        return name
     }
 
     static func stripHTML(_ text: String) -> String {

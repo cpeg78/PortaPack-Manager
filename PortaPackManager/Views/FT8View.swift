@@ -30,7 +30,7 @@ struct FT8View: View {
                         .frame(minHeight: 110, idealHeight: 190)
                         .accessibilityElement(children: .contain)
                         .accessibilityLabel("Wasserfall des Amateurfunk-Kanals")
-                    FT8MapPane(model: model, selection: selection, home: home, controller: mapController)
+                    FT8MapPane(model: model, selection: $selection, home: home, controller: mapController)
                         .frame(minHeight: 140, idealHeight: 280)
                     FT8SpotTable(model: model, selection: $selection, order: $order, onlyCQ: onlyCQ, home: home)
                         .frame(minHeight: 120)
@@ -308,7 +308,7 @@ struct FT8WaterfallPane: View {
 /// Karte der Locatoren (eigene Ansicht, siehe `FT8WaterfallPane`).
 struct FT8MapPane: View {
     let model: FT8Model
-    let selection: FT8Spot.ID?
+    @Binding var selection: FT8Spot.ID?
     let home: CLLocationCoordinate2D?
     let controller: MapController
 
@@ -336,15 +336,21 @@ struct FT8MapPane: View {
             let color = selected ? MapColor.selected
                 : Date().timeIntervalSince(station.lastHeard) > 900 ? MapColor.stale
                 : wspr ? MapColor.purple : accent
+            // Antippen wählt den neuesten Spot der Station (Nutzer 31.10.2026: Stationen
+            // ließen sich nicht anwählen und waren zu klein).
             list.append(.marker("st:\(station.call)", at: coordinate, symbol: wspr ? .signal : .antenna, color: color,
-                                size: 16, label: station.call, selected: selected))
+                                size: 22, label: station.call, selected: selected, select: station.call))
         }
         return list
     }
 
     var body: some View {
         LeafletMap(features: features, controller: controller,
-                   options: MapOptions(fitMaxZoom: 8, center: home.map(MapPoint.init) ?? MapPoint(51, 10), zoom: 4))
+                   options: MapOptions(fitMaxZoom: 8, center: home.map(MapPoint.init) ?? MapPoint(51, 10), zoom: 4),
+                   onSelect: { call in
+                       // Spots stehen neueste zuerst.
+                       selection = call.flatMap { call in model.spots.first { $0.call == call }?.id }
+                   })
             .overlay(alignment: .topLeading) {
                 if model.stations.isEmpty {
                     Text(model.running ? "Noch keine Station mit Locator" : "Empfang starten")

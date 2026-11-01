@@ -52,8 +52,8 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: de.christiangolz.portapackmanager
         PRODUCT_NAME: PortaPackManager
-        MARKETING_VERSION: "1.1.0"
-        CURRENT_PROJECT_VERSION: "2"
+        MARKETING_VERSION: "1.1.1"
+        CURRENT_PROJECT_VERSION: "3"
         GENERATE_INFOPLIST_FILE: NO
         INFOPLIST_FILE: PortaPackManager/Resources/Info.plist
         CODE_SIGN_ENTITLEMENTS: PortaPackManager/Resources/PortaPackManager.entitlements

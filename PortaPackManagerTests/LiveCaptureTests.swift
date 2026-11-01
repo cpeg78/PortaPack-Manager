@@ -280,4 +280,64 @@ struct LiveCaptureTests {
         report("Meshtastic", ["\(frames.count) Rahmen, CRC-Fehler \(demod.crcErrors), Kopffehler \(demod.headerErrors), Rauschen \(demod.noiseDB) dB"]
                + packets.prefix(15))
     }
+
+    /// Bluetooth LE Kanal 37: `ble_8000000_2400000000.iq` (HackRF 2 MHz unter 2402 MHz).
+    /// Gibt Pakete, eine Prüfsumme über alle PDUs und die Rechenzeit aus –
+    /// für Vorher/Nachher-Vergleiche bei Optimierungen.
+    @Test func bluetooth() throws {
+        let demod = BLEDemodulator()
+        var packets: [BLEPacket] = []
+        var seconds = 0.0, bytes = 0
+        let clock = ContinuousClock()
+        try blocks("ble") { block in
+            bytes += block.count
+            let d = clock.measure { packets += demod.process(block, channel: 37) }
+            seconds += Double(d.components.seconds) + Double(d.components.attoseconds) / 1e18
+        }
+        let digest = packets.reduce(UInt64(1469598103934665603)) { h, p in p.pdu.reduce(h) { ($0 ^ UInt64($1)) &* 1099511628211 } }
+        let audio = Double(bytes / 2) / BLEDemodulator.inputRate
+        report("BLE", [String(format: "%d Pakete, Prüfsumme %016llx, %.2f s Rechenzeit für %.1f s Signal (%.0f %% eines Kerns)",
+                              packets.count, digest, seconds, audio, 100 * seconds / max(audio, 1e-9))])
+    }
+
+    /// WLAN Kanal 6: `wlan_20000000_2437000000.iq` (20 MS/s, Mitte = Kanal).
+    @Test func wlan() throws {
+        let receiver = WLANReceiver()
+        var packets: [WLANPacket] = []
+        var seconds = 0.0, bytes = 0
+        let clock = ContinuousClock()
+        // LIVE_REPEAT=n: Aufnahme n-mal durchlaufen (für `sample` beim Messen).
+        let repeats = Int(ProcessInfo.processInfo.environment["LIVE_REPEAT"] ?? "") ?? 1
+        for _ in 0..<repeats { try blocks("wlan") { block in
+            bytes += block.count
+            let d = clock.measure { packets += receiver.process(block) }
+            seconds += Double(d.components.seconds) + Double(d.components.attoseconds) / 1e18
+        } }
+        let digest = packets.reduce(UInt64(1469598103934665603)) { h, p in p.mpdu.reduce(h) { ($0 ^ UInt64($1)) &* 1099511628211 } }
+        let audio = Double(bytes / 2) / WLANReceiver.sampleRate
+        let dsss = packets.filter { $0.modulation == .dsss }.count
+        report("WLAN", [String(format: "%d Rahmen (%d DSSS, %d OFDM), Prüfsumme %016llx, %.2f s Rechenzeit für %.1f s Signal (%.0f %% eines Kerns)",
+                               packets.count, dsss, packets.count - dsss, digest, seconds, audio, 100 * seconds / max(audio, 1e-9)),
+                       "DSSS-Stöße \(receiver.dsss.bursts), OFDM-Präambeln \(receiver.ofdm.preambles), SIGNAL-Fehler \(receiver.ofdm.signalErrors), FCS-Fehler OFDM \(receiver.ofdm.fcsErrors) / DSSS \(receiver.dsss.fcsErrors)"])
+    }
+
+    /// Rechenlast der Sonden-Vorstufe mit vier festgehaltenen Kanälen (je eigener
+    /// Mischer + Dezimierer bei 10 MS/s): `sonde_10000000_403000000.iq`.
+    @Test func sondenLast() throws {
+        let receiver = SondeReceiver()
+        for hz in [401_100_000.0, 402_500_000, 403_700_000, 404_500_000] { receiver.pin(hz) }
+        var seconds = 0.0, bytes = 0, reports = 0, levels: [Float] = []
+        let clock = ContinuousClock()
+        try blocks("sonde") { block in
+            bytes += block.count
+            let d = clock.measure { receiver.process(block) }
+            seconds += Double(d.components.seconds) + Double(d.components.attoseconds) / 1e18
+            reports += receiver.takeReports().count
+            levels = receiver.activeChannels.map(\.levelDB)
+        }
+        let signal = Double(bytes / 2) / Double(SondeReceiver.sampleRate)
+        report("Sondenlast", [String(format: "%d Kanäle, %d Meldungen, %.2f s Rechenzeit für %.1f s Signal (%.0f %% eines Kerns), Pegel %@",
+                                     levels.count, reports, seconds, signal, 100 * seconds / max(signal, 1e-9),
+                                     levels.map { String(format: "%.2f", $0) }.joined(separator: " "))])
+    }
 }

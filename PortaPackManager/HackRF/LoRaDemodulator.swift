@@ -90,6 +90,10 @@ final class LoRaDemodulator {
     private(set) var crcErrors = 0
     private(set) var headerErrors = 0
     private(set) var detections = 0
+    /// Präambeln, nach denen das Sync-Wort nicht passte, und die zuletzt gesehenen
+    /// Sync-Symbole (zur Diagnose fremder Einstellungen; erwartet `syncSymbols`).
+    private(set) var syncFailures = 0
+    private(set) var lastSyncSeen: [Int] = []
     private(set) var noiseDB = -100.0
 
     private enum State { case search, preamble, sync2, down, frame }
@@ -392,6 +396,7 @@ final class LoRaDemodulator {
                 alignedCount += 1
                 state = .sync2
             } else {
+                if !preamble.isEmpty { syncFailures += 1; lastSyncSeen = [s.bin] }
                 abortToSearch(at: start + n * os)
             }
         case .sync2:
@@ -400,6 +405,7 @@ final class LoRaDemodulator {
                 alignedCount += 1
                 state = .down
             } else {
+                syncFailures += 1; lastSyncSeen = [sync1, s.bin]
                 abortToSearch(at: start)
             }
         case .down:

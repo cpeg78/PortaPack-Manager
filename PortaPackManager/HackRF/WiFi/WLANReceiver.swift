@@ -95,8 +95,17 @@ final class WLANReceiver {
             n += step
         }
         guard !sample.isEmpty else { return }
-        sample.sort()
+        // vDSP statt `sort()`: die Swift-Sortierung kostete hier ≈ 4 % eines Kerns (31.10.2026).
+        vDSP_vsort(&sample, vDSP_Length(sample.count), 1)
         let floor = max(sample[sample.count / 3], 1e-9)
         noise = noise == 0 ? floor : 0.8 * noise + 0.2 * floor
+    }
+}
+
+/// Arbeitspuffer für die WLAN-Erkennung: nur bei geänderter Länge neu anlegen.
+/// Die Aufrufer überschreiben den Inhalt vollständig (vDSP), Nullen ist unnötig.
+enum WLANScratch {
+    static func size(_ buffer: inout [Float], _ count: Int) {
+        if buffer.count != count { buffer = [Float](repeating: 0, count: max(0, count)) }
     }
 }

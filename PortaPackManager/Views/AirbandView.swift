@@ -312,7 +312,11 @@ private struct AirbandPage: View {
             Section("Ausschnitt") {
                 Toggle("Breiter Ausschnitt (16 MHz)", isOn: $model.wide)
                     .disabled(model.running)
-                    .help("Doppelt so viele Kanäle gleichzeitig, aber doppelte Rechenlast. Nur umschaltbar, solange der Empfang gestoppt ist.")
+                    .help("Doppelt so viele Kanäle gleichzeitig, aber doppelte Rechenlast. Genutzt nur, wenn die Liste nicht in 8 MHz passt. Nur umschaltbar, solange der Empfang gestoppt ist.")
+                if model.wide && !model.activeWide {
+                    Text("Alle Listenkanäle passen in 8 MHz – der schmale Ausschnitt reicht (halbe Rechenlast).")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
                 if !model.uncovered.isEmpty {
                     Text("Nicht im Ausschnitt: \(model.uncovered.map(\.channelName).joined(separator: ", ")). Die Mitte richtet sich nach der Liste; Kanäle mit Stern haben Vorrang.")
                         .font(.caption).foregroundStyle(.orange)

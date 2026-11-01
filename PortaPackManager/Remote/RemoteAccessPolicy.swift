@@ -236,6 +236,7 @@ enum RemoteAccessPolicy {
         "/api/sensors": [],
         "/api/smart868": ["dev"],
         "/api/dsc": [],
+        "/api/aprs": ["sel"],
         "/api/ft8": ["cq"],
         "/api/occupancy": ["hours"],
         "/occupancy.png": ["w", "h", "hours", "m"],

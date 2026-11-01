@@ -42,7 +42,6 @@ final class ReceiverStore {
     /// Spektrum der Mac-Seite – der Fernzugriff hat bewusst ein eigenes (`RemoteHub.spectrum`).
     var spectrum: SpectrumModel { lazy { SpectrumModel() } }
     var tv: TVModel { lazy { TVModel() } }
-    var aprs: APRSModel { lazy { APRSModel() } }
     var pager: PagerModel { lazy { PagerModel() } }
     var flarm: FLARMModel { lazy { FLARMModel() } }
     var ble: BLEModel { lazy { BLEModel() } }
@@ -70,6 +69,7 @@ final class ReceiverStore {
     var ft8: FT8Model { RemoteHub.shared.ft8 }
     var dsc: DSCModel { RemoteHub.shared.dsc }
     var occupancy: OccupancyMonitor { RemoteHub.shared.occupancy }
+    var aprs: APRSModel { RemoteHub.shared.aprs }
     var hydrogen: HydrogenModel { HydrogenModel.shared }
     var sonde: SondeModel { ReceptionPlanner.shared.sonde }
     var meteor: MeteorModel { ReceptionPlanner.shared.meteor }
@@ -468,13 +468,13 @@ final class ReceiverStore {
             case .dsc: return dsc
             case .ft8: return ft8
             case .occupancy: return occupancy
+            case .aprs: return aprs
             case .spectrum: return nil
             }
         }
         switch item {
         case .spectrum: return spectrum
         case .tv: return tv
-        case .aprs: return aprs
         case .pager: return pager
         case .flarm: return flarm
         case .ble: return ble

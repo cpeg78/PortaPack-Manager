@@ -19,6 +19,8 @@ final class RemoteHub {
         // Seit 28.10.2026 auch aus der Ferne: UKW/AM/NFM-Radio, Funksensoren, Smart Home 868,
         // Seefunk-DSC, FT8/WSPR, Belegungsmonitor. Rohwert = Reiter-Schlüssel der Webseite.
         case radio = "fm", sensors, smartHome868 = "smart868", dsc, ft8, occupancy
+        // Seit 31.10.2026: APRS (Stationen auf der Karte).
+        case aprs
         var title: String {
             switch self {
             case .adsb: String(localized: "ADS-B (Flugzeuge)")
@@ -34,6 +36,7 @@ final class RemoteHub {
             case .dsc: String(localized: "Seefunk-Notruf (DSC)")
             case .ft8: "FT8/WSPR"
             case .occupancy: String(localized: "Belegungsmonitor")
+            case .aprs: "APRS"
             }
         }
     }
@@ -107,6 +110,13 @@ final class RemoteHub {
     }
     var dsc: DSCModel { DSCModel.shared }
     var occupancy: OccupancyMonitor { OccupancyMonitor.shared }
+    @ObservationIgnored private var aprsStorage: APRSModel?
+    var aprs: APRSModel {
+        if let aprsStorage { return aprsStorage }
+        let model = APRSModel()
+        aprsStorage = model
+        return model
+    }
 
     /// Läuft einer der weiteren Empfänger? (ohne ein Model anzulegen)
     private func extraRunning(_ mode: Mode) -> Bool {
@@ -117,6 +127,7 @@ final class RemoteHub {
         case .dsc: dsc.running
         case .ft8: ft8Storage?.running ?? false
         case .occupancy: occupancy.running
+        case .aprs: aprsStorage?.running ?? false
         default: false
         }
     }
@@ -129,6 +140,7 @@ final class RemoteHub {
         case .dsc: dsc.stop(on: device)
         case .ft8: ft8Storage?.stop(on: device)
         case .occupancy: if occupancy.running { occupancy.stop() }
+        case .aprs: aprsStorage?.stop(on: device)
         default: break
         }
     }
@@ -143,6 +155,7 @@ final class RemoteHub {
         case .dsc: dsc.start(on: device); return dsc.error
         case .ft8: ft8.start(on: device); return ft8.error
         case .occupancy: occupancy.start(on: device); return occupancy.error
+        case .aprs: aprs.start(on: device); return aprs.error
         default: return nil
         }
     }
@@ -155,6 +168,7 @@ final class RemoteHub {
         case .dsc: dsc
         case .ft8: ft8Storage
         case .occupancy: occupancy
+        case .aprs: aprsStorage
         default: nil
         }
     }
@@ -400,7 +414,7 @@ final class RemoteHub {
             case .acars: acars.running
             case .zigbee: zigbeeRunning
             case .airband: airbandRunning
-            case .radio, .sensors, .smartHome868, .dsc, .ft8, .occupancy: extraRunning(mode)
+            case .radio, .sensors, .smartHome868, .dsc, .ft8, .occupancy, .aprs: extraRunning(mode)
             }
             guard running, !device.isReceiving(for: model(for: mode)) else { ticks[mode] = 0; continue }
             ticks[mode, default: 0] += 1
@@ -415,7 +429,7 @@ final class RemoteHub {
             case .acars: acars.stop()
             case .zigbee: zigbee.stop(on: device)
             case .airband: airband.stop()
-            case .radio, .sensors, .smartHome868, .dsc, .ft8, .occupancy: extraStop(mode, device)
+            case .radio, .sensors, .smartHome868, .dsc, .ft8, .occupancy, .aprs: extraStop(mode, device)
             }
         }
     }
@@ -447,6 +461,7 @@ final class RemoteHub {
         case .dsc: dsc
         case .ft8: ft8
         case .occupancy: occupancy
+        case .aprs: aprs
         }
     }
 
@@ -463,7 +478,7 @@ final class RemoteHub {
         case .acars: acars.stop()
         case .zigbee: zigbee.stop(on: device)
         case .airband: airband.stop()
-        case .radio, .sensors, .smartHome868, .dsc, .ft8, .occupancy: extraStop(mode, device)
+        case .radio, .sensors, .smartHome868, .dsc, .ft8, .occupancy, .aprs: extraStop(mode, device)
         }
         remoteMode = nil
     }
@@ -479,7 +494,7 @@ final class RemoteHub {
         case .acars: acars.stop(); acars.start(on: device)
         case .zigbee: zigbee.stop(on: device); zigbee.start(on: device)
         case .airband: airband.stop(); airband.start(on: device)
-        case .radio, .sensors, .smartHome868, .dsc, .ft8, .occupancy: extraStop(mode, device); extraStart(mode, device)
+        case .radio, .sensors, .smartHome868, .dsc, .ft8, .occupancy, .aprs: extraStop(mode, device); extraStart(mode, device)
         }
     }
 
@@ -640,7 +655,7 @@ final class RemoteHub {
         case .acars: acars.start(on: device)
         case .zigbee: zigbee.start(on: device)
         case .airband: airband.start(on: device)
-        case .radio, .sensors, .smartHome868, .dsc, .ft8, .occupancy: extraStart(mode, device)
+        case .radio, .sensors, .smartHome868, .dsc, .ft8, .occupancy, .aprs: extraStart(mode, device)
         }
     }
 
@@ -658,7 +673,7 @@ final class RemoteHub {
         if mode != .acars, acars.running { acars.stop() }
         if mode != .zigbee, zigbeeRunning { zigbee.stop(on: device) }
         if mode != .airband, airbandRunning { airband.stop() }
-        for extra in [Mode.radio, .sensors, .smartHome868, .dsc, .ft8, .occupancy] where mode != extra && extraRunning(extra) {
+        for extra in [Mode.radio, .sensors, .smartHome868, .dsc, .ft8, .occupancy, .aprs] where mode != extra && extraRunning(extra) {
             extraStop(extra, device)
         }
         // Auch Seiten außerhalb des Fernzugriffs können den HackRF belegen.
@@ -703,7 +718,7 @@ final class RemoteHub {
         case .acars: acars.start(on: device); return acars.error
         case .zigbee: zigbee.start(on: device); return zigbee.error
         case .airband: airband.start(on: device); return airband.error
-        case .radio, .sensors, .smartHome868, .dsc, .ft8, .occupancy: return extraStart(mode!, device)
+        case .radio, .sensors, .smartHome868, .dsc, .ft8, .occupancy, .aprs: return extraStart(mode!, device)
         case nil: return nil
         }
     }
@@ -717,7 +732,7 @@ final class RemoteHub {
         if acars.running { return .acars }
         if zigbeeRunning { return .zigbee }
         if airbandRunning { return .airband }
-        for extra in [Mode.radio, .sensors, .smartHome868, .dsc, .ft8, .occupancy] where extraRunning(extra) { return extra }
+        for extra in [Mode.radio, .sensors, .smartHome868, .dsc, .ft8, .occupancy, .aprs] where extraRunning(extra) { return extra }
         return nil
     }
 
@@ -956,6 +971,8 @@ final class RemoteHub {
             return .json(RemoteDSCAPI.handle(request.query, hub: self))
         case "/api/ft8":
             return .json(RemoteFT8API.handle(request.query, hub: self))
+        case "/api/aprs":
+            return .json(RemoteAPRSAPI.handle(request.query, hub: self))
         case "/api/occupancy":
             return .json(RemoteOccupancyAPI.handle(request.query, hub: self))
         case "/occupancy.png":
@@ -1015,6 +1032,7 @@ final class RemoteHub {
         case .smartHome868: smartHomeStorage
         case .dsc: dsc
         case .ft8: ft8Storage
+        case .aprs: aprsStorage
         case .occupancy, .spectrum, .zigbee: nil
         }
     }

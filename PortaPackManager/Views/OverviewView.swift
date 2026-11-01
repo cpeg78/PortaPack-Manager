@@ -12,8 +12,6 @@ struct OverviewView: View {
     /// Was beim Klick lief – für den Text der Rückfrage festgehalten.
     @State private var pendingRunning: String?
     @AppStorage(SetupWizard.doneKey) private var setupDone = false
-    @AppStorage("homeLat") private var homeLat = 0.0
-    @AppStorage("homeLon") private var homeLon = 0.0
 
     var body: some View {
         Form {
@@ -56,10 +54,6 @@ struct OverviewView: View {
                 Section {
                     DisclosureGroup("Technische Details", isExpanded: $detailsExpanded) { details }
                 }
-            }
-
-            Section("Standort") {
-                SettingsHint(.location, Self.locationText(lat: homeLat, lon: homeLon))
             }
 
             Section("Gerät steuern") {
@@ -249,17 +243,6 @@ struct OverviewView: View {
                 LabeledContent("Revision", value: "\(rev)")
             }
         }
-    }
-
-    /// „Standort: 53,5500° N, 10,0000° O“ bzw. Hinweis, dass er fehlt.
-    static func locationText(lat: Double, lon: Double) -> String {
-        guard lat != 0 || lon != 0 else {
-            return String(localized: "Noch kein Standort – Karten, Entfernungen und der Empfangsplan brauchen ihn.")
-        }
-        let f = FloatingPointFormatStyle<Double>.number.precision(.fractionLength(4))
-        let ns = lat >= 0 ? String(localized: "N", comment: "Himmelsrichtung Nord") : String(localized: "S", comment: "Himmelsrichtung Süd")
-        let ew = lon >= 0 ? String(localized: "O", comment: "Himmelsrichtung Ost") : String(localized: "W", comment: "Himmelsrichtung West")
-        return String(localized: "Standort: \(abs(lat).formatted(f))° \(ns), \(abs(lon).formatted(f))° \(ew)")
     }
 
     private static func radioLabel(_ key: String) -> String {

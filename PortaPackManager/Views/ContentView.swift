@@ -140,8 +140,18 @@ struct ContentView: View {
     /// Eingeklappte Gruppen der Seitenleiste (Titel, durch „|“ getrennt).
     @AppStorage("sidebarCollapsedGroups") private var collapsedGroups = ""
 
+    /// Gewählten Eintrag sichtbar machen, nachdem der untere Bereich seine Höhe geändert hat.
+    private func revealSelection(_ scroller: ScrollViewProxy) {
+        guard let item = selection else { return }
+        Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(250))
+            withAnimation { scroller.scrollTo(item.id) }
+        }
+    }
+
     var body: some View {
         NavigationSplitView {
+            ScrollViewReader { scroller in
             List(selection: $selection) {
                 ForEach(SidebarItem.groups, id: \.title) { group in
                     let open = expanded(group.title)
@@ -170,6 +180,12 @@ struct ContentView: View {
                         .help(open.wrappedValue ? "Gruppe einklappen" : "Gruppe ausklappen")
                     }
                 }
+            }
+            // Mit dem HackRF-Modus erscheint unten die Pegelanzeige und der deckende
+            // Bereich wächst – ein Eintrag ganz unten lag dann darunter (Nutzer
+            // 31.10.2026: „springt aus dem Bild, wenn ausgewählt“). Auswahl zurückholen.
+            .onChange(of: session.mode) { _, _ in revealSelection(scroller) }
+            .onChange(of: selection) { _, _ in revealSelection(scroller) }
             }
             .navigationSplitViewColumnWidth(min: 190, ideal: 210)
             // Grüner Punkt und Aufräumen (`ReceiverStore.track`) sowie das Beenden

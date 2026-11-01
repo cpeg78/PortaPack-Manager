@@ -27,6 +27,8 @@ enum RemoteWeather {
             let id: String
             let skipped: Bool
             let active: Bool
+            /// Fenster offen, aber der Plan wartet (keine Sonde in Reichweite bzw. Probepause).
+            let waiting: Bool
         }
         struct Forecast: Encodable {
             let site: String; let frequency: Double?; let launch: Double
@@ -66,6 +68,8 @@ enum RemoteWeather {
         /// Fenster starten nur, wenn SondeHub eine Sonde im Umkreis meldet.
         let sondeOnlyInRange: Bool
         let sondeRangeKm: Int
+        /// Warum ein offenes Sondenfenster gerade nicht empfängt (`ReceptionPlanner.waitingNote`).
+        let waiting: String?
         let sondeGain: SondeGain
         let history: [Entry]
         let images: [Image]
@@ -142,8 +146,10 @@ enum RemoteWeather {
             },
             sondeWindows: planner.sondeWindows.map {
                 let id = ReceptionPlanner.jobID(window: $0)
+                let open = $0.start <= Date() && Date() < $0.end
                 return .init(start: ms($0.start), end: ms($0.end), id: id,
-                             skipped: planner.isSkipped(id), active: planner.isActive(id))
+                             skipped: planner.isSkipped(id), active: planner.isActive(id),
+                             waiting: open && planner.waitingNote != nil && !planner.isSkipped(id) && !planner.isActive(id))
             },
             sondeForecast: planner.sondeForecast.map {
                 .init(site: $0.site, frequency: $0.frequencyMHz, launch: ms($0.launch), closestKm: Int($0.closestKm),
@@ -152,6 +158,7 @@ enum RemoteWeather {
             },
             sondeForecastFor: planner.sondeForecastWindow.map(ms),
             sondeOnlyInRange: planner.sondeOnlyInRange, sondeRangeKm: Int(planner.sondeRangeKm),
+            waiting: planner.waitingNote,
             sondeGain: .init(lna: Int(sonde.lnaGain), vga: Int(sonde.vgaGain), auto: sonde.autoBackoff, note: sonde.gainNote,
                              rms: levels.map { ($0.rmsDBFS * 10).rounded() / 10 }, clipped: levels.map(\.clipped)),
             history: planner.history.prefix(30).map { .init(date: ms($0.date), title: $0.title, result: $0.result) },

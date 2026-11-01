@@ -307,6 +307,8 @@
 "32 Hex-Zeichen (OpenThread „networkkey“)" = "32 hex characters (OpenThread “networkkey”)";
 "32-Bit-Dienste" = "32-bit services";
 "3D" = "3D";
+"433,775 MHz (FM-APRS)" = "433.775 MHz (FM APRS)";
+"433,775 MHz (LoRa-APRS)" = "433.775 MHz (LoRa APRS)";
 "433,92 MHz: einfache Thermometer (Nexus, LaCrosse TX141, inFactory). 868,3 MHz: Bresser-Wetterstationen, LaCrosse/TFA IT+." = "433.92 MHz: simple thermometers (Nexus, LaCrosse TX141, inFactory). 868.3 MHz: Bresser weather stations, LaCrosse/TFA IT+.";
 "433-MHz-ISM (Funksteckdosen, Wetterstationen)" = "433 MHz ISM (remote sockets, weather stations)";
 "4BS (4 Byte)" = "4BS (4 bytes)";
@@ -437,6 +439,7 @@
 "Alle Geräte dieses Kontos werden abgemeldet." = "All devices of this account will be signed out.";
 "Alle Kanäle durchsuchen" = "Scan All Channels";
 "Alle Knoten zeigen" = "Show all nodes";
+"Alle Listenkanäle passen in 8 MHz – der schmale Ausschnitt reicht (halbe Rechenlast)." = "All list channels fit into 8 MHz – the narrow span is enough (half the CPU load).";
 "Alle Marker entfernen" = "Remove all markers";
 "Alle Rahmen" = "All frames";
 "Alle Rufe zeigen" = "Show All Calls";
@@ -1198,6 +1201,7 @@
 "Dock-Symbol nur mit offenem Fenster" = "Dock icon only while a window is open";
 "Dokumentation" = "Documentary";
 "Donnerstag" = "Thursday";
+"Doppelt so viele Kanäle gleichzeitig, aber doppelte Rechenlast. Genutzt nur, wenn die Liste nicht in 8 MHz passt. Nur umschaltbar, solange der Empfang gestoppt ist." = "Twice as many channels at once, but twice the CPU load. Only used when the list doesn’t fit into 8 MHz. Can only be changed while reception is stopped.";
 "Doppelt so viele Kanäle gleichzeitig, aber doppelte Rechenlast. Nur umschaltbar, solange der Empfang gestoppt ist." = "Twice as many channels at once, but twice the CPU load. Can only be changed while reception is stopped.";
 "Doppler" = "Doppler";
 "Doppler-Korrektur" = "Doppler correction";

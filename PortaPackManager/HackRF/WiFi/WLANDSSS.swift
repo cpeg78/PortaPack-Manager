@@ -21,6 +21,9 @@ final class WLANDSSSDemodulator {
     static let shortSFD: [UInt8] = (0..<16).map { UInt8(0x05CF >> $0 & 1) }
 
     private(set) var bursts = 0
+    /// Arbeitspuffer, über Blöcke wiederverwendet (vorher je Block fünf neue
+    /// Felder à ≈ 0,5 MB samt Nullfüllen – 31.10.2026). vDSP überschreibt sie ganz.
+    private var mfRe: [Float] = [], mfIm: [Float] = [], energy: [Float] = [], mags: [Float] = [], power: [Float] = []
     private(set) var headerErrors = 0
     private(set) var fcsErrors = 0
     private(set) var unsupported = 0
@@ -33,10 +36,10 @@ final class WLANDSSSDemodulator {
         let spb = Self.samplesPerSymbol
         guard count > spb * 400, from < count else { return ([], from) }
         let mfCount = count - spb + 1
-        var mfRe = [Float](repeating: 0, count: mfCount), mfIm = [Float](repeating: 0, count: mfCount)
+        WLANScratch.size(&mfRe, mfCount); WLANScratch.size(&mfIm, mfCount); WLANScratch.size(&energy, mfCount)
+        WLANScratch.size(&mags, count); WLANScratch.size(&power, mfCount)
         vDSP_conv(re, 1, Self.taps, 1, &mfRe, 1, vDSP_Length(mfCount), vDSP_Length(spb))
         vDSP_conv(im, 1, Self.taps, 1, &mfIm, 1, vDSP_Length(mfCount), vDSP_Length(spb))
-        var energy = [Float](repeating: 0, count: mfCount)
         mfRe.withUnsafeMutableBufferPointer { r in
             mfIm.withUnsafeMutableBufferPointer { i in
                 var split = DSPSplitComplex(realp: r.baseAddress!, imagp: i.baseAddress!)
@@ -44,10 +47,8 @@ final class WLANDSSSDemodulator {
             }
         }
         // Leistung je Symbol (gleitende Summe über 20 Werte).
-        var mags = [Float](repeating: 0, count: count)
         var input = DSPSplitComplex(realp: UnsafeMutablePointer(mutating: re), imagp: UnsafeMutablePointer(mutating: im))
         vDSP_zvmags(&input, 1, &mags, 1, vDSP_Length(count))
-        var power = [Float](repeating: 0, count: mfCount)
         vDSP_vswsum(mags, 1, &power, 1, vDSP_Length(mfCount), vDSP_Length(spb))
 
         let gate = noise * Float(spb) * 4

@@ -206,13 +206,15 @@ enum RemotePage {
     #card { position:absolute; top:10px; right:10px; z-index:1000; width:320px; max-height:calc(100% - 20px); overflow:auto; background:var(--card); color:var(--text); border-radius:12px; box-shadow:0 4px 18px rgba(0,0,0,.3); padding:10px 12px; display:none; border:1px solid var(--sel); }
     /* Schmal: eigenes Blatt über Karte und Liste, unten angedockt. */
     @media (max-width: 760px) { #card { position:fixed; left:0; right:0; bottom:0; top:auto; width:auto; max-height:72%; z-index:2000; border-radius:16px 16px 0 0; border:0; border-top:2px solid var(--sel); padding:8px 16px calc(14px + env(safe-area-inset-bottom)); box-shadow:0 -6px 24px rgba(0,0,0,.35); font-size:16px; -webkit-overflow-scrolling:touch; }
-      #card::before { content:''; display:block; width:40px; height:5px; border-radius:3px; background:var(--line); margin:0 auto 8px; }
-      #card h3 { font-size:20px; } #card img { max-height:190px; object-fit:cover; } }
+      #card .grip { display:block; width:100%; height:22px; margin:-8px 0 0; touch-action:none; cursor:grab; }
+      #card .grip::before { content:''; display:block; width:40px; height:5px; border-radius:3px; background:var(--line); margin:8px auto 0; }
+      #card h3 { font-size:20px; touch-action:none; } #card img { max-height:190px; object-fit:cover; } }
+    #card .grip { display:none; }
     #card h3 { margin:0; font-family:ui-monospace, Menlo, monospace; display:flex; justify-content:space-between; }
     #card h3 button { border:0; background:none; color:var(--muted); font-size:18px; cursor:pointer; }
     #card .sub { color:var(--muted); font-size:12px; margin-bottom:6px; }
     #card img { width:100%; border-radius:8px; display:block; margin:6px 0 2px; }
-    #card .credit { font-size:11px; color:var(--muted); }
+    #card .credit { font-size:11px; color:var(--muted); display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden; }
     #card .credit a { color:var(--muted); }
     #card table { border-collapse:collapse; width:100%; margin-top:6px; }
     #card td { padding:2px 0; vertical-align:top; }
@@ -279,6 +281,7 @@ enum RemotePage {
     .item .el { font-variant-numeric:tabular-nums; }
     .rec { color:var(--accent); }
     .job { cursor:pointer; }
+    .job.dim > .grow, .job.dim > span:first-child { opacity:.45; }
     .job .chev { color:var(--muted); transition:transform .15s; }
     .job.open .chev { transform:rotate(90deg); }
     .jobmore { padding:4px 12px 10px 42px; border-bottom:1px solid var(--line); font-size:14px; }
@@ -382,6 +385,7 @@ enum RemotePage {
         <button data-tab="sensors" title="Funksensoren" aria-label="Funksensoren"><svg width="24" height="20" viewBox="0 0 24 20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-3px"><path d="M10 3a2 2 0 0 1 4 0v9.5a4 4 0 1 1-4 0z"/><path d="M12 9v6"/></svg><small>Funksensoren</small></button>
         <button data-tab="smart868" title="Smart Home 868 MHz" aria-label="Smart Home 868 MHz"><svg width="24" height="20" viewBox="0 0 24 20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-3px"><path d="M3 10l9-7 9 7"/><path d="M5.5 8.5V18h13V8.5"/><path d="M10 18v-5h4v5"/></svg><small>Smart Home 868</small></button>
         <button data-tab="zigbee" title="Zigbee: Geräte und Netzkarte" aria-label="Zigbee"><svg width="24" height="20" viewBox="0 0 24 20" fill="currentColor" stroke="currentColor" stroke-width="1.8" style="vertical-align:-3px"><path d="M12 4L5 15M12 4l7 11M5 15h14" fill="none"/><circle cx="12" cy="4" r="3"/><circle cx="5" cy="15" r="3"/><circle cx="19" cy="15" r="3"/></svg><small>Zigbee</small></button>
+        <button data-tab="aprs" title="APRS: Stationen der Funkamateure" aria-label="APRS"><svg width="24" height="20" viewBox="0 0 24 20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-3px"><path d="M12 19s-6-5.6-6-10a6 6 0 0 1 12 0c0 4.4-6 10-6 10z"/><circle cx="12" cy="9" r="2.2" fill="currentColor"/></svg><small>APRS</small></button>
         <button data-tab="ft8" title="FT8/WSPR" aria-label="FT8/WSPR"><svg width="24" height="20" viewBox="0 0 24 20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-3px"><circle cx="12" cy="10" r="8"/><path d="M4 10h16M12 2c3 3 3 13 0 16M12 2c-3 3-3 13 0 16"/></svg><small>FT8/WSPR</small></button>
         <form class="who" method="post" action="/logout"><span id="whoami"></span><input type="submit" id="logoutbtn" value="Abmelden"></form>
       </nav>
@@ -414,6 +418,7 @@ enum RemotePage {
       <div id="x-sensors" class="xtab"></div>
       <div id="x-smart868" class="xtab"></div>
       <div id="x-dsc" class="xtab"></div>
+      <div id="x-aprs" class="xtab"></div>
       <div id="x-ft8" class="xtab"></div>
       <div id="x-occupancy" class="xtab"></div>
       <div id="ab">
@@ -494,16 +499,17 @@ enum RemotePage {
     // SameSite=Strict) – Skripte kommen nicht daran.
     // Namen wie im Menü (Kopf „Gerade läuft: …“).
     const TITLES = { adsb: t('Flugzeuge'), ais: t('Schiffe'), dab: t('Digitalradio (DAB+)'), acars: t('Flugzeug-Datenfunk'), spectrum: t('Spektrum'), wx: t('Wetter & Satelliten'), zigbee: 'Zigbee', airband: t('Flugfunk (Sprechfunk)'),
-      fm: t('Radio (UKW/AM)'), sensors: t('Funksensoren'), smart868: t('Smart Home 868'), dsc: t('Seefunk-Notruf (DSC)'), ft8: 'FT8/WSPR', occupancy: t('Belegungsmonitor') };
-    const TABS = ['adsb', 'acars', 'airband', 'ais', 'dsc', 'wx', 'dab', 'fm', 'spectrum', 'occupancy', 'sensors', 'smart868', 'zigbee', 'ft8'];
+      fm: t('Radio (UKW/AM)'), sensors: t('Funksensoren'), smart868: t('Smart Home 868'), dsc: t('Seefunk-Notruf (DSC)'), aprs: 'APRS', ft8: 'FT8/WSPR', occupancy: t('Belegungsmonitor') };
+    const TABS = ['adsb', 'acars', 'airband', 'ais', 'dsc', 'wx', 'dab', 'fm', 'spectrum', 'occupancy', 'sensors', 'smart868', 'zigbee', 'aprs', 'ft8'];
     // Weitere Reiter (28.10.2026): je ein Bereich <div id="x-<tab>"> und ein Block
     // „---------- <Name> ----------“ mit loadX/renderX/xStatus.
-    const EXTRA_TABS = ['fm', 'sensors', 'smart868', 'dsc', 'ft8', 'occupancy'];
+    const EXTRA_TABS = ['fm', 'sensors', 'smart868', 'dsc', 'ft8', 'occupancy', 'aprs'];
     // Reiter: aus der Adresse (#ais), sonst gemerkt, sonst beim ersten Abruf der laufende Empfänger.
     let tab = TABS.includes(location.hash.slice(1)) ? location.hash.slice(1) : localStorage.getItem('tab');
     let tabFromState = !tab;
     if (!tab) tab = 'adsb';
     let sel = null, state = null, fitted = { adsb: false, ais: false };
+    let cardHidden = false, sheetFraction = null; // Infoblatt ausgeblendet bzw. gewählte Höhe (Anteil am Bildschirm)
     const $ = id => document.getElementById(id);
     function esc(s) { return String(s ?? '').replace(/[&<>"']/g, c => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' }[c])); }
 
@@ -669,7 +675,20 @@ enum RemotePage {
       beacon: '<path d="M10 9.5h4l1.6 11.5H8.4z"' + EDGE + '/><rect x="9" y="3" width="6" height="5" rx="1"' + EDGE + '/>' + ARCS('M5.5 4.5l-2-1M18.5 4.5l2-1M5.5 7.5H3M18.5 7.5H21'),
       balloon: '<path d="M12 18.5v4" fill="none" stroke="#1d1d1f" stroke-opacity=".7" stroke-width="2.6" stroke-linecap="round"/><path d="M12 18.5v4" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>' +
         '<ellipse cx="12" cy="9" rx="7" ry="8"' + EDGE + '/><path d="M10.6 16.6h2.8L12 18.8z"' + EDGE + '/>',
-      descent: '<circle cx="12" cy="12" r="10.5"' + EDGE + '/><path d="M12 6v10M7.5 11.5L12 16l4.5-4.5" fill="none" stroke="#fff" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>'
+      descent: '<circle cx="12" cy="12" r="10.5"' + EDGE + '/><path d="M12 6v10M7.5 11.5L12 16l4.5-4.5" fill="none" stroke="#fff" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>',
+      // APRS-Symbole (MapSymbol-Namen), Formen wie in ppm-map.js.
+      house: '<path d="M12 3l9 8h-2.5v9H14v-6h-4v6H5.5v-9H3z"' + EDGE + '/>',
+      ship: '<path d="M2.5 14h19l-2.8 6H5.3z"' + EDGE + '/><path d="M6 9h12v4H6z"' + EDGE + '/><path d="M9.5 5h5v3h-5z"' + EDGE + '/>',
+      car: '<path d="M4 11.5L6 6h12l2 5.5h.5V18h-2.5v2h-3v-2H9v2H6v-2H3.5v-6.5z"' + EDGE + '/>',
+      truck: '<path d="M1.5 5.5h12.5v11H1.5z"' + EDGE + '/><path d="M14 9h4.5l3.5 4v3.5h-8z"' + EDGE + '/><circle cx="6" cy="18" r="2.2"/><circle cx="17.5" cy="18" r="2.2"/>',
+      bus: '<path d="M5 2.5h14a1.5 1.5 0 0 1 1.5 1.5v14h-17V4A1.5 1.5 0 0 1 5 2.5z"' + EDGE + '/><path d="M5.5 18h3.5v3H5.5zM15 18h3.5v3H15z"/>',
+      weather: '<circle cx="8" cy="7.5" r="3.6"' + EDGE + '/><path d="M8.5 20a4.8 4.8 0 0 1-.4-9.6 6.2 6.2 0 0 1 11.6 1.8A4 4 0 0 1 19 20z"' + EDGE + '/>',
+      walker: '<circle cx="13" cy="4" r="2.4"' + EDGE + '/>' + ARCS('M12.5 8l-2 6 3.5 3 1 5M10.5 14l-3 7.5M11 9l-4 3M12.5 8.5l4 3.5'),
+      bike: ARCS('M5.5 20a4 4 0 1 0 0-8 4 4 0 1 0 0 8M18.5 20a4 4 0 1 0 0-8 4 4 0 1 0 0 8M5.5 16l4.5-8h6l2.5 8M10 8l3 8h-7.5M9 5.5h3'),
+      sailboat: '<path d="M11.5 2v14H4z"' + EDGE + '/><path d="M13 5l7 11h-7z"' + EDGE + '/><path d="M2 17.5h20l-2.5 4h-15z"' + EDGE + '/>',
+      medical: '<rect x="2" y="5" width="20" height="15" rx="2.5"' + EDGE + '/><path d="M10.5 8.5h3v3h3v3h-3v3h-3v-3h-3v-3h3z" fill="#fff"/>',
+      flame: '<path d="M12 1.5c1 4.5 6.5 6.5 6.5 12.5a6.5 6.5 0 0 1-13 0c0-3.4 2.1-5.6 3.2-7.6.2 2.2 1.2 3.4 2.4 3.6-.4-3.4.4-5.9.9-8.5z"' + EDGE + '/>',
+      pin: '<circle cx="12" cy="12" r="10.5"' + EDGE + '/><circle cx="12" cy="12" r="3.6" fill="#fff"/>'
     };
     function symSvg(name, size, color, rot) {
       return '<svg class="sym" width="' + size + '" height="' + size + '" viewBox="0 0 24 24" fill="currentColor" style="color:' + color +
@@ -783,7 +802,7 @@ enum RemotePage {
     function renderCard() {
       const card = $('card');
       const it = items().find(i => tab + ':' + i.id === sel);
-      if (!it) { card.style.display = 'none'; card.dataset.key = ''; return; }
+      if (!it || cardHidden) { card.style.display = 'none'; card.dataset.key = ''; return; }
       const rows = [];
       const add = (k, v) => { if (v != null && v !== '') rows.push('<tr><td>' + esc(k) + '</td><td>' + esc(v) + '</td></tr>'); };
       const d = km(it);
@@ -801,12 +820,15 @@ enum RemotePage {
       add(tt('Kontakt'), tt('vor {0} s', it.age));
       const photo = it.photo ? '<a href="' + esc(it.photo.page) + '" target="_blank" rel="noopener"><img src="' + esc(it.photo.url) + '" alt=""></a><div class="credit"><a href="' + esc(it.photo.page) + '" target="_blank" rel="noopener">' + esc(it.photo.credit) + '</a></div>' : '';
       const link = tab === 'adsb' ? 'https://www.flightradar24.com/' + encodeURIComponent(it.callsign || it.id) : 'https://www.marinetraffic.com/en/ais/details/ships/mmsi:' + encodeURIComponent(it.id);
-      const head = '<h3><span>' + esc(label(it)) + '</span><button id="close" aria-label="' + t('Schließen') + '">✕</button></h3>' +
+      const head = '<div class="grip"></div><h3><span>' + esc(label(it)) + '</span><button id="close" aria-label="' + t('Schließen') + '">✕</button></h3>' +
         '<div class="sub">' + esc(tab === 'adsb' ? 'ICAO ' + it.id : 'MMSI ' + it.id) + '</div><div id="cphoto"></div><div id="crows"></div>';
       // Nur Geändertes neu setzen: sonst lädt das Foto bei jeder Abfrage neu und die Karte springt nach oben.
       if (card.dataset.key !== sel) {
         card.dataset.key = sel; card.dataset.photo = ''; card.innerHTML = head; card.scrollTop = 0;
-        $('close').onclick = () => { sel = null; render(); };
+        // Schließen blendet nur das Blatt aus: das Ziel bleibt gewählt (Spur, Hervorhebung) und rückt in die Kartenmitte.
+        $('close').onclick = () => { cardHidden = true; render(); const it = items().find(i => tab + ':' + i.id === sel); if (it && it.lat != null) centerVisible([it.lat, it.lon]); };
+        sheetDrag(card);
+        if (sheetFraction && window.innerWidth <= 760) { card.style.height = Math.round(sheetFraction * window.innerHeight) + 'px'; card.style.maxHeight = 'none'; }
       } else card.querySelector('h3 span').textContent = label(it);
       if (card.dataset.photo !== photo) {
         card.dataset.photo = photo; $('cphoto').innerHTML = photo;
@@ -827,8 +849,39 @@ enum RemotePage {
       map.panBy([p.x - r.width / 2, p.y - Math.max(40, bottom - r.top - 30) / 2]);
     }
 
+    // Infoblatt auf dem Handy: am Griff oder Titel ziehen ändert die Höhe, Loslassen rastet ein
+    // (klein, halb, groß); ganz nach unten gezogen schließt es. Antippen des Griffs schaltet weiter.
+    const SHEET_STOPS = [0.3, 0.55, 0.9];
+    try { const f = parseFloat(localStorage.getItem('sheet')); if (SHEET_STOPS.includes(f)) sheetFraction = f; } catch (e) {}
+    function sheetDrag(card) {
+      let y0 = null, h0 = 0, moved = false;
+      const down = e => {
+        if (window.innerWidth > 760 || e.target.closest('button')) return;
+        y0 = e.clientY; h0 = card.getBoundingClientRect().height; moved = false;
+        card.style.transition = 'none'; e.currentTarget.setPointerCapture(e.pointerId);
+      };
+      const move = e => {
+        if (y0 == null) return;
+        const dy = y0 - e.clientY; if (Math.abs(dy) > 4) moved = true;
+        card.style.maxHeight = 'none'; card.style.height = Math.max(60, Math.min(window.innerHeight * 0.92, h0 + dy)) + 'px';
+      };
+      const up = () => {
+        if (y0 == null) return;
+        y0 = null;
+        const vh = window.innerHeight, f = card.getBoundingClientRect().height / vh;
+        if (moved && f < 0.18) { cardHidden = true; card.style.height = ''; card.style.maxHeight = ''; render(); return; }
+        if (!moved) { const i = SHEET_STOPS.findIndex(s => s > (sheetFraction ?? f) + 0.01); sheetFraction = SHEET_STOPS[i < 0 ? 0 : i]; }
+        else sheetFraction = SHEET_STOPS.reduce((a, b) => Math.abs(b - f) < Math.abs(a - f) ? b : a);
+        card.style.transition = 'height .18s ease-out'; card.style.height = Math.round(sheetFraction * vh) + 'px';
+        try { localStorage.setItem('sheet', String(sheetFraction)); } catch (e) {}
+        const it = items().find(i => tab + ':' + i.id === sel);
+        if (it && it.lat != null) setTimeout(() => centerVisible([it.lat, it.lon]), 200);
+      };
+      card.querySelectorAll('.grip, h3').forEach(el => { el.onpointerdown = down; el.onpointermove = move; el.onpointerup = up; el.onpointercancel = up; });
+    }
+
     function select(key, center) {
-      sel = key; centered = null; render(); poll(true);
+      sel = key; centered = null; cardHidden = false; render(); poll(true);
       if (center) { const it = items().find(i => tab + ':' + i.id === key); if (it && it.lat != null) { centered = [it.lat, it.lon]; centerVisible(centered); } }
     }
 
@@ -1118,9 +1171,11 @@ enum RemotePage {
     function wxNext() {
       const now = Date.now();
       const pass = (plan.passes || []).find(x => x.planned && x.start > now);
-      const win = plan.autoSonde ? (plan.sondeWindows || []).find(x => x.end > now) : null;
+      // Ausgelassene Fenster zählen nicht; ein offenes, das auf eine Sonde wartet, sagt es (Fund 31.10.2026).
+      const win = plan.autoSonde ? (plan.sondeWindows || []).find(x => x.end > now && !x.skipped) : null;
       if (win && (!pass || win.start <= pass.start)) {
-        return win.start <= now ? tt('Sondenfenster bis {0}', fmtTime(win.end)) : tt('Nächstes Sondenfenster {0}', fmtTime(win.start));
+        if (win.start > now) return tt('Nächstes Sondenfenster {0}', fmtTime(win.start));
+        return win.waiting ? tt('Sondenfenster bis {0} – wartet auf Sonde', fmtTime(win.end)) : tt('Sondenfenster bis {0}', fmtTime(win.end));
       }
       if (pass) return tt('Nächster Überflug {0}', fmtTime(pass.start));
       return plan.autoMeteor || plan.autoAmateur || plan.autoSonde ? tt('Kein Termin geplant') : tt('Empfangsplan aus');
@@ -1158,6 +1213,7 @@ enum RemotePage {
     function jobMark(j, planned) {
       if (j.active) return '<span class="rec" title="' + t('läuft gerade') + '">▶</span>';
       if (j.skipped) return '<span class="off">' + t('ausgelassen') + '</span>';
+      if (j.waiting) return '<span class="off" title="' + esc(plan.waiting || '') + '">' + t('wartet') + '</span>';
       return planned ? '<span class="rec" title="' + t('wird aufgenommen') + '">●</span>' : '';
     }
     function jobDetails(j, rows, note, switchable, extra) {
@@ -1166,7 +1222,7 @@ enum RemotePage {
       const all = [[t('Tag'), new Date(j.start).toLocaleDateString(LOCALE, { weekday: 'long', day: 'numeric', month: 'long' })],
         [t('Zeit'), fmtTime(j.start) + '–' + fmtTime(j.end)], ['UTC', utc(j.start) + '–' + utc(j.end)],
         [t('Dauer'), min >= 60 ? tt('{0} h {1} min', Math.floor(min / 60), min % 60) : tt('{0} min', min)]].concat(rows);
-      const state = j.active ? t('Läuft gerade.') : j.skipped ? t('Ausgelassen.') : switchable ? t('Geplant.') : '';
+      const state = j.active ? t('Läuft gerade.') : j.skipped ? t('Ausgelassen.') : j.waiting ? (plan.waiting || '') : switchable ? t('Geplant.') : '';
       let button = '';
       if (j.active) button = '<button data-skipnow>' + t('Überspringen') + '</button>';
       else if (j.skipped) button = '<button data-skipid="' + esc(j.id) + '" data-on="0">' + t('Wieder einplanen') + '</button>';
@@ -1204,7 +1260,7 @@ enum RemotePage {
       let passes = '';
       if (!p.homeSet) passes += '<div class="empty">' + t('Für die Vorhersage fehlt der Standort in der App.') + '</div>';
       else if (!p.passes.length) passes += '<div class="empty">' + esc(p.tleError || t('Bahndaten werden geladen …')) + '</div>';
-      passes += p.passes.map(x => '<div class="item job' + (jobOpen.has(x.id) ? ' open' : '') + '" data-job="' + esc(x.id) + '"><span>' + (x.daylight ? '☀︎' : '☾') + '</span><div class="grow"><div>' + esc(x.satellite) + '</div>' +
+      passes += p.passes.map(x => '<div class="item job' + (jobOpen.has(x.id) ? ' open' : '') + (x.skipped ? ' dim' : '') + '" data-job="' + esc(x.id) + '"><span>' + (x.daylight ? '☀︎' : '☾') + '</span><div class="grow"><div>' + esc(x.satellite) + '</div>' +
         '<div class="sub">' + esc(fmtDay(x.start) + ' · ' + fmtTime(x.start) + '–' + fmtTime(x.end) + ' · ' + x.from + ' → ' + x.to) + '</div></div>' +
         '<span class="el">' + x.maxElevation + '°</span>' + jobMark(x, x.planned) + '<span class="chev">›</span></div>' +
         (jobOpen.has(x.id) ? jobDetails(x, [
@@ -1219,7 +1275,7 @@ enum RemotePage {
           '<div class="sub">' + esc((f.from ? tt('in Reichweite {0}–{1}', fmtTime(f.from), fmtTime(f.to)) : tt('nicht in Reichweite')) + ' · ' +
           tt('nächster Punkt {0} km um {1} in {2} km Höhe', f.closestKm, fmtTime(f.closestAt), (f.closestAltitude / 1000).toFixed(1)) + ' · ' + tt('Landung {0} km', f.landingKm)) + '</div></div></div>').join('');
       html += wxBox('windows', t('Sondenfenster'), (p.sondeWindows.length ? p.sondeWindows.map(w =>
-        '<div class="item job' + (jobOpen.has(w.id) ? ' open' : '') + '" data-job="' + esc(w.id) + '"><span>🎈</span><div class="grow">' + esc(fmtDay(w.start) + ' · ' + fmtTime(w.start) + '–' + fmtTime(w.end)) + '</div>' +
+        '<div class="item job' + (jobOpen.has(w.id) ? ' open' : '') + (w.skipped ? ' dim' : '') + '" data-job="' + esc(w.id) + '"><span>🎈</span><div class="grow">' + esc(fmtDay(w.start) + ' · ' + fmtTime(w.start) + '–' + fmtTime(w.end)) + '</div>' +
           jobMark(w, p.autoSonde && !w.skipped) + '<span class="chev">›</span></div>' +
         (jobOpen.has(w.id) ? jobDetails(w, [],
           (p.sondeOnlyInRange ? tt('Startet nur, wenn SondeHub eine Sonde in {0} km meldet – sonst läuft der bisherige Empfang weiter.', p.sondeRangeKm) : ''),
@@ -2229,6 +2285,140 @@ enum RemotePage {
     }
     // ---------- Ende Seefunk-Notruf ----------
 
+    // ---------- APRS ----------
+    // Stationen der Funkamateure auf eigener Leaflet-Karte (Symbole wie am Mac),
+    // Liste neueste zuerst, Antippen zeigt Einzelheiten und die Spur, darunter die
+    // letzten Pakete. Kanalwahl und Leeren nur mit Steuerrecht.
+    let aprsData = null, aprsSel = null, aprsMap = null, aprsLayer = null, aprsSig = '', aprsFitted = false;
+    document.head.insertAdjacentHTML('beforeend', '<style>' +
+      '#x-aprs .aprsmap { height:min(45vh, 380px); border-radius:12px; margin-bottom:12px; z-index:0; }' +
+      '#x-aprs .item { cursor:pointer; }' +
+      '#x-aprs .item.on { background:color-mix(in srgb, var(--accent) 16%, transparent); }' +
+      '#x-aprs .item.old .grow { opacity:.55; }' +
+      '#x-aprs .item .t { color:var(--muted); font-size:13px; font-variant-numeric:tabular-nums; flex:none; text-align:right; }' +
+      '#x-aprs .aprscard table { width:100%; border-collapse:collapse; font-size:14px; table-layout:fixed; }' +
+      '#x-aprs .aprscard td { padding:5px 12px; vertical-align:top; border-bottom:1px solid var(--line); overflow-wrap:anywhere; }' +
+      '#x-aprs .aprscard td:first-child { color:var(--muted); width:7.5em; }' +
+      '#x-aprs .aprscard h4 { display:flex; align-items:center; gap:8px; }' +
+      '#x-aprs .aprscard h4 span { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }' +
+      '#x-aprs .aprscard h4 button { border:0; background:var(--line); color:var(--text); border-radius:6px; padding:2px 8px; cursor:pointer; font:inherit; }' +
+      '#x-aprs .aprscard .lnk { padding:8px 12px; }' +
+      '#x-aprs .aprsbar { display:flex; gap:8px; align-items:center; padding:8px 12px; flex-wrap:wrap; }' +
+      '#x-aprs .aprsbar .hint { flex:1; min-width:0; }' +
+      '#x-aprs .aprsbar .btn { margin-left:0; }' +
+      '#x-aprs .raw { font-family:ui-monospace, Menlo, monospace; font-size:12px; overflow-wrap:anywhere; }' +
+      '.viewer #x-aprs .aprsctl { display:none; }' +
+      '</style>');
+    async function loadAPRS(params = {}) {
+      try { aprsData = await api('/api/aprs', Object.assign(aprsSel ? { sel: aprsSel } : {}, params)); if (tab === 'aprs') render(); } catch (e) { showError(e); }
+    }
+    function aprsStatus() {
+      const d = aprsData;
+      if (state.mode !== 'aprs') return t('APRS aus') + (d && d.stations.length ? ' · ' + tt('{0} Stationen', d.stations.length) : '');
+      if (!d) return t('APRS läuft');
+      return (d.mhz.toFixed(3) + ' MHz') + ' · ' + tt('{0} Stationen · {1} Pakete', d.stations.length, d.packets);
+    }
+    const aprsClock = ms => (new Date(ms).toDateString() === new Date().toDateString() ? '' : new Date(ms).toLocaleDateString(LOCALE, { day: 'numeric', month: 'short' }) + ' ') +
+      new Date(ms).toLocaleTimeString(LOCALE, { hour: '2-digit', minute: '2-digit' });
+    const aprsOld = s => Date.now() - s.t > 30 * 60000;
+    const aprsSym = s => SYM[s.symbol] ? s.symbol : 'pin';
+    function aprsEnsure() {
+      if (aprsMap) return;
+      $('x-aprs').innerHTML = '<div class="aprsmap" id="aprsmap"></div><div id="aprscard"></div><div id="aprslist"></div>';
+      aprsMap = L.map('aprsmap', { zoomControl: true }).setView([51, 10], 6);
+      L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 18, attribution: '© OpenStreetMap' }).addTo(aprsMap);
+      aprsLayer = L.layerGroup().addTo(aprsMap);
+      new ResizeObserver(() => aprsMap.invalidateSize()).observe($('aprsmap'));
+    }
+    function aprsSelect(id, pan) {
+      aprsSel = aprsSel === id ? null : id;
+      aprsSig = '';
+      const s = aprsSel && aprsData && aprsData.stations.find(x => x.id === aprsSel);
+      if (s && pan && s.lat != null) aprsMap.setView([s.lat, s.lon], Math.max(aprsMap.getZoom(), 11));
+      renderAPRS();
+      if (s) $('aprscard').scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+      if (aprsSel) loadAPRS();       // Spur der gewählten Station nachladen
+    }
+    function aprsRenderMap() {
+      const d = aprsData;
+      const sel = aprsSel && d.stations.find(s => s.id === aprsSel);
+      const sig = JSON.stringify([aprsSel, d.home, d.stations.map(s => [s.id, s.lat, s.lon, s.symbol, aprsOld(s)]), sel && sel.trail && sel.trail.length]);
+      if (sig === aprsSig) return;
+      aprsSig = sig; aprsLayer.clearLayers();
+      const css = getComputedStyle(document.documentElement), accent = css.getPropertyValue('--accent').trim();
+      if (d.home) L.circleMarker(d.home, { radius: 5, color: '#8b5a2b', fillOpacity: 1, weight: 2 }).bindTooltip(t('Standort')).addTo(aprsLayer);
+      if (sel && sel.trail) L.polyline(sel.trail, { color: '#ff9f0a', weight: 3, opacity: .9 }).addTo(aprsLayer);
+      const pts = [];
+      // Gewählte Station zuletzt, damit sie oben liegt.
+      for (const s of d.stations.filter(x => x.lat != null).sort((a, b) => (a.id === aprsSel) - (b.id === aprsSel))) {
+        pts.push([s.lat, s.lon]);
+        const on = s.id === aprsSel, size = on ? 26 : 22;
+        const ic = L.divIcon({ className: aprsOld(s) && !on ? 'stale' : '', iconSize: [size, size], iconAnchor: [size / 2, size / 2],
+          html: symSvg(aprsSym(s), size, on ? '#ff9f0a' : accent, 0) + '<span class="lbl" style="top:' + (size - 2) + 'px">' + esc(s.id) + '</span>' });
+        L.marker([s.lat, s.lon], { icon: ic, zIndexOffset: on ? 1000 : 0 }).on('click', () => aprsSelect(s.id, false)).addTo(aprsLayer);
+      }
+      if (!aprsFitted && pts.length) {
+        aprsFitted = true;
+        aprsMap.fitBounds(d.home ? pts.concat([d.home]) : pts, { padding: [30, 30], maxZoom: 11 });
+      } else if (!aprsFitted && d.home) aprsMap.setView(d.home, 9);
+    }
+    function aprsCard() {
+      const card = $('aprscard');
+      const s = aprsSel && aprsData.stations.find(x => x.id === aprsSel);
+      if (!s) { if (card.innerHTML) { card.innerHTML = ''; card.dataset.html = ''; } return; }
+      const rows = [
+        [t('Zuletzt gehört'), aprsClock(s.t) + ' · ' + tt('{0} Pakete', s.packets)],
+        [t('Typ'), s.kind + (s.object ? ' · ' + tt('Objekt von {0}', s.source) : '')],
+        [t('Entfernung'), s.km != null ? s.km.toFixed(1) + ' km' : ''],
+        [t('Position'), s.lat != null ? s.lat.toFixed(4) + ', ' + s.lon.toFixed(4) : t('keine')],
+        [t('Kurs'), s.course != null ? s.course + '°' : ''],
+        [t('Tempo'), s.speedKmh != null ? s.speedKmh + ' km/h' : ''],
+        [t('Höhe'), s.altitude != null ? s.altitude + ' m' : ''],
+        [t('Kommentar'), s.text || ''],
+        [t('Pfad'), s.path || ''],
+      ].filter(r => r[1]);
+      const html = '<div class="box aprscard"><h4><span>' + esc(s.id) + '</span><button id="aprsclose" aria-label="' + t('Schließen') + '">✕</button></h4>' +
+        '<table>' + rows.map(r => '<tr><td>' + esc(r[0]) + '</td><td>' + esc(r[1]) + '</td></tr>').join('') +
+        '<tr><td>' + t('Rohdaten') + '</td><td class="raw">' + esc(s.raw) + '</td></tr></table>' +
+        '<div class="lnk"><a href="https://aprs.fi/#!call=a%2F' + encodeURIComponent(s.source) + '" target="_blank" rel="noopener">aprs.fi</a></div></div>';
+      if (card.dataset.html === html) return;
+      card.dataset.html = html; card.innerHTML = html;
+      $('aprsclose').onclick = () => { aprsSel = null; aprsSig = ''; renderAPRS(); };
+    }
+    function renderAPRS() {
+      aprsEnsure();
+      const list = $('aprslist'), d = aprsData;
+      if (!d) { list.innerHTML = '<div class="empty">' + t('Lade …') + '</div>'; return; }
+      if (aprsSel && !d.stations.some(s => s.id === aprsSel)) aprsSel = null;
+      aprsRenderMap();
+      aprsCard();
+      let html = '';
+      if (!d.stations.length) {
+        html += '<div class="empty">' + (state.mode === 'aprs'
+          ? t('Noch keine Station gehört. APRS-Baken kommen je nach Gegend alle paar Sekunden bis Minuten.')
+          : t('Keine Stationen. Tippe oben auf „Start“, dann hört der HackRF die APRS-Frequenz ab.')) + '</div>';
+      }
+      html += d.stations.map(s => {
+        const sub = [s.kind, s.km != null ? s.km.toFixed(1) + ' km' : t('ohne Position'), s.text || ''].filter(Boolean).join(' · ');
+        return '<div class="item' + (s.id === aprsSel ? ' on' : '') + (aprsOld(s) ? ' old' : '') + '" data-aprs="' + esc(s.id) + '">' +
+          symSvg(aprsSym(s), 22, 'var(--accent)', 0) + '<div class="grow"><div>' + esc(s.id) + '</div><div class="sub">' + esc(sub) + '</div></div>' +
+          '<span class="t">' + esc(aprsClock(s.t)) + (s.packets > 1 ? '<br>' + s.packets + '×' : '') + '</span></div>';
+      }).join('');
+      html = wxBox('aprs-list', t('Stationen'), html, d.stations.length || null);
+      if (d.log.length) html += wxBox('aprs-log', t('Letzte Pakete'), d.log.map(p =>
+        '<div class="item"><div class="grow"><div>' + esc(p.source) + ' · ' + esc(p.kind) + '</div>' + (p.text ? '<div class="sub">' + esc(p.text) + '</div>' : '') + '</div></div>').join(''), d.log.length);
+      html += '<div class="box"><div class="aprsbar"><select id="aprsch" class="aprsctl" aria-label="' + t('Kanal') + '">' +
+        d.channels.map(c => '<option value="' + esc(c.id) + '"' + (c.id === d.channel ? ' selected' : '') + '>' + esc(c.title) + '</option>').join('') + '</select>' +
+        '<span class="hint">' + esc(tt('{0} Pakete', d.packets) + (d.signal != null ? ' · ' + d.signal.toFixed(0) + ' dBFS' : '') + (d.error ? ' · ' + tt('Fehler: {0}', d.error) : '')) + '</span>' +
+        (d.stations.length ? '<button class="btn secondary aprsctl" id="aprsclear">' + t('Leeren') + '</button>' : '') + '</div></div>';
+      if (list.dataset.html === html || selecting(list)) return;
+      list.dataset.html = html; list.innerHTML = html;
+      list.querySelectorAll('[data-aprs]').forEach(el => el.onclick = () => aprsSelect(el.dataset.aprs, true));
+      $('aprsch').onchange = e => loadAPRS({ ch: e.target.value });
+      if ($('aprsclear')) $('aprsclear').onclick = () => { if (confirm(t('Alle APRS-Stationen aus der Liste entfernen?'))) { aprsSel = null; aprsSig = ''; loadAPRS({ clear: 1 }); } };
+    }
+    // ---------- Ende APRS ----------
+
     // ---------- FT8/WSPR ----------
     // Dekodierliste, eigene Leaflet-Karte der Stationen (Locator-Mitte) mit Linie
     // vom Standort zum gewählten Spot, Band und Betriebsart, Zyklusstand.
@@ -2320,7 +2510,11 @@ enum RemotePage {
       const pts = [];
       for (const st of d.stations) {
         pts.push([st.lat, st.lon]);
-        const m = L.circleMarker([st.lat, st.lon], { radius: 5, color: '#fff', weight: 1, fillColor: st.mode === 'WSPR' ? '#a05cd6' : accent, fillOpacity: .9 })
+        // Antennensymbol mit Rufzeichen wie am Mac (vorher 5-px-Punkte, kaum zu treffen).
+        const on = s && s.call === st.call, size = on ? 26 : 22;
+        const ic = L.divIcon({ className: '', iconSize: [size, size], iconAnchor: [size / 2, size / 2],
+          html: symSvg('antenna', size, on ? '#ff9f0a' : st.mode === 'WSPR' ? '#a05cd6' : accent, 0) + '<span class="lbl" style="top:' + (size - 2) + 'px">' + esc(st.call) + '</span>' });
+        const m = L.marker([st.lat, st.lon], { icon: ic, zIndexOffset: on ? 1000 : 0 })
           .bindTooltip(esc(st.call + ' · ' + st.grid + ' · ' + st.snr + ' dB · ' + st.spots + '×')).addTo(ft8Layer);
         // Antippen wählt die jüngste Dekodierung dieser Station.
         m.on('click', () => { const sp = ft8Data.spots.find(x => x.call === st.call); if (sp) ft8SelectSpot(sp.id, false); });
@@ -2328,8 +2522,10 @@ enum RemotePage {
       if (d.home) L.circleMarker(d.home, { radius: 6, color: '#8b5a2b', weight: 2, fillColor: '#8b5a2b', fillOpacity: 1 }).bindTooltip(esc(t('Standort') + ' ' + (d.homeGrid || ''))).addTo(ft8Layer);
       if (s && s.lat != null) {
         if (d.home) L.polyline([d.home, [s.lat, s.lon]], { color: '#ff9f0a', weight: 3, dashArray: '6 6' }).addTo(ft8Layer);
-        L.circleMarker([s.lat, s.lon], { radius: 9, color: '#fff', weight: 2, fillColor: '#ff9f0a', fillOpacity: 1 })
-          .bindTooltip(esc((s.call || '') + ' · ' + s.grid)).addTo(ft8Layer);
+        // Spot ohne Station in der Liste (Locator ohne Rufzeichen): eigener Punkt.
+        if (!d.stations.some(st => st.call === s.call))
+          L.circleMarker([s.lat, s.lon], { radius: 9, color: '#fff', weight: 2, fillColor: '#ff9f0a', fillOpacity: 1 })
+            .bindTooltip(esc((s.call || '') + ' · ' + s.grid)).addTo(ft8Layer);
       }
       if (!ft8Fitted && pts.length) {
         ft8Fitted = true;
@@ -2790,7 +2986,7 @@ enum RemotePage {
       for (const x of EXTRA_TABS) $('x-' + x).style.display = tab === x ? 'block' : 'none';
       const st = tab === 'zigbee' ? zigbeeStatus()
                : tab === 'fm' ? fmStatus() : tab === 'sensors' ? sensorsStatus() : tab === 'smart868' ? smartStatus()
-               : tab === 'dsc' ? dscStatus() : tab === 'ft8' ? ft8Status() : tab === 'occupancy' ? occStatus()
+               : tab === 'dsc' ? dscStatus() : tab === 'aprs' ? aprsStatus() : tab === 'ft8' ? ft8Status() : tab === 'occupancy' ? occStatus()
                : tab === 'airband' ? (ab && ab.running ? tt('{0} Kanäle · {1} Sprüche', ab.channels.length, ab.transmissions) + (ab.finding ? ' · ' + tt('Suche läuft') : '') : tt('Flugfunk aus')) : tab === 'adsb' ? tt('{0} Flugzeuge', state.adsb.aircraft.length) + ' · ' + state.adsb.messagesPerSecond.toFixed(1) + '/s'
                : tab === 'ais' ? tt('{0} Schiffe', state.ais.vessels.length) + ' · ' + tt('{0} Meldungen', state.ais.messages)
                : tab === 'acars' ? (acars && acars.running ? tt('{0} Nachrichten · {1} Rahmen · {2} Flugzeuge', acars.messages, acars.frames, acars.aircraft) : tt('Flugzeug-Datenfunk aus'))
@@ -2821,6 +3017,7 @@ enum RemotePage {
       else if (tab === 'sensors') renderSensors();
       else if (tab === 'smart868') renderSmart();
       else if (tab === 'dsc') renderDSC();
+      else if (tab === 'aprs') renderAPRS();
       else if (tab === 'ft8') renderFT8();
       else if (tab === 'occupancy') renderOcc();
     }
@@ -2875,6 +3072,7 @@ enum RemotePage {
         if (tab === 'sensors') await loadSensors();
         if (tab === 'smart868') await loadSmart();
         if (tab === 'dsc') await loadDSC();
+        if (tab === 'aprs') await loadAPRS();
         if (tab === 'ft8') await loadFT8();
         if (tab === 'occupancy') await loadOcc();
       }

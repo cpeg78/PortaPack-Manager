@@ -80,13 +80,6 @@ struct SettingsAndLevelTests {
         #expect(HelpCenter.resourceName(preferredLanguage: nil, englishAvailable: true) == "Hilfe")
     }
 
-    @Test("Standortzeile der Übersicht")
-    func locationText() {
-        #expect(OverviewView.locationText(lat: 0, lon: 0).hasPrefix("Noch kein Standort"))
-        let text = OverviewView.locationText(lat: 53.55, lon: -10.0)
-        #expect(text.contains("N") && text.contains("W") && text.hasPrefix("Standort:"))
-    }
-
     @Test("Eine Pegelbewertung: übersteuert ab 1 %, sehr laut nur als Hinweis")
     func levelThresholds() {
         #expect(ReceiveLevel(.init(rmsDBFS: -20, peakDBFS: 0, clipped: 0.01)) == .overloaded)

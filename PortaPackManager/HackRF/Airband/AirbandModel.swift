@@ -40,13 +40,16 @@ final class AirbandModel {
 
     /// Kanalliste des Nutzers (gespeichert).
     private(set) var channels = AirbandChannel.load()
-    /// 16 MHz statt 8 MHz Ausschnitt (doppelte Rechenlast).
+    /// 16 MHz statt 8 MHz Ausschnitt erlauben (doppelte Rechenlast). Genutzt wird er
+    /// nur, wenn er mehr Listenkanäle abdeckt als der schmale (`activeWide`).
     var wide = UserDefaults.standard.bool(forKey: "airbandWide") {
         didSet {
             UserDefaults.standard.set(wide, forKey: "airbandWide")
-            if !running { window = AirbandWindow.best(for: channels, bins: bins) }
+            if !running { activeWide = Self.needsWide(channels, allowed: wide); window = AirbandWindow.best(for: channels, bins: bins) }
         }
     }
+    /// Ausschnitt, mit dem gerade empfangen wird (bzw. beim nächsten Start).
+    private(set) var activeWide: Bool
     private(set) var window: AirbandWindow
     var squelchDB: Double = UserDefaults.standard.object(forKey: "airbandSquelchDB") as? Double ?? 8 {
         didSet {
@@ -106,12 +109,26 @@ final class AirbandModel {
     private var findTask: Task<Void, Never>?
     private weak var device: HackRFDevice?
 
-    var sampleRate: Double { wide ? 16_000_000 : 8_000_000 }
-    var bins: Int { wide ? 1920 : 960 }
+    var sampleRate: Double { activeWide ? 16_000_000 : 8_000_000 }
+    var bins: Int { activeWide ? 1920 : 960 }
+
+    /// Breit lohnt sich nur, wenn das beste 16-MHz-Fenster mehr (bzw. wichtigere)
+    /// Listenkanäle abdeckt als das beste 8-MHz-Fenster – sonst halbe Rechenlast
+    /// (Nutzer 31.10.2026: Flugfunk braucht in der Aktivitätsanzeige viel).
+    nonisolated static func needsWide(_ channels: [AirbandChannel], allowed: Bool) -> Bool {
+        guard allowed else { return false }
+        func score(_ bins: Int) -> Int {
+            let window = AirbandWindow.best(for: channels, bins: bins)
+            return channels.filter { !$0.locked && window.covers($0.index) }.reduce(0) { $0 + ($1.priority ? 1000 : 1) }
+        }
+        return score(1920) > score(960)
+    }
 
     init() {
-        let wide = UserDefaults.standard.bool(forKey: "airbandWide")
-        window = AirbandWindow.best(for: AirbandChannel.load(), bins: wide ? 1920 : 960)
+        let channels = AirbandChannel.load()
+        let wide = Self.needsWide(channels, allowed: UserDefaults.standard.bool(forKey: "airbandWide"))
+        activeWide = wide
+        window = AirbandWindow.best(for: channels, bins: wide ? 1920 : 960)
         history = []
         transcription = AirbandTranscription(log: AirbandLog.standard)
         transcription.onResult = { [weak self] result in self?.apply(result) }
@@ -137,6 +154,7 @@ final class AirbandModel {
         guard !running else { return }
         do {
             self.device = device
+            activeWide = Self.needsWide(channels, allowed: wide)
             window = AirbandWindow.best(for: channels, bins: bins)
             let receiver = AirbandReceiver(sampleRate: sampleRate, bins: bins, output: audio.buffer)
             receiver.lock.withLock {
@@ -320,6 +338,13 @@ final class AirbandModel {
     private func channelsChanged(reposition: Bool = true) {
         AirbandChannel.save(channels)
         receiver?.lock.withLock { receiver?.channels = channels }
+        // Passt die Liste jetzt (nicht mehr) in 8 MHz: mit der anderen Breite neu starten.
+        if reposition, !finding, running, Self.needsWide(channels, allowed: wide) != activeWide,
+           let device, device.isReceiving(for: self) {
+            stop()
+            start(on: device)
+            return
+        }
         if reposition, !finding { moveWindow(to: AirbandWindow.best(for: channels, bins: bins)) }
     }
 

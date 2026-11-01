@@ -45,7 +45,6 @@ Start anything with one click here, and see how your device is doing.
   the same name and icon as the page in the sidebar.
 - **Connection** – which mode the device is in; **Technical Details**
   (collapsed) list firmware, serial number and radio chip.
-- **Location** – your saved location; change it via “Settings …”.
 - **Device Controls** – “Refresh Status” (⌘R), “Set Clock”, “Back to Mayhem
   (Restart)”, “SD Card as Drive” and “Initial Setup …”.
 - **Troubleshooting** (collapsed) – “Reconnect USB” (helps when the connection
@@ -336,6 +335,10 @@ Ships on the map with name, type, destination, arrival time and photo.
 Position and weather reports from radio amateurs on 144.800 MHz, on the map.
 Depending on your area, only a few packets arrive per hour. With **Listen to
 Channel** you hear the packets as chirps; turn tracks on under “Display”.
+Under **Frequency** there is also **433.775 MHz (LoRa APRS)**: LoRa trackers
+and iGates transmit there, and their stations end up in the same list and map.
+Remote access has an **APRS** tab too, with map, station list and channel
+choice – tap a station to see its comment, path and track.
 
 <a id="pager"></a>
 ## Paging (POCSAG)
@@ -609,7 +612,9 @@ them – if several talk at once, the loudest.
   alarms.
 - **Span:** the app listens to 8 MHz at once. If your channels are spread
   further apart, turn on “Wide span (16 MHz)” before starting (needs more
-  processing power). The Controls panel lists channels outside the span.
+  processing power). It is only used when your list really doesn’t fit into
+  8 MHz – otherwise the narrow span stays, with half the load. The Controls
+  panel lists channels outside the span.
 
 ### Finding Active Channels
 
@@ -1070,7 +1075,7 @@ time, confirm with “Allow”.
 - At the top left, the button with the receiver's name opens the menu with all
   tabs: Aircraft, Aircraft Datalink, Airband, Ships, Maritime Distress, Weather
   & Satellites, Digital Radio, Radio, Spectrum, Occupancy Monitor, Wireless
-  Sensors, Smart Home 868, Zigbee and FT8/WSPR.
+  Sensors, Smart Home 868, Zigbee, APRS and FT8/WSPR.
 - **Start** switches the HackRF to this receiver, **Stop** ends it. The square
   at the top right ends any reception – including one started on the Mac, and
   nothing starts again by itself afterwards. The antenna next to it is
@@ -1078,6 +1083,9 @@ time, confirm with “Allow”.
 - For Radio, Digital Radio and Airband, **Listen Here** plays the sound on your
   phone; **Mute** only turns off the sound, reception continues.
 - Tap a box's heading to expand or collapse it.
+- Drag the info sheet of an aircraft or ship at its handle to make it larger or
+  smaller (tapping the handle steps through small – half – large). **✕** hides
+  it; the target stays selected and moves to the centre of the map.
 - The frequency memory, the airband channel list and the Reception Schedule are
   shared between Mac and phone. The Radio tab lists the frequency memory to tap
   and tune; editing and deleting happen on the Mac. Under **Weather & Satellites** you turn the Reception
