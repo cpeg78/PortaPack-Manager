@@ -112,6 +112,7 @@ struct DroneView: View {
             .overlay(alignment: .bottomLeading) {
                 if !mapController.following, !positioned.isEmpty {
                     Button("Alle Drohnen zeigen", systemImage: "scope") { mapController.showAll() }
+                        .buttonStyle(.mapOverlay)
                         .padding(10)
                 }
             }
@@ -120,7 +121,7 @@ struct DroneView: View {
     // MARK: - Tabelle
 
     private var table: some View {
-        Table(model.drones.sorted(by: order), selection: $selection, sortOrder: $order) {
+        Table(model.drones.sorted(by: order, current: [byDistance]), selection: $selection, sortOrder: $order) {
             TableColumn("Kennung", sortUsing: ColumnSort("kennung", text: { $0.uasID })) { drone in
                 Text(drone.uasID ?? drone.address.string).font(.body.monospaced())
                     .foregroundStyle(drone.uasID == nil ? .secondary : .primary)
@@ -136,7 +137,7 @@ struct DroneView: View {
             TableColumn("Tempo", sortUsing: ColumnSort("tempo") { $0.location?.speed }) { drone in
                 Text(drone.location?.speed.map { String(format: "%.1f m/s", $0) } ?? "–")
             }.width(65)
-            TableColumn("Entfernung", sortUsing: ColumnSort("entfernung") { distanceKm($0.latitude, $0.longitude) }) { drone in
+            TableColumn("Entfernung", sortUsing: byDistance) { drone in
                 Text(distanceKm(drone.latitude, drone.longitude).map { String(format: "%.2f km", $0) } ?? "–")
             }.width(75)
             TableColumn("Pegel", sortUsing: ColumnSort("pegel") { $0.rssiDB }) { Text(String(format: "%.0f dB", $0.rssiDB)).monospacedDigit() }.width(50)
@@ -275,6 +276,11 @@ struct DroneView: View {
 
     private func format(_ value: Double) -> String {
         value >= 100 ? String(format: "%.0f", value) : String(format: "%g", value)
+    }
+
+    /// Entfernung zum Standort – frisch je Neuzeichnen (siehe `sorted(by:current:)`).
+    private var byDistance: ColumnSort<Drone> {
+        ColumnSort("entfernung") { distanceKm($0.latitude, $0.longitude) }
     }
 
     private func distanceKm(_ lat: Double?, _ lon: Double?) -> Double? {

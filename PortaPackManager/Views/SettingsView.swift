@@ -333,6 +333,11 @@ struct NotificationSettingsPane: View {
                     .help("Mit der kostenlosen Handy-App „ntfy“ (iOS/Android) bekommst du die Meldungen aufs Handy. Hinaus gehen nur die Meldungstexte, keine Koordinaten.")
                 if notifier.ntfyEnabled {
                     LabeledContent("Server") { TextField("https://ntfy.sh", text: $notifier.ntfyServer).multilineTextAlignment(.trailing) }
+                    if NtfyServer.sendsTopicInClear(notifier.ntfyServer) {
+                        Label("Ohne https geht das Thema unverschlüsselt durchs Netz – wer mitliest, kann deine Meldungen abonnieren. Im eigenen Heimnetz meist vertretbar, sonst https verwenden.",
+                              systemImage: "exclamationmark.triangle")
+                            .font(.caption).foregroundStyle(.orange)
+                    }
                     LabeledContent("Thema") { TextField("", text: $notifier.ntfyTopic).multilineTextAlignment(.trailing).font(.body.monospaced()) }
                     HStack {
                         if let qr = RemoteView.qrCode(notifier.subscribeURL) {

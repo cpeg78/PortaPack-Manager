@@ -52,9 +52,14 @@ final class MapController {
     /// Der Ausschnitt folgt allen Zielen, bis der Nutzer die Karte bewegt oder
     /// eine Auswahl angesprungen wird – dann zeigen die Seiten „Alle zeigen“.
     private(set) var following = true
+    /// Zählt Verschiebungen der Karte durch den Nutzer (Ziehen; Zoomen nicht) –
+    /// Seiten, die einem ausgewählten Ziel nachführen, hören daran auf.
+    private(set) var userPans = 0
 
-    @ObservationIgnored fileprivate var send: ((MapCommand) -> Void)?
-    @ObservationIgnored fileprivate var queued: [MapCommand] = []
+    @ObservationIgnored private var send: ((MapCommand) -> Void)?
+    /// Die Karte, an der der Controller gerade hängt – nur sie darf ihn wieder trennen.
+    @ObservationIgnored private weak var owner: LeafletCoordinator?
+    @ObservationIgnored private var queued: [MapCommand] = []
 
     /// Allen Zielen folgen und einpassen.
     func showAll(animated: Bool = true) {
@@ -62,10 +67,11 @@ final class MapController {
         issue(.follow(animated: animated))
     }
 
-    /// Auf eine Koordinate setzen (Zoom bleibt, wenn `zoom` fehlt).
-    func center(on c: CLLocationCoordinate2D, zoom: Double? = nil, animated: Bool = true) {
+    /// Auf eine Koordinate setzen (Zoom bleibt, wenn `zoom` fehlt). `pin`: die
+    /// Seite führt diesem Ziel nach (siehe `MapCommand.pin`).
+    func center(on c: CLLocationCoordinate2D, zoom: Double? = nil, animated: Bool = true, pin: Bool = false) {
         setFollowing(false)
-        issue(.center(c, zoom: zoom, animated: animated))
+        issue(.center(c, zoom: zoom, animated: animated, pin: pin))
     }
 
     /// Kreis um eine Koordinate zeigen (z. B. 300 m um die GPS-Position).
@@ -78,21 +84,29 @@ final class MapController {
     }
 
     private func issue(_ command: MapCommand) {
-        if let send { send(command) } else { queued.append(command) }
+        if owner != nil, let send { send(command) } else { queued.append(command) }
     }
 
     private func setFollowing(_ value: Bool) {
         if following != value { following = value }
     }
 
-    fileprivate func attach(_ send: @escaping (MapCommand) -> Void) {
+    func attach(_ owner: LeafletCoordinator, _ send: @escaping (MapCommand) -> Void) {
+        self.owner = owner
         self.send = send
         let pending = queued
         queued = []
         pending.forEach(send)
     }
 
-    fileprivate func detach() { send = nil }
+    /// Trennt nur, wenn noch `owner` daran hängt: Baut SwiftUI eine Karte neu auf,
+    /// hängt der Controller (`@State`) schon an der neuen, bevor die alte abgebaut
+    /// wird – ohne Prüfung gingen danach alle Befehle ins Leere (Review 01.11.2026).
+    func detach(from owner: LeafletCoordinator) {
+        guard self.owner === owner else { return }
+        self.owner = nil
+        send = nil
+    }
 
     fileprivate func receivedView(_ view: MapViewport, moving: Bool) {
         if viewport != view { viewport = view }
@@ -100,6 +114,7 @@ final class MapController {
     }
 
     fileprivate func userMoved() { setFollowing(false) }
+    fileprivate func userPanned() { userPans += 1 }
 }
 
 /// Karte mit OpenStreetMap-Kacheln über Leaflet in einer `WKWebView` – überall in
@@ -123,7 +138,7 @@ struct LeafletMap: NSViewRepresentable {
         let coordinator = context.coordinator
         let webView = Self.makeWebView(coordinator)
         coordinator.parent = self
-        controller.attach { [weak coordinator] in coordinator?.command($0) }
+        controller.attach(coordinator) { [weak coordinator] in coordinator?.command($0) }
         coordinator.controller = controller
         return webView
     }
@@ -154,15 +169,15 @@ struct LeafletMap: NSViewRepresentable {
         let coordinator = context.coordinator
         coordinator.parent = self
         if coordinator.controller !== controller {
-            coordinator.controller?.detach()
+            coordinator.controller?.detach(from: coordinator)
             coordinator.controller = controller
-            controller.attach { [weak coordinator] in coordinator?.command($0) }
+            controller.attach(coordinator) { [weak coordinator] in coordinator?.command($0) }
         }
         coordinator.update(features)
     }
 
     static func dismantleNSView(_ webView: LeafletWebView, coordinator: LeafletCoordinator) {
-        coordinator.controller?.detach()
+        coordinator.controller?.detach(from: coordinator)
         coordinator.controller = nil
         webView.configuration.userContentController.removeScriptMessageHandler(forName: "map")
         webView.stopLoading()
@@ -220,6 +235,10 @@ final class LeafletCoordinator: NSObject, WKNavigationDelegate, WKUIDelegate {
     private var sent: [String: MapFeature] = [:]
     private var latest: [MapFeature] = []
     private var pendingCommands: [MapCommand] = []
+    /// Eine Zustellung ist gescheitert: der Stand der Seite ist unbekannt, die
+    /// nächste Nachricht verwirft dort alles und bringt den ganzen Stand.
+    private var needsReset = false
+    private var resyncScheduled = false
 
     func update(_ features: [MapFeature]) {
         latest = features
@@ -233,22 +252,46 @@ final class LeafletCoordinator: NSObject, WKNavigationDelegate, WKUIDelegate {
         flush()
     }
 
+    /// Schickt den Unterschied zum zuletzt gesendeten Stand. `sent` gilt erst, wenn
+    /// die Nachricht kodiert ist und hinausgeht; scheitert die Zustellung auf der
+    /// Seite, folgt ein Abgleich mit dem ganzen Stand (Review 01.11.2026 – vorher
+    /// liefen Swift und Seite nach einem Fehler dauerhaft auseinander).
     private func flush(options: MapOptions? = nil) {
-        let (diff, state) = MapDiff.make(old: sent, new: latest)
-        sent = state
-        let message = MapMessage(options: options, diff: diff, commands: pendingCommands)
-        pendingCommands = []
-        guard !message.isEmpty else { return }
-        send(message)
-    }
-
-    private func send(_ message: MapMessage) {
         guard let webView else { return }
+        let reset = needsReset
+        let (diff, state) = MapDiff.make(old: reset ? [:] : sent, new: latest)
+        let commands = pendingCommands.filter(\.isFinite)
+        pendingCommands = []
+        let message = MapMessage(options: options, diff: diff, commands: commands, reset: reset)
+        guard !message.isEmpty else { sent = state; return }
+        guard let json = message.json() else {
+            LeafletMap.log.error("Karte: Nachricht ließ sich nicht kodieren – Stand bleibt, nächster Versuch beim nächsten Takt")
+            return
+        }
+        sent = state
+        needsReset = false
         // Der JSON-Text geht als Argument hinüber – nie als Teil des Quelltexts.
-        webView.callAsyncJavaScript("return PPM.receive(m)", arguments: ["m": message.json()], in: nil, in: .page) { result in
+        webView.callAsyncJavaScript("return PPM.receive(m)", arguments: ["m": json], in: nil, in: .page) { [weak self] result in
             if case .failure(let error) = result {
                 LeafletMap.log.error("Karte: \(error.localizedDescription, privacy: .public)")
+                MainActor.assumeIsolated { self?.deliveryFailed() }
             }
+        }
+    }
+
+    /// Gescheiterte Zustellung: beim nächsten Senden alles neu, spätestens nach
+    /// einer Sekunde (nicht sofort – scheitert die Seite immer wieder an denselben
+    /// Daten, entstünde sonst eine Schleife).
+    private func deliveryFailed() {
+        needsReset = true
+        sent = [:]
+        guard !resyncScheduled else { return }
+        resyncScheduled = true
+        Task { [weak self] in
+            try? await Task.sleep(for: .seconds(1))
+            guard let self else { return }
+            resyncScheduled = false
+            if ready, needsReset { flush() }
         }
     }
 
@@ -258,6 +301,7 @@ final class LeafletCoordinator: NSObject, WKNavigationDelegate, WKUIDelegate {
         case "ready":
             ready = true
             sent = [:]
+            needsReset = false
             flush(options: parent?.options ?? MapOptions())
         case "view":
             func number(_ key: String) -> Double? { (object[key] as? NSNumber)?.doubleValue }
@@ -267,6 +311,8 @@ final class LeafletCoordinator: NSObject, WKNavigationDelegate, WKUIDelegate {
             controller?.receivedView(view, moving: (object["moving"] as? Bool) ?? false)
         case "follow":
             controller?.userMoved()
+        case "pan":
+            controller?.userPanned()
         case "select":
             parent?.onSelect?(object["key"] as? String)
         case "tap":
@@ -315,4 +361,24 @@ final class LeafletWebView: WKWebView {
     }
 
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+}
+
+/// Knopf über einer Karte („Alle … zeigen“): Kapsel mit Material und Schatten –
+/// als nackter Knopf war er auf hellen Kacheln kaum zu sehen (Nutzer 01.11.2026).
+struct MapOverlayButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .font(.callout.weight(.semibold))
+            .foregroundStyle(.primary)
+            .padding(.horizontal, 12).padding(.vertical, 7)
+            .background(.regularMaterial, in: Capsule())
+            .overlay(Capsule().strokeBorder(.secondary.opacity(0.35)))
+            .shadow(color: .black.opacity(0.25), radius: 4, y: 1)
+            .opacity(configuration.isPressed ? 0.7 : 1)
+            .contentShape(Capsule())
+    }
+}
+
+extension ButtonStyle where Self == MapOverlayButtonStyle {
+    static var mapOverlay: MapOverlayButtonStyle { MapOverlayButtonStyle() }
 }

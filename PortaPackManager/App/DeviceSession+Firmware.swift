@@ -142,7 +142,7 @@ extension DeviceSession {
 
                 // Neustart in Mayhem.
                 update(.waitingForReboot, 0, String(localized: "Starte neu …"))
-                try? hackRF.reset()
+                try? hackRF.reset(afterFlashing: true)   // noch unter der Flash-Sperre
                 self.hackRF = nil
                 await Task.detached { hackRF.close() }.value
                 mode = .disconnected
@@ -160,12 +160,8 @@ extension DeviceSession {
                 }
 
                 if installApps, let archive {
-                    try await reconnected.makeDirectory("/APPS")
-                    let apps = archive.apps
-                    for (index, entry) in apps.enumerated() {
-                        let name = TarArchive.lastComponent(entry.name)
-                        update(.installingApps, Double(index) / Double(max(apps.count, 1)), "\(name) (\(index + 1)/\(apps.count))")
-                        try await reconnected.upload(try archive.contents(of: entry), to: "/APPS/\(name)") { _, _ in }
+                    try await FirmwareInstaller.copyApps(of: archive, to: reconnected) { phase, fraction, detail in
+                        update(phase, fraction, detail)
                     }
                 }
                 let info = try await reconnected.info()

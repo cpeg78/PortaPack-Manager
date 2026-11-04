@@ -288,12 +288,18 @@ Frei empfangbares Antennenfernsehen (DVB-T2 HD) mit Bild und Ton.
 Flugzeuge in Funkreichweite auf der Karte – mit Kennzeichen, Typ,
 Fluggesellschaft, Strecke und Foto.
 
-- **Start**, dann ein Klick auf ein Flugzeug öffnet die Infokarte.
+- **Start**, dann ein Klick auf ein Flugzeug öffnet die Infokarte. Das ✕
+  klappt nur die Karte zu – das Flugzeug bleibt ausgewählt (Spur, Mitte);
+  ein Klick daneben auf die Karte hebt die Auswahl auf. Die Karte hält das
+  ausgewählte Flugzeug in der Mitte, bis du sie verschiebst; ein erneuter
+  Klick darauf holt es zurück.
 - **Flugzeugdatenbank** (unter „Daten & Export“ mit **Aktualisieren** laden,
   ≈ 95 MB): Kennzeichen und Typ auch ohne Internet. Unbekannte Flugzeuge,
   Strecken und Fotos fragt die App auf Wunsch online nach – einschalten unter
   **Einstellungen ▸ Online-Dienste**.
-- Unter **Anzeige**: metrische Einheiten, Flugspuren und **Flugplätze zeigen**.
+- Unter **Anzeige**: metrische Einheiten, Flugspuren, **Flugplätze zeigen** und
+  **Liste zeigt** – wie lange ein Flugzeug ohne Meldung in der Tabelle bleibt
+  (15 min, 30 min, 1 h oder 3 h; im Archiv bleibt es immer).
 - **Flugplätze** auf der Karte: große Flughäfen als gefüllte Kreise, kleine
   Flugplätze als Ringe, Hubschrauberlandeplätze („H“) erst nah herangezoomt.
   Ein Klick zeigt Name, Ort und Höhe. Die Liste (OurAirports, 12 MB) lädst du
@@ -307,6 +313,13 @@ Fluggesellschaft, Strecke und Foto.
 
 Reichweite: drinnen oft nur wenige Kilometer, mit Antenne draußen 100 km und
 mehr.
+
+Das Symbol zeigt die Art: Hubschrauber, Kleinflugzeug (gerade Flügel),
+Segelflugzeug, Verkehrsflugzeug; Großraumflugzeuge sind größer gezeichnet.
+
+Manche Luftfahrzeuge – oft Hubschrauber, Polizei und Militär – senden keine
+Position, sondern nur ihre Kennung und Höhe. Sie stehen in der Liste und im
+Archiv, aber nicht auf der Karte.
 
 <a id="acars"></a>
 ## Flugzeug-Datenfunk (ACARS & VDL2)
@@ -581,7 +594,12 @@ Funk von Smart-Home-Geräten und Funkzählern um 868 MHz – alles gleichzeitig:
 Den Schlüssel deines Zählers bekommst du vom Versorger, Vermieter oder
 Hersteller. Trag ihn unter „Daten & Export“ bei **Zählerschlüssel** ein:
 Zählernummer (8 Ziffern, steht auf dem Zähler) und Schlüssel (32 Zeichen
-0–9/A–F). Er liegt nur im Schlüsselbund deines Mac.
+0–9/A–F). Er liegt nur im Schlüsselbund deines Mac. Die App entschlüsselt
+damit die Sicherheitsmodi 5 und 7 (bei 7 prüft sie auch die Signatur).
+
+**Techem-Heizkostenverteiler** senden ohne Schlüssel, aber in eigenem Format.
+Die App liest daraus die Verbrauchseinheiten der laufenden Periode und der
+Vorperiode (mit Datum) sowie Raum- und Heizkörpertemperatur.
 
 ### EnOcean-Fühler
 

@@ -36,8 +36,8 @@ struct InfoCardContent: View {
                 Spacer()
                 Button { onClose() } label: { Image(systemName: "xmark.circle.fill") }
                     .buttonStyle(.plain).foregroundStyle(.secondary)
-                    .help("Auswahl aufheben")
-                    .accessibilityLabel("Auswahl aufheben")
+                    .help("Infokarte schließen")
+                    .accessibilityLabel("Infokarte schließen")
             }
             if let subtitle {
                 Text(subtitle).font(.caption.monospaced()).foregroundStyle(.secondary)

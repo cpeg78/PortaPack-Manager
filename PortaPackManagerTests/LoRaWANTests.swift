@@ -47,6 +47,38 @@ struct LoRaWANTests {
         // Falscher NwkSKey: MIC schlägt fehl.
         var wrong = session; wrong.nwkSKey[0] ^= 1
         #expect(LoRaWANParser.parse(phy, sessions: [devAddr: wrong])?.micValid == false)
+        // … und dann wird auch nichts „entschlüsselt“ (wäre Müll).
+        #expect(LoRaWANParser.parse(phy, sessions: [devAddr: wrong])?.decrypted == nil)
+    }
+
+    @Test("Zähler über 65 535: obere 16 Bit je Gerät fortgeführt, MIC und Nutzlast stimmen")
+    func fullFrameCounter() throws {
+        let nwkSKey = Self.hex("00112233445566778899aabbccddeeff")
+        let appSKey = Self.hex("0f0e0d0c0b0a09080706050403020100")
+        let devAddr: UInt32 = 0x26011BDA
+        let app: [UInt8] = Array("Zähler".utf8)
+        func uplink(_ fCnt: UInt32) -> [UInt8] {
+            let fhdr: [UInt8] = [0x40] + LoRaWANCrypto.le32(devAddr) + [0x00, UInt8(fCnt & 0xFF), UInt8((fCnt >> 8) & 0xFF)]
+            let msg = fhdr + [0x01] + LoRaWANCrypto.cryptPayload(key: appSKey, devAddr: devAddr, fCnt: fCnt, dir: 0, app)
+            return msg + LoRaWANCrypto.dataMIC(nwkSKey: nwkSKey, devAddr: devAddr, fCnt: fCnt, dir: 0, msg: msg)
+        }
+        let sessions = [devAddr: LoRaWANSession(devAddr: devAddr, nwkSKey: nwkSKey, appSKey: appSKey)]
+        let key = LoRaWANParser.counterKey(devAddr: devAddr, uplink: true)
+        // Ohne Vorgeschichte geht ein Rahmen mit FCnt 65 540 nicht auf – und liefert keine Nutzlast.
+        let unknown = try #require(LoRaWANParser.parse(uplink(65_540), sessions: sessions))
+        #expect(unknown.micValid == false && unknown.decrypted == nil)
+        // Mit dem letzten vollen Zähler (gleiche Stufe) und über den 16-Bit-Überlauf hinweg.
+        let same = try #require(LoRaWANParser.parse(uplink(65_540), sessions: sessions, counters: [key: 65_537]))
+        #expect(same.micValid == true && same.fullFCnt == 65_540 && same.decrypted == app)
+        let wrapped = try #require(LoRaWANParser.parse(uplink(131_073), sessions: sessions, counters: [key: 131_070]))
+        #expect(wrapped.fullFCnt == 131_073 && wrapped.decrypted == app)
+        let crossed = try #require(LoRaWANParser.parse(uplink(131_074), sessions: sessions, counters: [key: 131_000 - 66_000]))
+        #expect(crossed.micValid == false)   // zu weit gesprungen – nicht geraten
+        let overflow = try #require(LoRaWANParser.parse(uplink(0x2_0001), sessions: sessions, counters: [key: 0x1_FFF0]))
+        #expect(overflow.fullFCnt == 0x2_0001 && overflow.decrypted == app)
+        // Gerät neu gestartet: Zähler beginnt wieder bei 0.
+        let restarted = try #require(LoRaWANParser.parse(uplink(3), sessions: sessions, counters: [key: 70_000]))
+        #expect(restarted.fullFCnt == 3)
     }
 
     @Test("Join-Request: EUIs und DevNonce")

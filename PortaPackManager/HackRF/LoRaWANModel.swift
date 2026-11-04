@@ -78,6 +78,9 @@ final class LoRaWANModel {
         var count = 0
         var decrypted = 0
         var noiseDB = -100.0
+        /// Letzter gültiger voller FCnt je Gerät und Richtung (nur Geräte mit
+        /// Schlüssel, also begrenzt) – siehe `LoRaWANParser.parse`.
+        var counters: [UInt64: UInt32] = [:]
 
         func handle(_ block: Data) {
             // Referenzen unter Lock holen: `tune` tauscht sie auf dem Main Actor (wie Meshtastic).
@@ -93,7 +96,10 @@ final class LoRaWANModel {
                 noiseDB = noise
                 for (sf, phy) in found {
                     guard phy.crcValid != false else { continue }
-                    guard let frame = LoRaWANParser.parse(phy.payload, sessions: sessions) else { continue }
+                    guard let frame = LoRaWANParser.parse(phy.payload, sessions: sessions, counters: counters) else { continue }
+                    if let full = frame.fullFCnt, let devAddr = frame.devAddr {
+                        counters[LoRaWANParser.counterKey(devAddr: devAddr, uplink: frame.mType.isUplink)] = full
+                    }
                     count += 1
                     if frame.decrypted != nil { decrypted += 1 }
                     log.append(LoRaWANLogLine(id: count, date: phy.date, channelMHz: channel, sf: sf,
@@ -248,5 +254,9 @@ final class LoRaWANModel {
         try device.setAntennaPower(antennaPower)
     }
 
-    func applyGainsQuietly() { do { try applyGains() } catch { self.error = error.localizedDescription } }
+    /// Nur am eigenen, laufenden Strom (Gerätebesitz); sonst gelten die Werte beim nächsten Start.
+    func applyGainsQuietly() {
+        guard running, device?.isReceiving(for: self) == true else { return }
+        do { try applyGains() } catch { self.error = error.localizedDescription }
+    }
 }

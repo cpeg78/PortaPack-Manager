@@ -362,6 +362,7 @@ struct FT8MapPane: View {
             .overlay(alignment: .bottomLeading) {
                 if !controller.following, !model.stations.isEmpty {
                     Button("Alle Stationen zeigen", systemImage: "scope") { controller.showAll() }
+                        .buttonStyle(.mapOverlay)
                         .padding(10)
                 }
             }
@@ -379,7 +380,7 @@ struct FT8SpotTable: View {
 
     private var rows: [FT8Spot] {
         let list = onlyCQ ? model.spots.filter { $0.isCQ || $0.mode == .wspr } : model.spots
-        return list.sorted(by: order)
+        return list.sorted(by: order, current: [byDistance])
     }
 
     var body: some View {
@@ -407,7 +408,7 @@ struct FT8SpotTable: View {
             TableColumn("Locator", sortUsing: ColumnSort("locator", text: { $0.grid })) { spot in
                 Text(spot.grid ?? "–").font(.body.monospaced()).foregroundStyle(spot.gridFromMessage ? .primary : .secondary)
             }.width(min: 50, ideal: 60)
-            TableColumn("Entfernung", sortUsing: ColumnSort("entfernung") { distanceKm($0) }) { spot in
+            TableColumn("Entfernung", sortUsing: byDistance) { spot in
                 Text(distanceString(spot))
             }.width(min: 80, ideal: 100)
         }
@@ -442,6 +443,11 @@ struct FT8SpotTable: View {
         f.timeZone = TimeZone(identifier: "UTC")
         return f
     }()
+
+    /// Entfernung zum Standort – frisch je Neuzeichnen (siehe `sorted(by:current:)`).
+    private var byDistance: ColumnSort<FT8Spot> {
+        ColumnSort("entfernung") { distanceKm($0) }
+    }
 
     private func distanceKm(_ spot: FT8Spot) -> Double? {
         guard let home, let grid = spot.grid, let pos = FT8Locator.coordinate(grid) else { return nil }

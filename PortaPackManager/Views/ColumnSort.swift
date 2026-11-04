@@ -55,4 +55,19 @@ extension Array {
     func sorted(by order: [ColumnSort<Element>]) -> [Element] {
         order.isEmpty ? self : sorted(using: order)
     }
+
+    /// Wie `sorted(by:)`, nur gelten für die Spalten in `current` deren frische
+    /// Vergleicher (die Richtung aus `order` bleibt). Die Tabelle hält den
+    /// Vergleicher aus dem Moment des Klicks fest – hängt der Schlüssel am Zustand
+    /// der Seite (Entfernung zum Standort), sortierte sie nach einem Umzug des
+    /// Standorts weiter nach dem alten (Review 01.11.2026).
+    func sorted(by order: [ColumnSort<Element>], current: [ColumnSort<Element>]) -> [Element] {
+        guard !order.isEmpty else { return self }
+        let fresh = order.map { chosen in
+            guard var replacement = current.first(where: { $0.id == chosen.id }) else { return chosen }
+            replacement.order = chosen.order
+            return replacement
+        }
+        return sorted(using: fresh)
+    }
 }

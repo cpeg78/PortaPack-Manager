@@ -18,6 +18,28 @@ struct RecorderTests {
         #expect(try Data(contentsOf: url) == Data([1, 2, 3, 4, 5, 6]))
     }
 
+    @Test("Spitzenpegel: Betrag, −128 zählt als Vollausschlag, gleich der einfachen Schleife")
+    func peakLevel() throws {
+        #expect(IQRecorder.peak(of: Data()) == 0)
+        #expect(IQRecorder.peak(of: Data([0x05, 0xF0, 0x10])) == 16)        // −16 und 16
+        #expect(IQRecorder.peak(of: Data([0x80, 0x01])) == 127)             // −128
+        var state: UInt64 = 7
+        let block = Data((0..<100_000).map { _ -> UInt8 in
+            state = state &* 6_364_136_223_846_793_005 &+ 1_442_695_040_888_963_407
+            return UInt8(truncatingIfNeeded: state >> 58)                    // 0…63, kleine Pegel
+        })
+        let reference = block.map { Int8(bitPattern: $0) }.map { min(127, abs(Int($0))) }.max() ?? 0
+        #expect(Int(IQRecorder.peak(of: block)) == reference)
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("iq-\(UUID().uuidString).c8")
+        defer { try? FileManager.default.removeItem(at: url) }
+        let recorder = IQRecorder()
+        try recorder.start(url: url)
+        recorder.write(Data([0x40, 0xC0]))                                  // ±64
+        #expect(abs(recorder.takePeak() - 64.0 / 127) < 1e-9)
+        #expect(recorder.takePeak() == 0)
+        _ = recorder.stop()
+    }
+
     @Test("Nicht anlegbare Datei wirft statt still nichts aufzunehmen")
     func startThrowsOnBadPath() {
         let url = URL(fileURLWithPath: "/nicht/vorhanden/\(UUID().uuidString).c8")

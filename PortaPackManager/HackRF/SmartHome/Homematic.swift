@@ -199,6 +199,46 @@ enum Homematic {
                 f.values.append(channelLevel(p[1], p[2]))
                 if p.count >= 4, p[3] & 0x80 != 0 { f.summary += batteryLowSuffix }
                 f.deviceType = f.deviceType.isEmpty ? String(localized: "Aktor") : f.deviceType
+            case 0x0A? where p.count >= 5:
+                // Heizkörperthermostat HM-CC-RT-DN (FHEM 10_CUL_HM.pm, „100A“):
+                // Wort Soll (Bits 10–15, ½ °C) und Ist (Bits 0–9, 1/10 °C), dann
+                // Batterie (Bits 0–4: 1,5 V + n/10) mit Fehler (Bits 5–7),
+                // Ventilstellung (Bits 0–6, %), Betriebsart (Bits 6–7).
+                let word = Int(p[1]) << 8 | Int(p[2])
+                let set = Double((word >> 10) & 0x3F) / 2, actual = Double(word & 0x3FF) / 10
+                let battery = 1.5 + Double(p[3] & 0x1F) / 10, error = Int(p[3] >> 5)
+                let valve = Double(p[4] & 0x7F)
+                f.values += [SmartHomeValue(name: "Temperatur", unit: "°C", value: actual),
+                             SmartHomeValue(name: "Sollwert", unit: "°C", value: set),
+                             SmartHomeValue(name: "Ventil", unit: "%", value: valve),
+                             SmartHomeValue(name: "Batterie", unit: "V", value: battery)]
+                let target = set < 5 ? String(localized: "aus") : set > 30 ? String(localized: "ein") : String(format: "%.1f °C", set)
+                f.summary = String(localized: "\(String(format: "%.1f", actual)) °C, Soll \(target), Ventil \(Int(valve)) %")
+                if p.count >= 6 {
+                    let mode: String = switch p[5] >> 6 {
+                    case 0: String(localized: "Automatik")
+                    case 1: String(localized: "manuell")
+                    case 2: String(localized: "Party")
+                    default: String(localized: "Boost")
+                    }
+                    f.summary += ", " + mode
+                    f.fields.append(.init(name: String(localized: "Betriebsart"), value: mode))
+                }
+                let errorText: String? = switch error {
+                case 0: nil
+                case 1: String(localized: "Ventil schwergängig")
+                case 2: String(localized: "Stellbereich zu groß")
+                case 3: String(localized: "Stellbereich zu klein")
+                case 4: String(localized: "Kommunikationsfehler")
+                case 6: String(localized: "Batterie schwach")
+                case 7: String(localized: "Ventilfehler")
+                default: String(localized: "Fehler \(error)")
+                }
+                if let errorText {
+                    f.summary += " – " + errorText
+                    f.fields.append(.init(name: String(localized: "Fehler"), value: errorText))
+                }
+                f.deviceType = f.deviceType.isEmpty ? String(localized: "Heizkörperthermostat") : f.deviceType
             default:
                 f.summary = String(localized: "Information") + (p.first.map { String(format: " 0x%02X", $0) } ?? "")
             }

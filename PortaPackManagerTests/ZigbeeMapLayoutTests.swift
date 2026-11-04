@@ -23,6 +23,39 @@ struct ZigbeeMapLayoutTests {
         #expect(ZigbeeMapLayout.layout([0, 1, 2, 3, 4], edges: edges, pinned: 0) == positions)
     }
 
+    @Test("Klebrige Kanten: rein kommen die drei besten je Gerät, raus nur, was ganz verschwindet")
+    func stickyEdges() {
+        typealias Edge = ZigbeeMapLayout.Edge
+        func pair(_ a: UInt16, _ b: UInt16) -> Edge { Edge(a: a, b: b, quality: 0) }
+        func strongestPairs(_ all: [Edge]) -> Set<Edge> {
+            Set(ZigbeeMapLayout.strongest(all, perNode: 3).map { pair($0.a, $0.b) })
+        }
+        // Vollständig vermascht (fünf Geräte, je vier Nachbarn) – jedes behält drei.
+        var all: [Edge] = []
+        for a in UInt16(0)..<5 { for b in (a + 1)..<5 { all.append(Edge(a: a, b: b, quality: Double(a * 5 + b) / 25)) } }
+        let sticky = ZigbeeMapLayout.stickyEdges([], all: all)
+        #expect(sticky == strongestPairs(all))
+        #expect(sticky.count < all.count)
+        #expect(sticky.allSatisfy { $0.quality == 0 })   // nur das Paar zählt, nicht die Güte
+        // Eine gewählte Kante wird zur schlechtesten beider Geräte – sie bleibt trotzdem.
+        let dropped = pair(3, 4)
+        #expect(sticky.contains(dropped))
+        all = all.map { $0.a == 3 && $0.b == 4 ? Edge(a: 3, b: 4, quality: 0.001) : $0 }
+        #expect(!strongestPairs(all).contains(dropped))
+        let next = ZigbeeMapLayout.stickyEdges(sticky, all: all)
+        #expect(next.contains(dropped) && next.isSuperset(of: sticky))
+        // Gleicher Stand noch einmal: unverändert (kein Nachführen je Sekunde).
+        #expect(ZigbeeMapLayout.stickyEdges(next, all: all) == next)
+        // Verschwindet die Kante ganz, fällt sie heraus.
+        all.removeAll { $0.a == 3 && $0.b == 4 }
+        let gone = ZigbeeMapLayout.stickyEdges(next, all: all)
+        #expect(!gone.contains(dropped))
+        // Layout-Kanten: die aktuellen Kanten der klebrigen Paare, mit ihrer Güte.
+        let layout = ZigbeeMapLayout.layoutEdges(all, sticky: gone)
+        #expect(Set(layout.map { pair($0.a, $0.b) }) == gone)
+        #expect(layout.allSatisfy { $0.quality > 0 })
+    }
+
     @Test("Beste Verbindungen je Gerät, Beschriftungen ohne Überlappung")
     func filtering() {
         let edges = (1...5).map { ZigbeeMapLayout.Edge(a: 0, b: UInt16($0), quality: Double($0) / 5) }

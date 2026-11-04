@@ -57,6 +57,9 @@ final class MeteorDemodulator {
 
     // Grobe Frequenzsuche
     private let fftSize = 4096
+    /// Hann-Fenster der Grobsuche – einmal gerechnet statt je FFT (Review 01.11.2026).
+    private lazy var fftWindow = vDSP.window(ofType: Float.self, usingSequence: .hanningDenormalized,
+                                             count: fftSize, isHalfWindow: false)
     private var fftBuffer: [(Float, Float)] = []
     private var fftAverage: [Float]
     private var fftCount = 0
@@ -187,7 +190,7 @@ final class MeteorDemodulator {
         for i in 0..<re.count {
             fftBuffer.append((re[i], im[i]))
             guard fftBuffer.count == fftSize else { continue }
-            let window = vDSP.window(ofType: Float.self, usingSequence: .hanningDenormalized, count: fftSize, isHalfWindow: false)
+            let window = fftWindow
             let bRe = (0..<fftSize).map { fftBuffer[$0].0 * window[$0] }
             let bIm = (0..<fftSize).map { fftBuffer[$0].1 * window[$0] }
             fftBuffer.removeAll(keepingCapacity: true)

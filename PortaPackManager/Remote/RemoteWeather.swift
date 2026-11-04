@@ -61,6 +61,9 @@ enum RemoteWeather {
         let homeSet: Bool
         let tleError: String?
         let passes: [Pass]
+        /// ISS und Amateurfunksatelliten (gewählte Satelliten), mit eigener Mindesthöhe.
+        let amateurPasses: [Pass]
+        let amateurMinElevation: Int
         let sondeWindows: [Window]
         let sondeForecast: [Forecast]
         /// Beginn des Sondenfensters, für das `sondeForecast` gerechnet wurde.
@@ -118,8 +121,10 @@ enum RemoteWeather {
         // Laufende Aufnahme überspringen (der Plan beendet sie im Hintergrund).
         if query["skip"] == "1" { Task { await planner.skipActive() } }
         if let id = query["skipid"] {
+            // Auch ISS-/Amateurfunk-Termine („amateur-…“, Nutzerentscheid 02.11.2026).
             let end = planner.sondeWindows.first { ReceptionPlanner.jobID(window: $0) == id }?.end
                 ?? planner.passes.first { ReceptionPlanner.jobID(pass: $0) == id }?.end
+                ?? planner.amateurPasses.first { ReceptionPlanner.jobID(amateur: $0) == id }?.end
             if let end { planner.setSkipped(id, end: end, query["on"] != "0") }
         }
         if let value = query["meteor"] { planner.autoMeteor = value == "1" }
@@ -137,13 +142,12 @@ enum RemoteWeather {
             minElevation: Int(planner.minElevation), status: planner.status,
             homeSet: ReceptionPlanner.home != nil, tleError: planner.tleError,
             passes: planner.passes.map {
-                let id = ReceptionPlanner.jobID(pass: $0)
-                return .init(satellite: $0.satellite.name, start: ms($0.start), end: ms($0.end),
-                             maxElevation: Int($0.maxElevation.rounded()), daylight: $0.daylight,
-                             planned: planner.isPlanned($0) && !planner.isSkipped(id),
-                             from: GeoMath.compass($0.startAzimuth), to: GeoMath.compass($0.endAzimuth),
-                             id: id, wanted: planner.isPlanned($0), skipped: planner.isSkipped(id), active: planner.isActive(id))
+                pass($0, id: ReceptionPlanner.jobID(pass: $0), wanted: planner.isPlanned($0), planner: planner)
             },
+            amateurPasses: planner.amateurPasses.map {
+                pass($0, id: ReceptionPlanner.jobID(amateur: $0), wanted: planner.isPlannedAmateur($0), planner: planner)
+            },
+            amateurMinElevation: Int(planner.amateurMinElevation),
             sondeWindows: planner.sondeWindows.map {
                 let id = ReceptionPlanner.jobID(window: $0)
                 let open = $0.start <= Date() && Date() < $0.end
@@ -180,6 +184,15 @@ enum RemoteWeather {
         return (try? JSONEncoder().encode(plan)) ?? Data("{}".utf8)
     }
 
+    private static func pass(_ pass: SatellitePass, id: String, wanted: Bool, planner: ReceptionPlanner) -> Plan.Pass {
+        func ms(_ date: Date) -> Double { (date.timeIntervalSince1970 * 1000).rounded() }
+        return .init(satellite: pass.satellite.name, start: ms(pass.start), end: ms(pass.end),
+                     maxElevation: Int(pass.maxElevation.rounded()), daylight: pass.daylight,
+                     planned: wanted && !planner.isSkipped(id),
+                     from: GeoMath.compass(pass.startAzimuth), to: GeoMath.compass(pass.endAzimuth),
+                     id: id, wanted: wanted, skipped: planner.isSkipped(id), active: planner.isActive(id))
+    }
+
     /// Ordner eines Bildes: SSTV-Bilder (ISS, Amateurfunksatelliten) liegen
     /// getrennt von den METEOR-Bildern.
     static func folder(for name: String) -> URL {
@@ -211,33 +224,43 @@ enum RemoteWeather {
 
     private static var thumbnails: [String: Data] = [:]
 
-    /// Ein Bild aus dem Bilderordner; mit `w` als verkleinertes JPEG.
-    static func image(name: String?, width: Int?) -> RemoteHTTPServer.Response {
+    /// Ein Bild aus dem Bilderordner; mit `w` als verkleinertes JPEG. Lesen und
+    /// Verkleinern laufen in einer abgelösten Aufgabe wie bei `/occupancy.png` –
+    /// METEOR-Bilder sind mehrere MB groß, auf dem Main Actor stockte dabei die
+    /// Oberfläche (Review 01.11.2026).
+    static func image(name: String?, width: Int?) async -> RemoteHTTPServer.Response {
         guard let name, name.hasSuffix(".png"), !name.contains("/"), !name.contains(".."),
               name.allSatisfy({ $0.isLetter || $0.isNumber || "_-.".contains($0) }) else { return .text(400, String(localized: "Ungültiger Name")) }
         let url = folder(for: name).appendingPathComponent(name)
+        let notFound = String(localized: "Nicht gefunden")
         guard let width else {
-            guard let data = try? Data(contentsOf: url) else { return .text(404, String(localized: "Nicht gefunden")) }
+            let data = await Task.detached(priority: .utility) { try? Data(contentsOf: url) }.value
+            guard let data else { return .text(404, notFound) }
             return .data(status: 200, contentType: "image/png", body: data)
         }
-        // Nur drei Stufen: je Bild höchstens drei Verkleinerungen (auf dem Main
-        // Actor) – beliebige `w` hätten den Zwischenspeicher immer neu gefüllt.
+        // Nur drei Stufen: je Bild höchstens drei Verkleinerungen – beliebige `w`
+        // hätten den Zwischenspeicher immer neu gefüllt.
         let size = [360, 800, 1600].first { $0 >= width } ?? 1600
         let key = "\(name)@\(size)"
         if let cached = thumbnails[key] { return .data(status: 200, contentType: "image/jpeg", body: cached) }
+        let data = await Task.detached(priority: .utility) { thumbnail(of: url, size: size) }.value
+        guard let data else { return .text(404, notFound) }
+        if thumbnails.count > 300 { thumbnails.removeAll() }
+        thumbnails[key] = data
+        return .data(status: 200, contentType: "image/jpeg", body: data)
+    }
+
+    /// Verkleinertes JPEG (längste Seite `size`); `nil`, wenn die Datei fehlt oder nicht lesbar ist.
+    nonisolated static func thumbnail(of url: URL, size: Int) -> Data? {
         guard let source = CGImageSourceCreateWithURL(url as CFURL, nil),
               let image = CGImageSourceCreateThumbnailAtIndex(source, 0, [
                   kCGImageSourceCreateThumbnailFromImageAlways: true,
                   kCGImageSourceThumbnailMaxPixelSize: size,
-              ] as CFDictionary) else { return .text(404, String(localized: "Nicht gefunden")) }
+              ] as CFDictionary) else { return nil }
         let data = NSMutableData()
-        guard let destination = CGImageDestinationCreateWithData(data, UTType.jpeg.identifier as CFString, 1, nil) else {
-            return .text(500, "")
-        }
+        guard let destination = CGImageDestinationCreateWithData(data, UTType.jpeg.identifier as CFString, 1, nil) else { return nil }
         CGImageDestinationAddImage(destination, image, [kCGImageDestinationLossyCompressionQuality: 0.8] as CFDictionary)
-        guard CGImageDestinationFinalize(destination) else { return .text(500, "") }
-        if thumbnails.count > 300 { thumbnails.removeAll() }
-        thumbnails[key] = data as Data
-        return .data(status: 200, contentType: "image/jpeg", body: data as Data)
+        guard CGImageDestinationFinalize(destination) else { return nil }
+        return data as Data
     }
 }

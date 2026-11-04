@@ -217,9 +217,8 @@ final class HydrogenAccumulator: @unchecked Sendable {
     enum Phase: Sendable { case off, a, b }
 
     let fftSize: Int
-    private let log2n: vDSP_Length
-    private let setup: FFTSetup
-    private let window: [Float]
+    /// Fenster, FFT und Betragsquadrat – gemeinsam mit den anderen Spektren (`HannPowerFFT`).
+    private let fft: HannPowerFFT
     private let lock = NSLock()
     private var phase = Phase.off
     private var sumA: [Double]
@@ -229,16 +228,10 @@ final class HydrogenAccumulator: @unchecked Sendable {
 
     init(fftSize: Int) {
         self.fftSize = fftSize
-        log2n = vDSP_Length(log2(Double(fftSize)))
-        setup = vDSP_create_fftsetup(log2n, FFTRadix(kFFTRadix2))!
-        var w = [Float](repeating: 0, count: fftSize)
-        vDSP_hann_window(&w, vDSP_Length(fftSize), Int32(vDSP_HANN_NORM))
-        window = w
+        fft = HannPowerFFT(size: fftSize)
         sumA = [Double](repeating: 0, count: fftSize)
         sumB = [Double](repeating: 0, count: fftSize)
     }
-
-    deinit { vDSP_destroy_fftsetup(setup) }
 
     func setPhase(_ p: Phase) { lock.withLock { phase = p } }
 
@@ -294,15 +287,7 @@ final class HydrogenAccumulator: @unchecked Sendable {
                 vDSP_vflt8(p + 1, 2, &im, 1, vDSP_Length(n))
                 vDSP_vsadd(re, 1, &dcI, &re, 1, vDSP_Length(n))
                 vDSP_vsadd(im, 1, &dcQ, &im, 1, vDSP_Length(n))
-                vDSP_vmul(re, 1, window, 1, &re, 1, vDSP_Length(n))
-                vDSP_vmul(im, 1, window, 1, &im, 1, vDSP_Length(n))
-                re.withUnsafeMutableBufferPointer { r in
-                    im.withUnsafeMutableBufferPointer { i in
-                        var split = DSPSplitComplex(realp: r.baseAddress!, imagp: i.baseAddress!)
-                        vDSP_fft_zip(setup, &split, 1, log2n, FFTDirection(kFFTDirection_Forward))
-                        vDSP_zvmags(&split, 1, &power, 1, vDSP_Length(n))
-                    }
-                }
+                fft.power(&re, &im, into: &power)
                 for k in 0..<n { block[k] += Double(power[k]) }
             }
         }

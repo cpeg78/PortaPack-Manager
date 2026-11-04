@@ -60,12 +60,8 @@ struct ZigbeeView: View {
                         }
                     }
                     .frame(minHeight: 200, idealHeight: 380)
-                    VStack(spacing: 0) {
-                        filterBar
-                        Divider()
-                        packetTable
-                    }
-                    .frame(minHeight: 140)
+                    logPane
+                        .frame(minHeight: 140)
                 }
                 .frame(minWidth: 560)
             } controls: {
@@ -244,11 +240,31 @@ struct ZigbeeView: View {
         return "\(name) (\(hex))"
     }
 
+    /// Filterleiste und Protokoll – der Filter läuft je Neuzeichnen einmal
+    /// (vorher zweimal: für die Zahl und für die Tabelle, Review 01.11.2026).
+    private var logPane: some View {
+        let log = filteredLog
+        return VStack(spacing: 0) {
+            filterBar(shown: log.count)
+            Divider()
+            packetTable(log)
+        }
+    }
+
     /// Protokoll nach Suchtext, eigenem Netz und ausgewähltem Gerät.
     private var filteredLog: [ZigbeePacket] {
         let own = model.ownPANs
         let needle = search.trimmingCharacters(in: .whitespaces).lowercased()
         let selected = onlySelectedNode ? nodeSelection : nil
+        // Namen je Kurzadresse einmal nachschlagen statt je Rahmen die Geräteliste
+        // zu durchsuchen (wie vorher: das erste Gerät mit der Adresse zählt).
+        var names: [UInt16: String] = [:]
+        if !needle.isEmpty {
+            var seen = Set<UInt16>()
+            for node in model.nodes where seen.insert(node.key.address).inserted {
+                if let name = model.name(of: node) { names[node.key.address] = name }
+            }
+        }
         return model.log.filter { packet in
             if onlyOwnNetwork, !own.isEmpty, let pan = packet.mac?.pan, !own.contains(pan) { return false }
             if let selected {
@@ -259,7 +275,7 @@ struct ZigbeeView: View {
             guard !needle.isEmpty else { return true }
             let haystack = [packet.summary, address(packet.nwk?.source, mac: packet.mac?.source),
                             address(packet.nwk?.destination, mac: packet.mac?.destination),
-                            packet.nwk.flatMap { nwk in model.nodes.first { $0.key.address == nwk.source }.flatMap(model.name) } ?? ""]
+                            packet.nwk.flatMap { names[$0.source] } ?? ""]
                 .joined(separator: " ").lowercased()
             return haystack.contains(needle)
         }
@@ -270,7 +286,7 @@ struct ZigbeeView: View {
         return nil
     }
 
-    private var filterBar: some View {
+    private func filterBar(shown: Int) -> some View {
         HStack(spacing: 12) {
             TextField("Suchen (Adresse, Name, Inhalt)", text: $search)
                 .textFieldStyle(.roundedBorder).frame(maxWidth: 260)
@@ -285,13 +301,13 @@ struct ZigbeeView: View {
                 Text("Oben ein Gerät anklicken.").font(.caption).foregroundStyle(.secondary)
             }
             Spacer()
-            Text("\(filteredLog.count) von \(model.log.count)").font(.caption).foregroundStyle(.secondary).monospacedDigit()
+            Text("\(shown) von \(model.log.count)").font(.caption).foregroundStyle(.secondary).monospacedDigit()
         }
         .padding(.horizontal, 10).padding(.vertical, 6)
     }
 
-    private var packetTable: some View {
-        Table(filteredLog, selection: $packetSelection) {
+    private func packetTable(_ log: [ZigbeePacket]) -> some View {
+        Table(log, selection: $packetSelection) {
             TableColumn("Zeit") { Text($0.radio.date, format: .dateTime.hour().minute().second()).monospacedDigit() }.width(64)
             TableColumn("Kanal") { Text("\($0.radio.channel)").monospacedDigit() }.width(40)
             TableColumn("Pegel") { Text(String(format: "%.0f", $0.radio.rssiDB)).monospacedDigit() }.width(40)
@@ -751,6 +767,9 @@ struct ZigbeeMapView: View {
                 (ZigbeeMapLayout.layout(addresses, edges: layoutEdges, pinned: coordinator, previous: previous.positions),
                  ZigbeeMapLayout.layout3D(addresses, edges: layoutEdges, pinned: coordinator, previous: previous.positions3D))
             }.value
+            // Inzwischen neu angestoßen (andere Signatur, anderes Netz): das alte
+            // Ergebnis nicht mehr in den Cache schreiben (Review 01.11.2026).
+            guard !Task.isCancelled else { return }
             let moved = spatial.compactMap { id, p in previous.positions3D[id].map { simd_length(p - $0) } }.max() ?? 0
             ZigbeeView.log.info("Netzkarte: \(addresses.count) Geräte, \(layoutEdges.count) Kanten, \(previous.positions3D.isEmpty ? "neu" : "nachgeführt"), größte Bewegung \(moved, format: .fixed(precision: 2))")
             cache = LayoutCache(signature: signature(shown, layoutEdges), positions: flat, positions3D: spatial)

@@ -66,6 +66,20 @@ final class NMEAFeeder: @unchecked Sendable {
 /// `1A`, Typ (`'2'` = Mode-S kurz, 7 Byte; `'3'` = Mode-S lang, 14 Byte),
 /// 6 Byte MLAT-Zeitstempel (12-MHz-Zähler, big-endian), 1 Byte Pegel, dann die
 /// Nachricht. Jedes `1A` hinter dem Kopf wird verdoppelt.
+/// ntfy-Server prüfen (Formular unter Einstellungen ▸ Mitteilungen).
+enum NtfyServer {
+    /// Unverschlüsselt (`http://`) zu einem fremden Rechner: Das Thema ist das einzige
+    /// Geheimnis des Wegs und ginge im Klartext übers Netz – das Formular warnt dann
+    /// wie bei MQTT ohne TLS, lehnt aber nicht ab (Nutzerentscheid 02.11.2026: ein
+    /// eigener ntfy-Server im Heimnetz läuft oft ohne TLS).
+    static func sendsTopicInClear(_ server: String) -> Bool {
+        let text = server.trimmingCharacters(in: .whitespaces)
+        guard let url = URL(string: text), url.scheme?.lowercased() == "http" else { return false }
+        let host = (url.host ?? "").lowercased()
+        return !["localhost", "127.0.0.1", "::1", "[::1]"].contains(host)
+    }
+}
+
 enum BeastFormat {
     /// Pegelbyte wie readsb: `round(√Leistung · 255)` = Amplitude · 255, ab
     /// einem Signal > 0 mindestens 1.

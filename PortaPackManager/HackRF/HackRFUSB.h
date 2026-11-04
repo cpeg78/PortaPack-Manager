@@ -29,8 +29,11 @@ typedef void (*hrf_rx_callback)(void *context, const uint8_t *data, uint32_t len
 /// Puffer des HackRF nie überläuft. Liefert 0 oder einen IOKit-Fehler.
 int32_t hrf_usb_stream_start(hrf_usb *handle, uint32_t transfers, uint32_t size, hrf_rx_callback callback,
                              void *context);
-/// Beendet den Dauerempfang und wartet, bis kein Rückruf mehr läuft.
-void hrf_usb_stream_stop(hrf_usb *handle);
+/// Beendet den Dauerempfang und wartet, bis kein Rückruf mehr läuft. Liefert 0;
+/// -1, wenn nach ≈ 5 s Abbruchversuchen noch Transfers ausstehen – dann ist der
+/// Empfangsthread gelöst, der Strom bewusst nicht freigegeben, und der Handle
+/// nimmt keinen neuen Strom mehr an (nur noch `hrf_usb_close`, neu verbinden).
+int32_t hrf_usb_stream_stop(hrf_usb *handle);
 
 /// USB-Gerät neu enumerieren lassen (entspricht Ab- und Anstecken).
 /// Hilft, wenn der serielle Treiber von macOS hängt.

@@ -165,6 +165,8 @@ final class FT8Model {
         let channelizer: FT8Channelizer
         var buffer: FT8SampleBuffer
         let fftSize: Int
+        /// Hann-Fenster des Wasserfalls – einmal gerechnet statt `cos` je Wert (Review 01.11.2026).
+        let window: [Float]
         let fft: FT8DFT
         let bins: [Int]
         var pendingRe: [Float] = []
@@ -185,6 +187,7 @@ final class FT8Model {
             buffer = FT8SampleBuffer(maxSeconds: mode == .ft8 ? 35 : 125)
             let size = mode == .ft8 ? 2048 : 8192
             fftSize = size
+            window = (0..<size).map { i in Float(0.5 - 0.5 * cos(2 * Double.pi * Double(i) / Double(size))) }
             averaging = mode == .ft8 ? 2 : 1
             fft = FT8DFT(length: size)
             let binHz = 12_000.0 / Double(size)
@@ -205,7 +208,7 @@ final class FT8Model {
                 pendingIm.removeFirst(fftSize)
                 var winRe = inRe, winIm = inIm
                 for i in 0..<fftSize {
-                    let w = Float(0.5 - 0.5 * cos(2 * Double.pi * Double(i) / Double(fftSize)))
+                    let w = window[i]
                     winRe[i] *= w; winIm[i] *= w
                 }
                 fft.run(winRe, winIm, &outRe, &outIm)

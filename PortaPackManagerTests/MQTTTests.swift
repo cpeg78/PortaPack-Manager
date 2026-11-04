@@ -558,4 +558,14 @@ struct MQTTSmartHomeFeedTests {
         #expect(values[0].stateClass == "total_increasing")
         #expect(values[1].key == "rssi")
     }
+
+    @Test("ntfy: Warnung nur für http zu einem fremden Rechner")
+    func ntfyCleartextWarning() {
+        #expect(NtfyServer.sendsTopicInClear("http://ntfy.example.org"))
+        #expect(NtfyServer.sendsTopicInClear(" HTTP://192.168.1.5:8080/ "))
+        #expect(!NtfyServer.sendsTopicInClear("https://ntfy.sh"))
+        #expect(!NtfyServer.sendsTopicInClear("http://localhost:8080"))
+        #expect(!NtfyServer.sendsTopicInClear("http://127.0.0.1"))
+        #expect(!NtfyServer.sendsTopicInClear(""))
+    }
 }

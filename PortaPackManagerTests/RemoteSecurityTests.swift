@@ -108,7 +108,7 @@ struct RemoteSecurityTests {
         let cookie = RemoteAccessPolicy.sessionCookie(token: "abcd2345wxyz")
         #expect(cookie.hasPrefix("s=abcd2345wxyz;"))
         for part in ["HttpOnly", "SameSite=Strict", "Path=/"] { #expect(cookie.contains(part)) }
-        let lines = RemoteHTTPServer.extraHeaderLines(["Set-Cookie": cookie])
+        let lines = RemoteHTTPServer.extraHeaderLines([("Set-Cookie", cookie)])
         #expect(lines.contains("X-Content-Type-Options: nosniff\r\n"))
         #expect(lines.contains("X-Frame-Options: DENY\r\n"))
         #expect(lines.contains("Referrer-Policy: no-referrer\r\n"))
@@ -186,7 +186,7 @@ struct RemoteSecurityTests {
         let server = RemoteHTTPServer()
         let port = UInt16.random(in: 41_000...48_000)
         try server.start(port: port) { request in
-            .withHeaders(["Set-Cookie": RemoteAccessPolicy.sessionCookie(token: "abcd2345wxyz")],
+            .withHeaders([("Set-Cookie", RemoteAccessPolicy.sessionCookie(token: "abcd2345wxyz"))],
                          .data(status: 200, contentType: "text/plain", body: Data(request.path.utf8)))
         }
         defer { server.stop() }
@@ -205,6 +205,50 @@ struct RemoteSecurityTests {
         #expect(http.value(forHTTPHeaderField: "X-Content-Type-Options") == "nosniff")
         #expect(http.value(forHTTPHeaderField: "X-Frame-Options") == "DENY")
         #expect(http.value(forHTTPHeaderField: "Content-Security-Policy")?.contains("frame-ancestors 'none'") == true)
+    }
+
+    @Test("Kopfzeilen als Liste: mehrere Set-Cookie, CR/LF im Wert wird verworfen")
+    func headerInjection() {
+        let lines = RemoteHTTPServer.extraHeaderLines([("Set-Cookie", "s=1; Path=/"), ("Set-Cookie", "k=; Max-Age=0"),
+                                                       ("X-Test", "a\r\nSet-Cookie: boese=1"), ("X-Zwei\nY", "b"),
+                                                       ("X-Null", "a\0b"), ("X:Doppelpunkt", "c")])
+        #expect(lines.contains("Set-Cookie: s=1; Path=/\r\n"))
+        #expect(lines.contains("Set-Cookie: k=; Max-Age=0\r\n"))
+        #expect(!lines.contains("boese"))
+        #expect(!lines.contains("X-Zwei"))
+        #expect(!lines.contains("X-Null"))
+        #expect(!lines.contains("Doppelpunkt"))
+        // Jede Zeile endet mit CRLF, kein nacktes LF.
+        #expect(lines.replacingOccurrences(of: "\r\n", with: "").rangeOfCharacter(from: .newlines) == nil)
+    }
+
+    @Test("Audioströme: startende zählen zur Obergrenze")
+    func streamLimit() {
+        #expect(RemoteHTTPServer.admitsStream(open: 0, starting: 0))
+        #expect(RemoteHTTPServer.admitsStream(open: 4, starting: 3))
+        #expect(!RemoteHTTPServer.admitsStream(open: 4, starting: 4))
+        #expect(!RemoteHTTPServer.admitsStream(open: 0, starting: RemoteHTTPServer.maximumStreams))
+    }
+
+    @Test("HEAD /audio.aac öffnet keinen Strom")
+    func headOpensNoStream() async throws {
+        let server = RemoteHTTPServer()
+        let port = UInt16.random(in: 55_001...60_000)
+        try server.start(port: port) { _ in .stream(contentType: "audio/aac") }
+        defer { server.stop() }
+        let session = URLSession(configuration: .ephemeral)
+        var head = URLRequest(url: URL(string: "http://127.0.0.1:\(port)/audio.aac")!)
+        head.httpMethod = "HEAD"
+        head.timeoutInterval = 5
+        var response: HTTPURLResponse?
+        for _ in 0..<50 {
+            if let (_, r) = try? await session.data(for: head) { response = r as? HTTPURLResponse; break }
+            try await Task.sleep(for: .milliseconds(50))
+        }
+        #expect(response?.statusCode == 200)
+        #expect(response?.value(forHTTPHeaderField: "Content-Type") == "audio/aac")
+        try await Task.sleep(for: .milliseconds(100))
+        #expect(!server.hasListeners)
     }
 
     // MARK: t() der Webseite

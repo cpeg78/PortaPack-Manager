@@ -26,9 +26,21 @@ struct SatellitePass: Identifiable, Sendable, Hashable {
     /// Sonnenhöhe am Ort zur Kulmination – darüber gibt es sichtbare Kanäle.
     let sunElevation: Double
 
-    var id: String { "\(satellite.id)-\(Int(start.timeIntervalSince1970))" }
+    /// Kennung aus Satellit und Kulmination, auf die Minute gerundet. Vorher
+    /// stand der Aufgang darin – die Bisektion auf 1 s kippte bei jeder
+    /// Neuberechnung (alle 30 min, Raster ab „jetzt“ mit beliebigem
+    /// Sekundenbruchteil) gern um eine Sekunde, und ein übersprungener Überflug
+    /// kam als neuer Termin zurück (Review 01.11.2026). Die Kulmination liegt
+    /// auf einem festen 5-s-Raster (`PassPredictor`), ist also bei gleichen
+    /// Bahndaten unabhängig vom Startpunkt der Rechnung.
+    var id: String { "\(satellite.id)-\(Self.minuteStamp(culmination))" }
     var daylight: Bool { sunElevation > -3 }
     var duration: TimeInterval { end.timeIntervalSince(start) }
+
+    /// Kulmination auf volle 60 s gerundet, in Unix-Sekunden.
+    nonisolated static func minuteStamp(_ date: Date) -> Int {
+        Int((date.timeIntervalSince1970 / 60).rounded()) * 60
+    }
 }
 
 enum PassPredictor {
@@ -77,8 +89,12 @@ enum PassPredictor {
                     if elevation(mid) > 0 { lo = mid } else { hi = mid }
                 }
                 let set = lo
+                // Gipfel auf einem festen 5-s-Raster (Vielfache von 5 s seit 1970),
+                // nicht ab dem Aufgang: so liefert jede Neuberechnung mit denselben
+                // Bahndaten dieselbe Kulmination und damit dieselbe Kennung.
                 var best = (elevation: -90.0, date: r)
-                var s = r
+                var s = Date(timeIntervalSince1970: (r.timeIntervalSince1970 / 5).rounded(.up) * 5)
+                if s > set { best = (elevation(r), r) }
                 while s <= set {
                     let el = elevation(s)
                     if el > best.elevation { best = (el, s) }

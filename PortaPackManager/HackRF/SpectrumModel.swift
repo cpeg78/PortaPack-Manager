@@ -78,7 +78,15 @@ final class SpectrumModel {
         running = false
     }
 
-    /// Überträgt alle Einstellungen ans Gerät (auch während des Empfangs).
+    /// Gehört der HackRF gerade diesem Spektrum? Nur dann dürfen Regler und
+    /// Abstimmung das Gerät verstellen – sonst träfen sie den Strom eines
+    /// Plan-Termins, des Fernzugriffs oder einer anderen Seite (Review 01.11.2026).
+    func ownsDevice(_ device: HackRFDevice?) -> Bool {
+        running && device?.isReceiving(for: self) == true
+    }
+
+    /// Überträgt alle Einstellungen ans Gerät – ohne Besitzprüfung, nur für
+    /// `start` und nach `ownsDevice`.
     func apply(to device: HackRFDevice) throws {
         try device.setSampleRate(UInt32(sampleRateMHz * 1_000_000))
         try device.setFrequency(UInt64(centerMHz * 1_000_000))
@@ -88,11 +96,12 @@ final class SpectrumModel {
         try device.setAntennaPower(antennaPower)
     }
 
+    /// Einstellungen übernehmen; ohne eigenen Empfang nur merken (gelten beim nächsten Start).
     func applyQuietly(to device: HackRFDevice?) {
-        guard let device else { return }
+        maxHold = []
+        guard ownsDevice(device), let device else { return }
         do {
             try apply(to: device)
-            maxHold = []
             error = nil
         } catch {
             self.error = error.localizedDescription
@@ -124,13 +133,14 @@ final class SpectrumModel {
         SpectrumMath.level(at: mhz, values: spectrum, centerMHz: centerMHz, spanMHz: sampleRateMHz)
     }
 
+    /// Neue Mitte; ohne eigenen Empfang nur gemerkt (gilt beim nächsten Start).
     func tune(to mhz: Double, device: HackRFDevice?) {
         centerMHz = max(1, min(6000, mhz))
-        guard let device else { return }
+        rows.removeAll()
+        maxHold = []
+        guard ownsDevice(device), let device else { return }
         do {
             try device.setFrequency(UInt64(centerMHz * 1_000_000))
-            rows.removeAll()
-            maxHold = []
         } catch {
             self.error = error.localizedDescription
         }

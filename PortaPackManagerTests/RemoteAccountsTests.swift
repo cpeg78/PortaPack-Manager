@@ -146,10 +146,52 @@ struct RemoteAccountsTests {
         #expect(throttle.blocked("10.0.0.5", now: now) == nil)
     }
 
+    @Test("Bremse: Versuch vor der Prüfung belegt – parallele Anfragen kommen nicht an der Grenze vorbei")
+    func throttleReservesBeforeCheck() {
+        var throttle = LoginThrottle()
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        // 16 gleichzeitige Anfragen: jede prüft `blocked` und belegt, bevor eine fertig ist.
+        var admitted = 0
+        for _ in 0..<16 where throttle.blocked("10.0.0.5", now: now) == nil {
+            throttle.reserve("10.0.0.5", now: now)
+            admitted += 1
+        }
+        #expect(admitted == LoginThrottle.freeAttempts + 1)
+        // Ein Erfolg löscht den Zähler samt Belegung.
+        throttle.succeed("10.0.0.5")
+        #expect(throttle.failureCount("10.0.0.5", now: now) == 0)
+    }
+
+    @Test("Bremse: Zähler verfällt nach 24 h ohne Fehlversuch")
+    func throttleForgets() {
+        var throttle = LoginThrottle()
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        for _ in 0..<5 { throttle.fail("10.0.0.5", now: now) }
+        #expect(throttle.failureCount("10.0.0.5", now: now.addingTimeInterval(3600)) == 5)
+        let later = now.addingTimeInterval(LoginThrottle.forgetAfter + 1)
+        #expect(throttle.failureCount("10.0.0.5", now: later) == 0)
+        // Danach wieder fünf freie Versuche statt sofort 30 s Sperre.
+        throttle.fail("10.0.0.5", now: later)
+        #expect(throttle.blocked("10.0.0.5", now: later) == nil)
+        #expect(throttle.failureCount("10.0.0.5", now: later) == 1)
+    }
+
+    @Test("Bremse: höchstens zwei Passwortprüfungen gleichzeitig")
+    func throttleLimitsParallelChecks() {
+        var throttle = LoginThrottle()
+        let results = (0..<3).map { _ in throttle.beginCheck() }
+        #expect(results == [true, true, false])
+        throttle.endCheck()
+        let again = throttle.beginCheck()
+        #expect(again)
+        throttle.endCheck(); throttle.endCheck(); throttle.endCheck()
+        #expect(throttle.activeChecks == 0)
+    }
+
     @Test("„Nur ansehen“: lesende Abrufe frei, jedes Umschalten und Einstellen gesperrt")
     func viewerPermissions() {
         let reads: [(String, [String: String])] = [
-            ("/", [:]), ("/", ["k": "alt"]), ("/api/state", ["sel": "adsb:3C1234"]), ("/api/archive", ["kind": "ais", "day": "2026-10-30"]),
+            ("/", [:]), ("/", ["k": "alt"]), ("/api/state", ["sel": "adsb:3C1234"]), ("/api/state", ["tab": "wx"]), ("/api/archive", ["kind": "ais", "day": "2026-10-30"]),
             ("/api/spectrum", ["t": "1"]), ("/api/ft8", ["cq": "1"]), ("/api/zigbee", ["pan": "1A2B"]),
             ("/api/airband/search", ["q": "Hamburg"]), ("/audio.aac", ["t": "123"]), ("/img", ["n": "x.png", "w": "360"]),
             ("/occupancy.png", ["w": "800", "h": "400", "hours": "6"]), ("/api/plan", [:]), ("/api/sondes", ["serial": "X123"]),
@@ -186,6 +228,44 @@ struct RemoteAccountsTests {
         #expect(request.form["password"] == "geh&im 1+2=3")
         request.body = Data()
         #expect(request.form.isEmpty)
+    }
+
+    @Test("Formular-Körper: ungültige Kodierung stürzt nicht ab (Leerzeichen, %zz, ä, <)")
+    func formBodyInvalid() {
+        var request = RemoteHTTPServer.Request()
+        request.body = Data("name=a b&password=%zz&x=ä&y=<script>&z&=leer&w=100%".utf8)
+        let form = request.form
+        #expect(form["name"] == "a b")
+        #expect(form["password"] == nil)
+        #expect(form["x"] == "ä")
+        #expect(form["y"] == "<script>")
+        #expect(form["z"] == "")
+        #expect(form["w"] == nil)
+        #expect(form[""] == nil)
+        request.body = Data([0xFF, 0xFE, 0x3D, 0x26, 0x26, 0x3D])
+        _ = request.form
+        request.body = Data("name=%C3%A4+%2B&name=zweiter".utf8)
+        #expect(request.form["name"] == "zweiter")
+    }
+
+    @Test("Server übersteht einen Anmelde-Körper mit Leerzeichen und kaputter Kodierung")
+    func serverSurvivesInvalidForm() async throws {
+        let server = RemoteHTTPServer()
+        let port = UInt16.random(in: 48_001...55_000)
+        try server.start(port: port) { request in
+            .data(status: 200, contentType: "text/plain", body: Data((request.form["name"] ?? "-").utf8))
+        }
+        defer { server.stop() }
+        let session = URLSession(configuration: .ephemeral)
+        var post = URLRequest(url: URL(string: "http://127.0.0.1:\(port)/login")!)
+        post.httpMethod = "POST"
+        post.httpBody = Data("name=a b&password=%zz<ä".utf8)
+        var body: Data?
+        for _ in 0..<50 {
+            if let (data, _) = try? await session.data(for: post) { body = data; break }
+            try await Task.sleep(for: .milliseconds(50))
+        }
+        #expect(body.map { String(decoding: $0, as: UTF8.self) } == "a b")
     }
 
     @Test("Server liest den Formular-Körper eines POST und weist zu große ab")

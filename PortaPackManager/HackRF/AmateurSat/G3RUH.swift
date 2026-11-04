@@ -152,14 +152,19 @@ final class SatChannelizer: @unchecked Sendable {
             let shift = channels[index].offset + factor * channels[index].frequency
             if shift != 0 {
                 let increment = -2 * Double.pi * shift / Self.midRate
+                // Zeiger je Wert weiterdrehen (Double, je Block neu aus der Phase
+                // angesetzt – kein Driften über Blöcke) statt `cos`/`sin` je Wert
+                // (Review 01.11.2026).
+                var c = cos(state.phase), s = sin(state.phase)
+                let stepC = cos(increment), stepS = sin(increment)
                 for n in cRe.indices {
-                    let c = Float(cos(state.phase)), s = Float(sin(state.phase))
+                    let fc = Float(c), fs = Float(s)
                     let r = cRe[n], i = cIm[n]
-                    cRe[n] = r * c - i * s
-                    cIm[n] = r * s + i * c
-                    state.phase += increment
+                    cRe[n] = r * fc - i * fs
+                    cIm[n] = r * fs + i * fc
+                    (c, s) = (c * stepC - s * stepS, c * stepS + s * stepC)
                 }
-                state.phase = state.phase.truncatingRemainder(dividingBy: 2 * .pi)
+                state.phase = (state.phase + increment * Double(cRe.count)).truncatingRemainder(dividingBy: 2 * .pi)
             }
             let (bRe, bIm) = RadioDemodulator.decimateComplex(cRe, cIm, history: &state.histRe, &state.histIm,
                                                               filter: filters[index], factor: 5)

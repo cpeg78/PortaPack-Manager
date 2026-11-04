@@ -1,12 +1,15 @@
 import Foundation
 
-/// Eine dekodierte Mode-S-Extended-Squitter-Nachricht (DF17/18).
+/// Eine dekodierte Mode-S-Nachricht: Extended Squitter (DF17/18, ADS-B) oder
+/// Mode S ohne ADS-B (DF4/5/11/20/21, `typeCode` 0).
 struct ADSBMessage: Sendable {
     enum Content: Sendable {
         case identification(callsign: String, category: Int)
         case airbornePosition(altitude: Int?, oddFormat: Bool, latCPR: Int, lonCPR: Int)
         case velocity(groundSpeed: Double, track: Double, verticalRate: Int?)
         case other(typeCode: Int)
+        /// Mode S ohne ADS-B: nur Kennung, bei DF4/20 die Höhe (keine Position).
+        case surveillance(altitude: Int?)
     }
 
     let icao: UInt32
@@ -26,8 +29,22 @@ struct ADSBMessage: Sendable {
 /// Mode-S-Demodulator für 2 MS/s (wie dump1090 im 2-MHz-Betrieb).
 ///
 /// Erwartet vorzeichenbehaftete 8-Bit-IQ-Paare. Jede Mode-S-Hälfte eines Bits
-/// dauert 0,5 µs = 1 Abtastwert. Nur DF17/18 mit gültiger CRC-24 werden
-/// ausgegeben.
+/// dauert 0,5 µs = 1 Abtastwert. Ausgegeben werden DF17/18 mit gültiger CRC-24
+/// und Mode S ohne ADS-B (siehe unten).
+///
+/// Mode S ohne ADS-B (seit 03.11.2026; ein Hubschrauber flog ungesehen über):
+/// Viele Hubschrauber, Polizei- und Militärmaschinen haben einen Transponder
+/// ohne Extended Squitter. Er sendet etwa einmal je Sekunde einen
+/// Erfassungs-Squitter (DF11, Prüfteil mit Interrogator-Kennung 0) und
+/// beantwortet Radarabfragen (DF4/20 Höhe, DF5/21 Squawk). Wie dump1090:
+/// - DF11 mit Rest 0 zählt erst beim zweiten Mal binnen 60 s (Zufallstreffer
+///   aus Rauschen wiederholen sich nicht); mit Rest 1…127 (Antwort an ein
+///   Radar) nur für schon bestätigte Adressen.
+/// - DF4/5/20/21 tragen die Adresse im Prüfteil (Rest = Adresse). Sie zählen
+///   nur für Adressen, die fehlerfrei per DF17/18 oder bestätigtem DF11
+///   gehört wurden, und verlängern diese Bestätigung nicht.
+/// - Keine Ein-Bit-Korrektur, und die DF17-Korrektur bleibt auf DF17/18-Adressen
+///   beschränkt – am ADS-B-Pfad ändert sich nichts.
 ///
 /// Seit 29.10.2026 (Review L3) wie dump1090:
 /// - **Phasenkorrektur**: Liegt die Abtastung zwischen zwei Halbbits (Energie
@@ -53,12 +70,22 @@ final class ADSBDemodulator: @unchecked Sendable {
     private let phaseBits = UnsafeMutablePointer<UInt8>.allocate(capacity: 14)
     /// Adressen fehlerfrei empfangener Rahmen → Zeitpunkt (für die Ein-Bit-Korrektur).
     private var knownAddresses: [UInt32: Date] = [:]
+    static let maximumKnownAddresses = 4000
+    /// Per DF11 bestätigte Adressen (Mode S ohne ADS-B) → letzter Squitter.
+    private var squitterAddresses: [UInt32: Date] = [:]
+    /// Einmal gehörte DF11-Adressen, die auf die Bestätigung warten.
+    private var pendingSquitters: [UInt32: Date] = [:]
+    static let squitterConfirmSeconds: TimeInterval = 60
+    /// Zahl der gemerkten Adressen (für Tests der Obergrenze).
+    var knownAddressCount: Int { knownAddresses.count }
     private(set) var framesSeen = 0
     private(set) var framesValid = 0
     /// Davon per Ein-Bit-Korrektur gerettet.
     private(set) var framesCorrected = 0
     /// Davon erst mit Phasenkorrektur gültig.
     private(set) var framesPhaseCorrected = 0
+    /// Davon Mode S ohne ADS-B (DF4/5/11/20/21).
+    private(set) var framesModeS = 0
 
     static let sampleRate: UInt32 = 2_000_000
     static let frequency: UInt64 = 1_090_000_000
@@ -137,9 +164,15 @@ final class ADSBDemodulator: @unchecked Sendable {
         memmove(m, m + (total - keep), keep * MemoryLayout<UInt16>.stride)
         carrySkip = max(0, j - (total - keep))
         carryCount = keep
-        if knownAddresses.count > 4000 {
-            knownAddresses = knownAddresses.filter { now.timeIntervalSince($0.value) < Self.knownAddressSeconds }
-        }
+        // Harte Obergrenze: Mit gefälschten DF17-Rahmen (CRC-24 ist trivial)
+        // und zufälliger Kennung wüchse die Tabelle sonst auch innerhalb des
+        // Zeitfensters unbegrenzt (Review 01.11.2026).
+        DevicePruning.prune(&knownAddresses, limit: Self.maximumKnownAddresses,
+                            maxAge: Self.knownAddressSeconds, now: now) { $0 }
+        DevicePruning.prune(&squitterAddresses, limit: Self.maximumKnownAddresses,
+                            maxAge: Self.knownAddressSeconds, now: now) { $0 }
+        DevicePruning.prune(&pendingSquitters, limit: Self.maximumKnownAddresses,
+                            maxAge: Self.squitterConfirmSeconds, now: now) { $0 }
         return results
     }
 
@@ -163,7 +196,7 @@ final class ADSBDemodulator: @unchecked Sendable {
     }
 
     /// Entscheidet die Bits ab `j + 16` nach `out`; liefert das Downlink-Format.
-    /// Nur bei DF17/18 werden alle 112 Bits gelesen, sonst nur die ersten fünf.
+    /// DF17/18/20/21 mit 112 Bits, DF4/5/11 mit 56, sonst nur die ersten fünf.
     /// `phaseCorrection`: dump1090 `applyPhaseCorrection` – der erste Wert des
     /// Folgebits wird nach einer 1 um 5/4 angehoben, nach einer 0 um 4/5 gesenkt.
     @inline(__always)
@@ -182,7 +215,11 @@ final class ADSBDemodulator: @unchecked Sendable {
             if i & 7 == 7 { out[i >> 3] = byte; byte = 0 }
             if i == 4 {
                 df = Int(byte)
-                if df == 17 || df == 18 { bits = 112 }
+                switch df {
+                case 17, 18, 20, 21: bits = 112
+                case 4, 5, 11: bits = 56
+                default: break
+                }
             }
             let next = Int(p[2 * i + 2])
             a = phaseCorrection ? (one ? next * 5 / 4 : next * 4 / 5) : next
@@ -199,6 +236,8 @@ final class ADSBDemodulator: @unchecked Sendable {
         if plainLong {
             plainSyndrome = Self.crc24(plainBits, count: 14)
             if plainSyndrome == 0, let message = accept(plainBits, now: now, corrected: false) { return message }
+        } else if let message = acceptModeS(plainBits, df: plainDF, now: now) {
+            return message
         }
         var phaseSyndrome: UInt32 = 1
         var phaseLong = false
@@ -211,6 +250,9 @@ final class ADSBDemodulator: @unchecked Sendable {
                     framesPhaseCorrected += 1
                     return message
                 }
+            } else if let message = acceptModeS(phaseBits, df: df, now: now) {
+                framesPhaseCorrected += 1
+                return message
             }
         }
         if plainLong, let message = correctAndAccept(plainBits, syndrome: plainSyndrome, now: now) { return message }
@@ -238,6 +280,45 @@ final class ADSBDemodulator: @unchecked Sendable {
         guard let message = Self.decode(Array(UnsafeBufferPointer(start: bits, count: 14)), now: now) else { return nil }
         if !corrected { knownAddresses[message.icao] = now }
         return message
+    }
+
+    /// Mode S ohne ADS-B (Regeln oben am Typ); `nil` für alles andere.
+    private func acceptModeS(_ bits: UnsafeMutablePointer<UInt8>, df: Int, now: Date) -> ADSBMessage? {
+        let count: Int
+        switch df {
+        case 4, 5, 11: count = 7
+        case 20, 21: count = 14
+        default: return nil
+        }
+        let syndrome = Self.crc24(bits, count: count)
+        let icao: UInt32
+        if df == 11 {
+            guard syndrome < 0x80 else { return nil }
+            icao = UInt32(bits[1]) << 16 | UInt32(bits[2]) << 8 | UInt32(bits[3])
+            if syndrome == 0 {
+                if isConfirmed(icao, now: now) {
+                    squitterAddresses[icao] = now
+                } else if let first = pendingSquitters[icao], now.timeIntervalSince(first) < Self.squitterConfirmSeconds {
+                    pendingSquitters[icao] = nil
+                    squitterAddresses[icao] = now
+                } else {
+                    pendingSquitters[icao] = now
+                    return nil
+                }
+            }
+        } else {
+            icao = syndrome
+        }
+        guard isConfirmed(icao, now: now) else { return nil }
+        framesModeS += 1
+        return Self.decodeModeS(Array(UnsafeBufferPointer(start: bits, count: count)), icao: icao, now: now)
+    }
+
+    /// Fehlerfrei per DF17/18 oder bestätigtem DF11 gehört (letzte 5 min).
+    private func isConfirmed(_ icao: UInt32, now: Date) -> Bool {
+        if let heard = knownAddresses[icao], now.timeIntervalSince(heard) < Self.knownAddressSeconds { return true }
+        if let heard = squitterAddresses[icao], now.timeIntervalSince(heard) < Self.knownAddressSeconds { return true }
+        return false
     }
 
     /// Syndrom eines einzelnen gekippten Bits → Bitposition (5…111; das DF-Feld
@@ -303,6 +384,29 @@ final class ADSBDemodulator: @unchecked Sendable {
             content = .other(typeCode: tc)
         }
         return ADSBMessage(icao: icao, downlinkFormat: df, typeCode: tc, content: content, raw: bytes, date: now)
+    }
+
+    /// Mode-S-Rahmen ohne ADS-B (Prüfung in `acceptModeS`); `icao` aus dem
+    /// Rahmen (DF11) bzw. dem Prüfteil (DF4/5/20/21).
+    static func decodeModeS(_ bytes: [UInt8], icao: UInt32, now: Date = Date()) -> ADSBMessage? {
+        guard bytes.count == 7 || bytes.count == 14 else { return nil }
+        let df = Int(bytes[0] >> 3)
+        let altitude: Int?
+        switch df {
+        case 4, 20: altitude = altitude13(Int(bytes[2] & 0x1F) << 8 | Int(bytes[3]))
+        case 5, 11, 21: altitude = nil
+        default: return nil
+        }
+        return ADSBMessage(icao: icao, downlinkFormat: df, typeCode: 0, content: .surveillance(altitude: altitude),
+                           raw: bytes, date: now)
+    }
+
+    /// 13-Bit-Höhencode der Antworten (AC-Feld mit M-Bit): M = 1 heißt Meter –
+    /// kommt praktisch nicht vor, dann keine Höhe. Sonst ohne M-Bit wie im
+    /// 12-Bit-Feld der Positionsmeldung.
+    static func altitude13(_ ac13: Int) -> Int? {
+        guard ac13 & 0x40 == 0 else { return nil }
+        return altitude((ac13 & 0x1F80) >> 1 | (ac13 & 0x3F))
     }
 
     private static let charset = Array("#ABCDEFGHIJKLMNOPQRSTUVWXYZ##### ###############0123456789######")
@@ -399,6 +503,8 @@ final class ADSBDemodulator: @unchecked Sendable {
 struct Aircraft: Identifiable, Sendable {
     let icao: UInt32
     var callsign: String?
+    /// ADS-B-Kategorie aus der Kennungsmeldung: TC << 3 | CA (CA ≠ 0).
+    var emitter: Int?
     var altitude: Int?
     var groundSpeed: Double?
     var track: Double?
@@ -435,6 +541,15 @@ struct AircraftTracker: Sendable {
     static let receiverRangeKm = 300.0
     /// Schneller fliegt kein Verkehrsflugzeug (≈ 1300 km/h), dazu Rundung.
     static let maximumSpeedKmPerSecond = 0.36
+    /// Obergrenze der Tabelle nach Anzahl (wie AIS/APRS): Gefälschte Rahmen mit
+    /// zufälliger Kennung ließen sie sonst unbegrenzt wachsen, und das Kopieren,
+    /// Sortieren und Abbilden alle 500 ms fräße Speicher und Main Actor.
+    static let maximumAircraft = 2000
+    /// Punkte je Flugspur (≥ 50 m Abstand): 1000 ≈ 50 km, gut 3 min Reiseflug.
+    /// Vorher 200 (≈ 40 s) – zu kurz, um den Kurs zu erkennen (Wunsch 02.11.2026).
+    static let trailLimit = 1000
+    /// Ohne Meldung so lange bleibt ein Flugzeug in der Tabelle wählbar (3 h).
+    static let keepSeconds: TimeInterval = 3 * 3600
 
     /// Flugzeuge ohne Meldung seit `date` vergessen. Im Fernbetrieb rund um
     /// die Uhr sammelten sich sonst Tausende an, und Sortieren und Kartenbau
@@ -448,8 +563,9 @@ struct AircraftTracker: Sendable {
         plane.messages += 1
         plane.lastSeen = message.date
         switch message.content {
-        case let .identification(callsign, _):
+        case let .identification(callsign, category):
             if !callsign.isEmpty { plane.callsign = callsign }
+            if category != 0 { plane.emitter = message.typeCode << 3 | category }
         case let .airbornePosition(altitude, odd, lat, lon):
             if let altitude { plane.altitude = altitude }
             if odd { plane.oddCPR = (lat, lon, message.date) } else { plane.evenCPR = (lat, lon, message.date) }
@@ -469,16 +585,21 @@ struct AircraftTracker: Sendable {
                 } else {
                     plane.trail.append((position.lat, position.lon))
                 }
-                if plane.trail.count > 200 { plane.trail.removeFirst(plane.trail.count - 200) }
+                if plane.trail.count > Self.trailLimit { plane.trail.removeFirst(plane.trail.count - Self.trailLimit) }
             }
         case let .velocity(speed, track, vr):
             plane.groundSpeed = speed
             plane.track = track
             plane.verticalRate = vr
+        case let .surveillance(altitude):
+            if let altitude { plane.altitude = altitude }
         case .other:
             break
         }
         aircraft[message.icao] = plane
+        if aircraft.count > Self.maximumAircraft {
+            DevicePruning.prune(&aircraft, limit: Self.maximumAircraft, maxAge: Self.keepSeconds, now: message.date) { $0.lastSeen }
+        }
     }
 
     /// Position aus der neuen CPR-Meldung: Paar, sonst örtlich (siehe oben).

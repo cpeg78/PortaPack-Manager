@@ -1,4 +1,5 @@
 import Foundation
+import Observation
 import OSLog
 import SQLite3
 
@@ -13,7 +14,11 @@ import SQLite3
 /// die Warteschlange hält die Reihenfolge. WAL-Modus, Schema-Stand in
 /// `PRAGMA user_version`. Fehler werden protokolliert, nie zum Absturz; eine
 /// beschädigte Datei wird umbenannt und neu angelegt (`notice`).
-final class ArchiveDatabase: @unchecked Sendable {
+///
+/// Dazu eine zweite, nur lesende Verbindung (`readNow`) für kleine Abfragen vom
+/// Main Actor: Sie wartet nicht hinter Übernahme, Aufbewahrung oder `VACUUM INTO`
+/// in der Warteschlange (Review 01.11.2026), sieht dafür nur Festgeschriebenes.
+final class ArchiveDatabase: @unchecked Sendable, Observable {
     static let fileName = "Archiv.sqlite"
     static let log = Logger(subsystem: "de.christiangolz.portapackmanager", category: "Datenbank")
 
@@ -36,6 +41,13 @@ final class ArchiveDatabase: @unchecked Sendable {
     private var connection: SQLiteConnection?
     private let noticeLock = NSLock()
     private var storedNotice: String?
+    /// Der Hinweis stammt von `SQLITE_FULL` – der nächste gelungene Schreiblauf
+    /// nimmt ihn zurück. Unter `noticeLock`.
+    private var noticeIsDiskFull = false
+    private let registrar = ObservationRegistrar()
+    /// Nur lesende Zweitverbindung (`readNow`); nur unter `readerLock` benutzen.
+    private let readerLock = NSLock()
+    private var reader: SQLiteConnection?
 
     init(url: URL) {
         self.url = url
@@ -44,9 +56,36 @@ final class ArchiveDatabase: @unchecked Sendable {
     }
 
     /// Hinweis für Einstellungen ▸ Archiv (beschädigte Datei ersetzt, Platte voll).
+    /// Beobachtbar: Die Einstellungen zeigen ihn sofort, auch wenn er auf der
+    /// Warteschlange gesetzt oder zurückgenommen wird.
     var notice: String? {
-        get { noticeLock.withLock { storedNotice } }
-        set { noticeLock.withLock { storedNotice = newValue } }
+        get {
+            registrar.access(self, keyPath: \.notice)
+            return noticeLock.withLock { storedNotice }
+        }
+        set { setNotice(newValue, diskFull: false) }
+    }
+
+    /// Setzt den Hinweis; die Meldung an Beobachter (SwiftUI) geht auf den Main Thread.
+    private func setNotice(_ value: String?, diskFull: Bool) {
+        let changed = noticeLock.withLock { () -> Bool in
+            defer { storedNotice = value; noticeIsDiskFull = diskFull && value != nil }
+            return storedNotice != value
+        }
+        guard changed else { return }
+        if Thread.isMainThread {
+            registrar.withMutation(of: self, keyPath: \.notice) {}
+        } else {
+            DispatchQueue.main.async { self.registrar.withMutation(of: self, keyPath: \.notice) {} }
+        }
+    }
+
+    /// Ein Schreiblauf ist gelungen: Ein Hinweis „Speicher voll“ gilt nicht mehr
+    /// (vorher blieb er bis zum Neustart stehen, Review 01.11.2026).
+    private func clearDiskFullNotice() {
+        guard noticeLock.withLock({ noticeIsDiskFull }) else { return }
+        Self.log.notice("Archiv schreibt wieder – Hinweis „Speicher voll“ zurückgenommen")
+        setNotice(nil, diskFull: false)
     }
 
     // MARK: Zugriff
@@ -72,10 +111,55 @@ final class ArchiveDatabase: @unchecked Sendable {
         queue.async {
             do {
                 try self.perform { db in try db.transaction { try body(db) } }
+                self.clearDiskFullNotice()
             } catch {
                 Self.log.error("\(label, privacy: .public) fehlgeschlagen: \(String(describing: error), privacy: .public)")
             }
         }
+    }
+
+    /// Wartet blockierend, bis alle angestoßenen Schreibläufe erledigt sind –
+    /// höchstens `timeout` Sekunden. Nur fürs Beenden der App
+    /// (`applicationWillTerminate`), sonst `flush()`. `false` = Zeit abgelaufen.
+    func waitForPendingWrites(timeout: TimeInterval) -> Bool {
+        if DispatchQueue.getSpecific(key: queueKey) == true { return true }
+        let done = DispatchSemaphore(value: 0)
+        queue.async { done.signal() }
+        return done.wait(timeout: .now() + timeout) == .success
+    }
+
+    /// Sofort lesen über die nur lesende Zweitverbindung, ohne auf die
+    /// Warteschlange zu warten – für kleine, indizierte Abfragen vom Main Actor
+    /// (`TrafficArchive.latestSighting`). Sieht alles bis zum letzten Commit (WAL),
+    /// aber **nicht** Schreibläufe, die noch in der Warteschlange stehen; wer die
+    /// braucht, nimmt `sync`. Gibt es die Datei noch nicht oder ist ihr Schema
+    /// älter als diese App, läuft die Abfrage über `sync`.
+    func readNow<T>(_ body: (SQLiteConnection) throws -> T) throws -> T {
+        readerLock.lock()
+        if let db = openReader() {
+            defer { readerLock.unlock() }
+            do {
+                return try body(db)
+            } catch let error as SQLiteError where error.isCorrupt {
+                // Die Hauptverbindung entscheidet, ob die Datei ersetzt wird.
+                reader = nil
+                throw error
+            }
+        }
+        readerLock.unlock()
+        return try sync(body)
+    }
+
+    /// Zweitverbindung öffnen (unter `readerLock`); `nil` = nicht verfügbar.
+    private func openReader() -> SQLiteConnection? {
+        if let reader { return reader }
+        guard FileManager.default.fileExists(atPath: url.path),
+              let db = try? SQLiteConnection(url: url, readOnly: true) else { return nil }
+        // Erst ein Schema, das die Hauptverbindung schon fertig migriert hat.
+        guard (try? db.execute("PRAGMA busy_timeout = 5000")) != nil,
+              let version = try? db.scalar("PRAGMA user_version"), version == Self.schemaVersion else { return nil }
+        reader = db
+        return db
     }
 
     /// Wartet, bis alle angestoßenen Schreibläufe erledigt sind.
@@ -97,7 +181,8 @@ final class ArchiveDatabase: @unchecked Sendable {
                 replaceCorrupt()
             } else if error.isFull {
                 Self.log.error("Archiv: Platte voll – \(error.description, privacy: .public)")
-                notice = String(localized: "Das Archiv konnte nicht schreiben: Der Speicher ist voll. Neue Sichtungen und Meldungen gehen verloren, bis wieder Platz ist.")
+                setNotice(String(localized: "Das Archiv konnte nicht schreiben: Der Speicher ist voll. Neue Sichtungen und Meldungen gehen verloren, bis wieder Platz ist."),
+                          diskFull: true)
             }
             throw error
         }
@@ -122,6 +207,8 @@ final class ArchiveDatabase: @unchecked Sendable {
     /// eine neue an. Gelöscht wird nichts – die alte Datei bleibt zur Rettung liegen.
     private func replaceCorrupt() {
         connection = nil
+        // Die Zweitverbindung zeigte sonst weiter auf die umbenannte Datei.
+        readerLock.withLock { reader = nil }
         let stamp = ISOTime.string(Date()).replacingOccurrences(of: ":", with: "-")
         let base = url.deletingPathExtension().lastPathComponent
         let target = url.deletingLastPathComponent().appendingPathComponent("\(base)-beschädigt-\(stamp).sqlite")
@@ -317,7 +404,7 @@ final class ArchiveDatabase: @unchecked Sendable {
     /// während geschrieben wird.
     func copy(to target: URL) throws {
         try? FileManager.default.removeItem(at: target)
-        try sync { db in
+        _ = try sync { db in
             try db.run("VACUUM INTO ?", [target.path])
         }
     }
@@ -332,30 +419,63 @@ final class ArchiveDatabase: @unchecked Sendable {
     /// Fügt eine andere Archivdatei hinzu: nur Einträge, die hier fehlen (natürliche
     /// Schlüssel, `INSERT OR IGNORE`) – nichts wird überschrieben. Liefert die Zahl
     /// neuer Einträge.
+    ///
+    /// Die Quelle wird vorher für sich geprüft (`PRAGMA quick_check`). Ein Fehler
+    /// aus ihr kommt als `ArchiveDatabaseError.badBackup` – nie als SQLite-Fehler
+    /// durch `perform`: Der hielt `SQLITE_NOTADB`/`SQLITE_CORRUPT` einer kaputten
+    /// Sicherung für einen Defekt der *eigenen* Datei und legte das gesunde
+    /// Archiv beiseite (Review 01.11.2026).
     func merge(from source: URL) throws -> Int {
-        try sync { db in
-            let check = try SQLiteConnection(url: source, readOnly: true)
-            let version = try check.scalar("PRAGMA user_version") ?? 0
-            if version > Self.schemaVersion { throw ArchiveDatabaseError.newerSchema(version) }
-            let tables = Set(try check.query("SELECT name FROM sqlite_master WHERE type = 'table'") { $0.text(0) ?? "" })
-            try db.run("ATTACH DATABASE ? AS src", [source.path])
-            defer { db.clearCache(); try? db.execute("DETACH DATABASE src") }
-            // Rufzeichen der Abschriften gibt es erst ab Schema 2.
-            let airbandColumns = "uuid, start, duration, channel, name, peak_db, recording, transcript, transcript_lang, transcript_confidence"
-                + (version >= 2 ? ", transcript_callsign, transcript_icao, transcript_text" : "")
-            let copies: [(table: String, columns: String)] = [
-                ("sightings", "kind, sid, key, day, name, registration, type, operator, route, first, last, messages, max_altitude, max_speed, min_distance, track"),
-                ("sonde_samples", "serial, type, time, frame, frequency, latitude, longitude, altitude, vertical_speed, wind_speed, heading, temperature, humidity, battery, window"),
-                ("airband_transmissions", airbandColumns),
-                ("acars_messages", "time, source, frequency, registration, flight, label, text"),
-            ]
-            return try db.transaction {
-                var added = 0
-                for copy in copies where tables.contains(copy.table) {
-                    added += try db.run("INSERT OR IGNORE INTO main.\(copy.table) (\(copy.columns)) SELECT \(copy.columns) FROM src.\(copy.table)")
-                }
-                return added
+        let (version, tables) = try Self.inspectBackup(source)
+        if version > Self.schemaVersion { throw ArchiveDatabaseError.newerSchema(version) }
+        return try sync { db in
+            do {
+                return try Self.mergeAttached(db, source: source, version: version, tables: tables)
+            } catch let error as SQLiteError where error.isCorrupt {
+                // Wer ist kaputt? Ist die eigene Datei in Ordnung, war es die Sicherung.
+                let ownOK = (try? db.query("PRAGMA main.quick_check(1)") { $0.text(0) ?? "" }) == ["ok"]
+                guard ownOK else { throw error }
+                Self.log.error("Sicherung beim Einspielen beschädigt: \(error.description, privacy: .public)")
+                throw ArchiveDatabaseError.badBackup(error.description)
             }
+        }
+    }
+
+    /// Öffnet die Sicherung nur lesend und prüft sie; liefert Schema-Stand und Tabellen.
+    private static func inspectBackup(_ source: URL) throws -> (version: Int, tables: Set<String>) {
+        do {
+            let check = try SQLiteConnection(url: source, readOnly: true)
+            let result = try check.query("PRAGMA quick_check") { $0.text(0) ?? "" }
+            guard result == ["ok"] else {
+                throw ArchiveDatabaseError.badBackup(result.prefix(3).joined(separator: "; "))
+            }
+            let version = try check.scalar("PRAGMA user_version") ?? 0
+            let tables = Set(try check.query("SELECT name FROM sqlite_master WHERE type = 'table'") { $0.text(0) ?? "" })
+            return (version, tables)
+        } catch let error as SQLiteError {
+            log.error("Sicherung nicht lesbar: \(error.description, privacy: .public)")
+            throw ArchiveDatabaseError.badBackup(error.description)
+        }
+    }
+
+    private static func mergeAttached(_ db: SQLiteConnection, source: URL, version: Int, tables: Set<String>) throws -> Int {
+        try db.run("ATTACH DATABASE ? AS src", [source.path])
+        defer { db.clearCache(); try? db.execute("DETACH DATABASE src") }
+        // Rufzeichen der Abschriften gibt es erst ab Schema 2.
+        let airbandColumns = "uuid, start, duration, channel, name, peak_db, recording, transcript, transcript_lang, transcript_confidence"
+            + (version >= 2 ? ", transcript_callsign, transcript_icao, transcript_text" : "")
+        let copies: [(table: String, columns: String)] = [
+            ("sightings", "kind, sid, key, day, name, registration, type, operator, route, first, last, messages, max_altitude, max_speed, min_distance, track"),
+            ("sonde_samples", "serial, type, time, frame, frequency, latitude, longitude, altitude, vertical_speed, wind_speed, heading, temperature, humidity, battery, window"),
+            ("airband_transmissions", airbandColumns),
+            ("acars_messages", "time, source, frequency, registration, flight, label, text"),
+        ]
+        return try db.transaction {
+            var added = 0
+            for copy in copies where tables.contains(copy.table) {
+                added += try db.run("INSERT OR IGNORE INTO main.\(copy.table) (\(copy.columns)) SELECT \(copy.columns) FROM src.\(copy.table)")
+            }
+            return added
         }
     }
 
@@ -377,10 +497,13 @@ final class ArchiveDatabase: @unchecked Sendable {
 
 enum ArchiveDatabaseError: Error, LocalizedError {
     case newerSchema(Int)
+    /// Die Archivdatei der Sicherung ist beschädigt oder keine Datenbank (Einzelheiten von SQLite).
+    case badBackup(String)
 
     var errorDescription: String? {
         switch self {
         case .newerSchema: String(localized: "Die Sicherung stammt aus einer neueren Version der App. Bitte die App aktualisieren.")
+        case .badBackup: String(localized: "Die Archivdatei der Sicherung ist beschädigt und lässt sich nicht einspielen. Dein Archiv bleibt unverändert.")
         }
     }
 }

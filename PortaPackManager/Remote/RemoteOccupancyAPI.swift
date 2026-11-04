@@ -210,7 +210,7 @@ enum RemoteOccupancyAPI {
         func side(_ key: String, _ fallback: Int) -> Int {
             min(maxSide, max(32, query[key].flatMap(Int.init) ?? fallback))
         }
-        let width = side("w", 800), height = side("h", 480)
+        let (width, height) = steppedSize(width: side("w", 800), height: side("h", 480))
         let hours = hoursParameter(query["hours"])
         let metric = query["m"].flatMap(OccupancyMetric.init(rawValue:)) ?? .occupancy
         let key = "\(width)x\(height)|\(hours)|\(metric.rawValue)|\(monitor.recordingURL?.lastPathComponent ?? "")|\(monitor.revision)"
@@ -234,6 +234,19 @@ enum RemoteOccupancyAPI {
             if cache.count > 6 { cache.removeFirst(cache.count - 6) }
         }
         return png(data)
+    }
+
+    /// Breiten, auf die `w` aufgerundet wird.
+    nonisolated static let widthSteps = [320, 480, 640, 800, 1024, 1280, 1600]
+
+    /// Bildgröße auf Stufen gerundet wie bei `/img`: Breite auf `widthSteps` auf,
+    /// Seitenverhältnis auf Zehntel (0,2 … 2,0). Frei wählbare `w`/`h` landeten
+    /// sonst je Wert im Cache-Schlüssel – ein Zuschauer konnte damit beliebig viele
+    /// Renderläufe gleichzeitig anstoßen (Review 01.11.2026).
+    nonisolated static func steppedSize(width: Int, height: Int) -> (width: Int, height: Int) {
+        let w = widthSteps.first { $0 >= width } ?? maxSide
+        let aspect = min(2, max(0.2, (Double(height) / Double(max(1, width)) * 10).rounded() / 10))
+        return (w, min(maxSide, Int((Double(w) * aspect).rounded())))
     }
 
     private static func png(_ data: Data) -> RemoteHTTPServer.Response {

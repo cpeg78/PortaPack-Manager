@@ -7,6 +7,7 @@
 #include <pthread.h>
 #include <stdatomic.h>
 #include <stdlib.h>
+#include <sys/time.h>
 #include <unistd.h>
 
 struct hrf_stream;
@@ -17,6 +18,9 @@ struct hrf_usb {
     uint8_t in_pipe;
     CFRunLoopSourceRef async_source;
     struct hrf_stream *stream;
+    /// Ein Strom ließ sich nicht beenden (Transfers kamen nie zurück): kein
+    /// neuer Strom mehr auf diesem Handle, nur noch Schließen und Neuverbinden.
+    int broken;
 };
 
 struct hrf_transfer {
@@ -35,11 +39,19 @@ struct hrf_stream {
     atomic_int outstanding;
     int errors;
     CFRunLoopRef run_loop;
+    /// Eigene Referenz auf die Ereignisquelle: Ein aufgegebener Thread räumt
+    /// sie womöglich erst nach `hrf_usb_close` ab, wenn der Handle schon frei ist.
+    CFRunLoopSourceRef source;
     pthread_t thread;
     pthread_mutex_t mutex;
     pthread_cond_t ready;
     int started;
     IOReturn start_error;
+    /// Der Thread hat seine Ablaufschleife verlassen (alle Transfers zurück).
+    int finished;
+    /// `hrf_usb_stream_stop` hat nicht länger gewartet: Der Thread gibt den
+    /// Strom selbst frei, falls die Transfers doch noch zurückkommen.
+    int abandoned;
 };
 
 static io_service_t find_device(uint16_t vendor_id, uint16_t product_id) {
@@ -224,6 +236,7 @@ int32_t hrf_usb_reenumerate(uint16_t vendor_id, uint16_t product_id) {
 // MARK: - Dauerempfang mit asynchronen Transfers
 
 static IOReturn submit(struct hrf_transfer *transfer);
+static void free_stream(struct hrf_stream *stream);
 
 static void completed(void *refcon, IOReturn result, void *arg0) {
     struct hrf_transfer *transfer = refcon;
@@ -255,7 +268,7 @@ static void *stream_thread(void *argument) {
     hrf_usb *handle = stream->handle;
     pthread_setname_np("HackRF RX");
     stream->run_loop = CFRunLoopGetCurrent();
-    CFRunLoopAddSource(stream->run_loop, handle->async_source, kCFRunLoopDefaultMode);
+    CFRunLoopAddSource(stream->run_loop, stream->source, kCFRunLoopDefaultMode);
 
     IOReturn error = kIOReturnSuccess;
     for (uint32_t i = 0; i < stream->count; i++) {
@@ -278,13 +291,24 @@ static void *stream_thread(void *argument) {
     }
     // Läuft, bis der letzte Transfer nach dem Abbruch zurückgekommen ist.
     if (atomic_load(&stream->outstanding) > 0) CFRunLoopRun();
-    CFRunLoopRemoveSource(stream->run_loop, handle->async_source, kCFRunLoopDefaultMode);
+    // Ab hier nur noch `stream`, nie `handle`: Nach einem Aufgeben kann der
+    // Handle längst geschlossen sein.
+    CFRunLoopRemoveSource(stream->run_loop, stream->source, kCFRunLoopDefaultMode);
+    pthread_mutex_lock(&stream->mutex);
+    stream->finished = 1;
+    int abandoned = stream->abandoned;
+    pthread_cond_broadcast(&stream->ready);
+    pthread_mutex_unlock(&stream->mutex);
+    // Aufgegeben (Thread gelöst): Jetzt sind alle Transfers zurück, also darf
+    // der Strom samt Puffern frei werden – niemand sonst hält ihn noch.
+    if (abandoned) free_stream(stream);
     return NULL;
 }
 
 static void free_stream(struct hrf_stream *stream) {
     for (uint32_t i = 0; i < stream->count; i++) free(stream->transfers[i].buffer);
     free(stream->transfers);
+    if (stream->source) CFRelease(stream->source);
     pthread_mutex_destroy(&stream->mutex);
     pthread_cond_destroy(&stream->ready);
     free(stream);
@@ -292,7 +316,7 @@ static void free_stream(struct hrf_stream *stream) {
 
 int32_t hrf_usb_stream_start(hrf_usb *handle, uint32_t transfers, uint32_t size, hrf_rx_callback callback,
                              void *context) {
-    if (!handle || !handle->interface || !handle->in_pipe || handle->stream) return -1;
+    if (!handle || !handle->interface || !handle->in_pipe || handle->stream || handle->broken) return -1;
     if (!handle->async_source) {
         IOReturn kr = (*handle->interface)->CreateInterfaceAsyncEventSource(handle->interface, &handle->async_source);
         if (kr != kIOReturnSuccess) return kr < 0 ? kr : -kr;
@@ -310,6 +334,8 @@ int32_t hrf_usb_stream_start(hrf_usb *handle, uint32_t transfers, uint32_t size,
     atomic_init(&stream->outstanding, 0);
     pthread_mutex_init(&stream->mutex, NULL);
     pthread_cond_init(&stream->ready, NULL);
+    CFRetain(handle->async_source);
+    stream->source = handle->async_source;
     stream->transfers = calloc(transfers, sizeof(struct hrf_transfer));
     if (!stream->transfers) {
         stream->count = 0;
@@ -348,19 +374,60 @@ int32_t hrf_usb_stream_start(hrf_usb *handle, uint32_t transfers, uint32_t size,
     return 0;
 }
 
-void hrf_usb_stream_stop(hrf_usb *handle) {
-    if (!handle || !handle->stream) return;
+/// Wartet höchstens `ms` Millisekunden darauf, dass der Empfangsthread seine
+/// Ablaufschleife verlassen hat. Liefert 1, wenn er fertig ist.
+static int wait_finished(struct hrf_stream *stream, long ms) {
+    struct timeval now;
+    gettimeofday(&now, NULL);
+    long long nanos = (long long)now.tv_usec * 1000 + (long long)ms * 1000000;
+    struct timespec deadline = {.tv_sec = now.tv_sec + (time_t)(nanos / 1000000000), .tv_nsec = (long)(nanos % 1000000000)};
+    pthread_mutex_lock(&stream->mutex);
+    while (!stream->finished) {
+        if (pthread_cond_timedwait(&stream->ready, &stream->mutex, &deadline) != 0) break;
+    }
+    int finished = stream->finished;
+    pthread_mutex_unlock(&stream->mutex);
+    return finished;
+}
+
+int32_t hrf_usb_stream_stop(hrf_usb *handle) {
+    if (!handle || !handle->stream) return 0;
     struct hrf_stream *stream = handle->stream;
     atomic_store(&stream->stopping, true);
     // Ein Rückruf, der `stopping` gerade noch als false gelesen hat, kann einen
     // Transfer erst nach dem Abbruch neu vergeben – der käme nie zurück, und
     // pthread_join hinge für immer (gesehen beim schnellen Kanalwechsel).
-    // Deshalb abbrechen, bis wirklich alle Transfers zurück sind.
-    for (int attempt = 0; atomic_load(&stream->outstanding) > 0 && attempt < 250; attempt++) {
+    // Deshalb abbrechen, bis wirklich alle Transfers zurück sind. Gewartet
+    // wird auf das Ende des Threads (Bedingung), nicht mehr fest 20 ms je
+    // Versuch – meist ist alles nach wenigen Millisekunden zurück
+    // (Review 01.11.2026). Höchstens 250 Versuche à 20 ms ≈ 5 s.
+    int finished = 0;
+    for (int attempt = 0; attempt < 250 && !finished; attempt++) {
         (*handle->interface)->AbortPipe(handle->interface, handle->in_pipe);
-        usleep(20000);
+        finished = wait_finished(stream, 20);
     }
-    pthread_join(stream->thread, NULL);
     handle->stream = NULL;
-    free_stream(stream);
+    if (finished) {
+        pthread_join(stream->thread, NULL);
+        free_stream(stream);
+        return 0;
+    }
+    // Ein Transfer kommt nie zurück: nicht ewig in pthread_join hängen (der
+    // Aufrufer ist oft der Main Actor). Thread lösen; Strom und Puffer bleiben
+    // bewusst liegen – der Kern könnte noch hineinschreiben (Leck statt
+    // Absturz). Kommen die Transfers doch noch, gibt der Thread sie selbst
+    // frei. Der Handle taugt danach nur noch zum Schließen.
+    pthread_mutex_lock(&stream->mutex);
+    finished = stream->finished;
+    if (!finished) stream->abandoned = 1;
+    pthread_mutex_unlock(&stream->mutex);
+    if (finished) {
+        // Genau zwischen letzter Wartezeit und Sperre fertig geworden.
+        pthread_join(stream->thread, NULL);
+        free_stream(stream);
+        return 0;
+    }
+    pthread_detach(stream->thread);
+    handle->broken = 1;
+    return -1;
 }

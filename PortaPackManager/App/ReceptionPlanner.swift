@@ -57,6 +57,11 @@ final class ReceptionPlanner {
             case .sonde(let w): "sonde-\(Int(w.start.timeIntervalSince1970))"
             }
         }
+        /// Kennung samt denen der Nachbarminuten (`ReceptionPlanner.neighbourIDs`) –
+        /// für Übersprungen/Aktiv-Vergleiche, die eine Neuberechnung überstehen müssen.
+        var matchingIDs: [String] { [id] + ReceptionPlanner.neighbourIDs(of: id) }
+        /// Steht dieser Termin (auch mit einer Nachbarminute) unter den Kennungen?
+        func isListed(in ids: Set<String>) -> Bool { matchingIDs.contains(where: ids.contains) }
         var title: String {
             switch kind {
             case .pass(let p), .amateur(let p): String(format: "%@ (%.0f°)", p.satellite.name, p.maxElevation)
@@ -188,7 +193,14 @@ final class ReceptionPlanner {
     private(set) var active: Job?
     /// Gesetzt, solange `DeviceArbiter.borrow` das Gerät kurz ausleiht
     /// (Quarzabgleich, Antennen-Check): keine neuen Termine, kein Fortsetzen.
-    var paused = false
+    /// Ein Zähler statt eines Schalters (Entscheid 02.11.2026): Laufen zwei
+    /// Ausleihen gleichzeitig, gab die erste den Plan sonst zu früh frei.
+    var paused: Bool { borrowCount > 0 }
+    private(set) var borrowCount = 0
+
+    /// Ausleihe beginnt (`DeviceArbiter.borrow`) – jede braucht ein `endBorrow`.
+    func beginBorrow() { borrowCount += 1 }
+    func endBorrow() { borrowCount = max(0, borrowCount - 1) }
     /// Vom Nutzer pausiert (Menüleiste „Empfangsplan pausieren“): keine neuen
     /// Termine, bis er fortsetzt. Nur für diesen Programmlauf – nach einem
     /// Neustart plant die App wieder. Getrennt von `paused`, das `DeviceArbiter.borrow`
@@ -257,8 +269,22 @@ final class ReceptionPlanner {
     nonisolated static func jobID(amateur: SatellitePass) -> String { Job(kind: .amateur(amateur)).id }
     nonisolated static func jobID(window: SondeWindow) -> String { Job(kind: .sonde(window)).id }
 
-    func isSkipped(_ id: String) -> Bool { skipped[id] != nil }
-    func isActive(_ id: String) -> Bool { active?.id == id }
+    /// Überflug-Kennungen enthalten die auf 60 s gerundete Kulmination
+    /// (`SatellitePass.id`). Neue Bahndaten verschieben den Gipfel um Sekunden –
+    /// das Runden kann dabei in die Nachbarminute kippen. Deshalb gelten die
+    /// Kennungen eine Minute daneben als derselbe Termin (Überflüge desselben
+    /// Satelliten liegen über eine Stunde auseinander). Sondenfenster: keine.
+    nonisolated static func neighbourIDs(of id: String) -> [String] {
+        guard id.hasPrefix("pass-") || id.hasPrefix("amsat-"),
+              let dash = id.lastIndex(of: "-"), let stamp = Int(id[id.index(after: dash)...]) else { return [] }
+        let base = String(id[...dash])
+        return [stamp - 60, stamp + 60].map { base + String($0) }
+    }
+
+    func isSkipped(_ id: String) -> Bool {
+        skipped[id] != nil || Self.neighbourIDs(of: id).contains { skipped[$0] != nil }
+    }
+    func isActive(_ id: String) -> Bool { active.map { $0.id == id || Self.neighbourIDs(of: id).contains($0.id) } ?? false }
 
     /// Einzelnen Termin aus- bzw. wieder einschalten (Schalter rechts in der
     /// Planliste). Läuft er gerade, beendet Ausschalten ihn wie „Überspringen“.
@@ -266,10 +292,11 @@ final class ReceptionPlanner {
     /// (`pruneSkipped` rechnet ab diesem Zeitpunkt).
     func setSkipped(_ id: String, end: Date, _ on: Bool) {
         if on {
-            if active?.id == id { Task { await skipActive() }; return }
+            if isActive(id) { Task { await skipActive() }; return }
             skipped[id] = max(Date(), end)
         } else {
             skipped[id] = nil
+            for neighbour in Self.neighbourIDs(of: id) { skipped[neighbour] = nil }
         }
     }
 
@@ -317,6 +344,10 @@ final class ReceptionPlanner {
     }
     private var activity: NSObjectProtocol?
     private var lastSondeHubAttempt = Date.distantPast
+    /// Eine SondeHub-Abfrage läuft gerade (nebenher, nicht im Takt).
+    private var sondeHubFetching = false
+    /// Ein Abruf der Bahndaten läuft gerade (nebenher, nicht im Takt).
+    private var tleFetchRunning = false
     /// Zuletzt eine Sonde in Reichweite gesehen (online oder selbst empfangen).
     private var lastSondeNearby = Date.distantPast
     /// Letzte Sondenmeldung im laufenden Sondenfenster (für Verlängern und
@@ -398,7 +429,7 @@ final class ReceptionPlanner {
     /// Vorrang (METEOR, dann Amateurfunk, dann Sonden), bei Gleichstand der
     /// früher begonnene.
     nonisolated static func due(_ jobs: [Job], now: Date, skipped: Set<String>) -> Job? {
-        jobs.filter { $0.start <= now && now < $0.end && !skipped.contains($0.id) }
+        jobs.filter { $0.start <= now && now < $0.end && !$0.isListed(in: skipped) }
             .min { ($0.priority, $0.start) < ($1.priority, $1.start) }
     }
 
@@ -434,7 +465,17 @@ final class ReceptionPlanner {
     // MARK: Takt
 
     private func tick() async {
-        await updateTLEsIfNeeded(force: false)
+        // Nebenher wie die Sondenvorhersage: zwei CelesTrak-Abrufe (je bis 30 s)
+        // hielten sonst den Takt an – ein Überflug begann verspätet, Abrisse
+        // blieben unerkannt (Review 01.11.2026). Neue Bahndaten rechnen die
+        // Vorhersage selbst neu (`predict` in `updateTLEsIfNeeded`).
+        if !tleFetchRunning {
+            tleFetchRunning = true
+            Task {
+                await updateTLEsIfNeeded(force: false)
+                tleFetchRunning = false
+            }
+        }
         let home = Self.home
         if home != station || Date().timeIntervalSince(lastPrediction) > 1800 || passes.isEmpty {
             station = home
@@ -505,12 +546,14 @@ final class ReceptionPlanner {
         if let job = due, job.isSonde, let pause = sondeProbePause, pause.id == job.id, now < pause.until {
             waiting = String(localized: "Radiosonden: noch keine Sonde gehört – nächster Versuch um \(pause.until.formatted(date: .omitted, time: .shortened))")
             // SondeHub trotzdem weiter abfragen (Kanäle für den nächsten Versuch, „in Reichweite“).
-            _ = await sondeNearby(now: now, running: false)
+            _ = sondeNearby(now: now, running: false)
             due = nil
-        } else if let job = due, job.isSonde, sondeOnlyInRange, !(await sondeNearby(now: now, running: active?.same(as: job) == true)) {
+        } else if let job = due, job.isSonde, sondeOnlyInRange, !sondeNearby(now: now, running: active?.same(as: job) == true) {
             waiting = String(localized: "Radiosonden bis \(job.end.formatted(date: .omitted, time: .shortened)): wartet – laut SondeHub keine Sonde im Umkreis von \(Int(sondeRangeKm)) km")
             due = nil
-            if sondeWaitLogged != job.id {
+            // Erst nach der ersten Antwort (oder einem Fehlschlag) – sonst stünde
+            // im Protokoll immer „noch nicht abgefragt“.
+            if sondeWaitLogged != job.id, !sondeHubFetching {
                 sondeWaitLogged = job.id
                 // Sonst steht im Protokoll gar nichts – das Fenster scheint einfach nie zu beginnen.
                 let nearest = sondeHubChecked == nil ? "SondeHub noch nicht abgefragt" : "keine Sonde gemeldet"
@@ -534,14 +577,14 @@ final class ReceptionPlanner {
         // genau diesen Termin übersprungen haben (Review 28.10.2026, Y11).
         // Vom Nutzer pausiert: keine neuen Termine – die Rückkehr zum vorherigen
         // Empfänger aber schon (sonst bliebe nach „Pausieren“ alles aus).
-        if let due, active == nil, !blocked, !userPaused, skipped[due.id] == nil {
+        if let due, active == nil, !blocked, !userPaused, !isSkipped(due.id) {
             await begin(due)
         }
         if active == nil, !blocked, let previous = resume,
            // Nur künftige Termine halten die Rückkehr auf. Ein schon laufendes,
            // aber wartendes Sondenfenster (keine Sonde in Reichweite) hielt
            // ADS-B/AIS sonst bis zu seinem Ende – mit Verlängerung bis 5 h.
-           !upcoming.contains(where: { $0.start > now && $0.start.timeIntervalSince(now) < 120 && skipped[$0.id] == nil }) {
+           !upcoming.contains(where: { $0.start > now && $0.start.timeIntervalSince(now) < 120 && !isSkipped($0.id) }) {
             resume = nil
             await resumeAfterPlan(previous)
         }
@@ -565,20 +608,33 @@ final class ReceptionPlanner {
     /// in Reichweite. Läuft der Empfang schon, hält ihn jede eigene Meldung und
     /// jede Sichtung der letzten 10 min offen. Ist SondeHub nicht erreichbar,
     /// wird wie früher einfach empfangen.
-    private func sondeNearby(now: Date, running: Bool) async -> Bool {
+    ///
+    /// Die Abfrage läuft nebenher (Review 01.11.2026: bis 20 s Wartezeit hielten
+    /// den Takt an); bis zur ersten Antwort wartet ein noch nicht laufendes
+    /// Fenster, ein laufendes bleibt offen.
+    private func sondeNearby(now: Date, running: Bool) -> Bool {
         guard let home = Self.home else { return true }
-        if now.timeIntervalSince(lastSondeHubAttempt) >= 120 {
+        if now.timeIntervalSince(lastSondeHubAttempt) >= 120, !sondeHubFetching {
             lastSondeHubAttempt = now
-            do {
-                sondesInRange = try await SondeHubTraffic.fetch(home: home, rangeKm: sondeRangeKm)
-                Notifier.shared.sondesInRange(sondesInRange)
-                for sighting in sondesInRange { if let mhz = sighting.frequencyMHz { knownFrequencies[sighting.serial] = mhz } }
-                sondeHubChecked = now
-            } catch {
-                Self.log.error("SondeHub nicht erreichbar: \(error.localizedDescription, privacy: .public)")
+            sondeHubFetching = true
+            let range = sondeRangeKm
+            Task {
+                defer { sondeHubFetching = false }
+                do {
+                    sondesInRange = try await SondeHubTraffic.fetch(home: home, rangeKm: range)
+                    Notifier.shared.sondesInRange(sondesInRange)
+                    for sighting in sondesInRange { if let mhz = sighting.frequencyMHz { knownFrequencies[sighting.serial] = mhz } }
+                    sondeHubChecked = Date()
+                } catch {
+                    Self.log.error("SondeHub nicht erreichbar: \(error.localizedDescription, privacy: .public)")
+                }
             }
         }
-        guard let checked = sondeHubChecked, now.timeIntervalSince(checked) < 600 else { return true }
+        guard let checked = sondeHubChecked, now.timeIntervalSince(checked) < 600 else {
+            // Keine frische Antwort: Läuft die Abfrage noch, abwarten (ein
+            // laufender Empfang bleibt an); ist sie gescheitert, empfangen wie früher.
+            return running || !sondeHubFetching
+        }
         if !sondesInRange.isEmpty { lastSondeNearby = now }
         if running, let last = sonde.sondes.first?.lastSeen, last > lastSondeNearby { lastSondeNearby = last }
         return now.timeIntervalSince(lastSondeNearby) < (running ? 600 : 1)
@@ -662,7 +718,7 @@ final class ReceptionPlanner {
         // Während der Wartezeit kann eine Installation (Rettungsweg über den
         // HackRF-Modus) begonnen oder der Nutzer den Termin übersprungen haben
         // (Review 28.10.2026, Y1/Y11).
-        guard !session.busy, skipped[job.id] == nil, !paused, !userPaused else { return }
+        guard !session.busy, !isSkipped(job.id), !paused, !userPaused else { return }
         guard let device = session.hackRF else {
             skip(job.id)
             record(job, String(localized: "nicht gestartet: HackRF-Modus nicht erreicht"))
@@ -680,7 +736,9 @@ final class ReceptionPlanner {
             return amateur.running && amateur.receiving?.id == pass.satellite.id && device.isReceiving(for: amateur)
         }()
         if !keepsAmateur {
-            let local = ReceiverStore.shared.suspendLocal(on: device)
+            // Ein von Hand gestartetes *anderes* Plan-Model (Sonde während eines
+            // Überflugs …) hält `suspendLocal` an und holt es danach zurück.
+            let local = ReceiverStore.shared.suspendLocal(on: device, keeping: owner(of: job))
             let previous = RemoteHub.shared.suspendForPlan()
             if resume == nil { resume = PlanResume.choose(hub: previous, local: local) }
         }

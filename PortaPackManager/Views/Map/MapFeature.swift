@@ -26,6 +26,8 @@ enum MapSymbol: String, Sendable, Encodable, CaseIterable {
     case medical, flame, pin
     /// Schiff von oben (Bug nach Norden), dunkel umrandet – hebt sich von Wasser und Land ab.
     case hull
+    /// Hubschrauber, Kleinflugzeug (gerade Flügel), Segelflugzeug (von oben, Nase nach Norden).
+    case helicopter, planeLight, glider
     /// Flugplätze: gefüllter Kreis (groß/mittel), Ring (klein/Wasser), „H“ (Hubschrauber).
     case apFilled, apRing, apHeli
 
@@ -233,11 +235,14 @@ enum MapColor {
 
 /// Unterschied zwischen dem, was die Seite zeigt, und dem neuen Stand – nur das
 /// geht an die Seite. Wächst eine Linie nur am Ende (Spuren), gehen nur die neuen
-/// Punkte hinüber.
+/// Punkte hinüber; ist sie zugleich vorne gekappt (Spur mit Höchstlänge), dazu
+/// die Zahl der vorne wegfallenden Punkte (`drop`).
 struct MapDiff: Equatable {
     struct Append: Equatable, Encodable {
         var id: String
         var points: [MapPoint]
+        /// So viele Punkte fallen vorne weg, bevor `points` angehängt werden.
+        var drop: Int?
     }
 
     var upsert: [MapFeature] = []
@@ -247,12 +252,15 @@ struct MapDiff: Equatable {
     var isEmpty: Bool { upsert.isEmpty && append.isEmpty && remove.isEmpty }
 
     /// Vergleicht `old` (gesendet) mit `new`; doppelte Kennungen: die letzte gilt.
+    /// Nicht endliche Werte (NaN, ∞) fallen vorher heraus (`MapFeature.finite`) –
+    /// ein einziges NaN ließ sonst die ganze Nachricht am `JSONEncoder` scheitern.
     /// Liefert den Unterschied und den neuen gesendeten Stand.
     static func make(old: [String: MapFeature], new: [MapFeature]) -> (diff: MapDiff, state: [String: MapFeature]) {
         var state: [String: MapFeature] = [:]
         state.reserveCapacity(new.count)
         var order: [String] = []
-        for feature in new {
+        for raw in new {
+            guard let feature = raw.finite() else { continue }
             if state.updateValue(feature, forKey: feature.id) == nil { order.append(feature.id) }
         }
         var diff = MapDiff()
@@ -260,8 +268,8 @@ struct MapDiff: Equatable {
             let feature = state[id]!
             guard let previous = old[id] else { diff.upsert.append(feature); continue }
             if previous == feature { continue }
-            if let tail = appendedTail(previous, feature) {
-                diff.append.append(Append(id: id, points: tail))
+            if let shift = shiftedTail(previous, feature) {
+                diff.append.append(Append(id: id, points: shift.tail, drop: shift.drop > 0 ? shift.drop : nil))
             } else {
                 diff.upsert.append(feature)
             }
@@ -273,12 +281,64 @@ struct MapDiff: Equatable {
 
     /// Neue Punkte, wenn `new` dieselbe Linie wie `old` ist und nur hinten wächst.
     static func appendedTail(_ old: MapFeature, _ new: MapFeature) -> [MapPoint]? {
-        guard old.kind == .line, new.kind == .line, new.points.count > old.points.count else { return nil }
+        guard let shift = shiftedTail(old, new), shift.drop == 0, !shift.tail.isEmpty else { return nil }
+        return shift.tail
+    }
+
+    /// „Vorne `drop` weg, hinten `tail` dazu“: `new.points == old.points.dropFirst(drop) + tail`,
+    /// sonst `nil`. Sobald eine Spur ihre Höchstlänge erreicht (ADS-B, AIS, APRS,
+    /// Drohnen kappen vorne), ist das der Normalfall – vorher ging die ganze Spur
+    /// in jedem Takt neu hinüber (Review 01.11.2026). Gesucht wird ab der ersten
+    /// Stelle, an der `old` den Anfang von `new` enthält; gleiche Punkte mehrfach
+    /// (stehendes Ziel) prüfen höchstens vier Kandidaten, danach lieber ganz neu.
+    static func shiftedTail(_ old: MapFeature, _ new: MapFeature) -> (drop: Int, tail: [MapPoint])? {
+        guard old.kind == .line, new.kind == .line, let first = new.points.first, !old.points.isEmpty else { return nil }
         var a = old, b = new
         a.points = []; b.points = []
-        guard a == b, new.points.starts(with: old.points) else { return nil }
-        return Array(new.points[old.points.count...])
+        guard a == b else { return nil }
+        let o = old.points, n = new.points
+        var from = 0
+        for _ in 0..<4 {
+            guard from < o.count, let start = o[from...].firstIndex(of: first) else { return nil }
+            let overlap = o.count - start
+            if overlap <= n.count, o[start...].elementsEqual(n[..<overlap]) {
+                let tail = Array(n[overlap...])
+                if start == 0, tail.isEmpty { return nil }   // unverändert – kein Unterschied
+                return (start, tail)
+            }
+            from = start + 1
+        }
+        return nil
     }
+}
+
+extension MapFeature {
+    /// Ohne nicht endliche Werte: Linien/Flächen verlieren solche Punkte, Marker und
+    /// Kreise ohne gültigen Punkt fallen weg (`nil`), Zusatzwerte (Drehung, Größe …)
+    /// werden zu „nicht gesetzt“. Der übliche Fall (alles endlich) kopiert nichts.
+    func finite() -> MapFeature? {
+        let pointsOK = points.allSatisfy(\.isFinite)
+        let scalars = [opacity, rotation, size, width, fillOpacity, radius]
+        let scalarsOK = scalars.allSatisfy { $0?.isFinite ?? true } && (dash?.allSatisfy(\.isFinite) ?? true)
+        if pointsOK, scalarsOK { return self }
+        var f = self
+        if !pointsOK {
+            f.points = points.filter(\.isFinite)
+            if f.points.isEmpty { return nil }
+            if kind == .marker || kind == .circle, f.points.count != points.count { return nil }
+        }
+        if !scalarsOK {
+            func clean(_ v: Double?) -> Double? { v.flatMap { $0.isFinite ? $0 : nil } }
+            f.opacity = clean(opacity); f.rotation = clean(rotation); f.size = clean(size)
+            f.width = clean(width); f.fillOpacity = clean(fillOpacity); f.radius = clean(radius)
+            f.dash = dash?.filter(\.isFinite)
+        }
+        return f
+    }
+}
+
+extension MapPoint {
+    var isFinite: Bool { lat.isFinite && lon.isFinite }
 }
 
 /// Befehl an die Kartenseite (Ausschnitt).
@@ -293,17 +353,25 @@ struct MapCommand: Equatable, Encodable {
     var east: Double?
     var maxZoom: Double?
     var animate: Bool?
+    /// Nur `center`: die Seite führt einem Ziel nach – Rad-Zoom dann um die
+    /// Kartenmitte statt um den Mauszeiger, bis der Nutzer die Karte zieht.
+    var pin: Bool?
 
     /// Allen Zielen folgen (wie `.automatic` bei MapKit).
     static func follow(animated: Bool = true) -> MapCommand { MapCommand(cmd: "follow", animate: animated) }
 
-    static func center(_ c: CLLocationCoordinate2D, zoom: Double? = nil, animated: Bool = true) -> MapCommand {
-        MapCommand(cmd: "center", lat: c.latitude, lon: c.longitude, zoom: zoom, animate: animated)
+    static func center(_ c: CLLocationCoordinate2D, zoom: Double? = nil, animated: Bool = true, pin: Bool = false) -> MapCommand {
+        MapCommand(cmd: "center", lat: c.latitude, lon: c.longitude, zoom: zoom, animate: animated, pin: pin ? true : nil)
     }
 
     static func fit(south: Double, west: Double, north: Double, east: Double, maxZoom: Double? = nil,
                     animated: Bool = true) -> MapCommand {
         MapCommand(cmd: "fit", south: south, west: west, north: north, east: east, maxZoom: maxZoom, animate: animated)
+    }
+
+    /// Alle Zahlen endlich – sonst scheitert die ganze Nachricht am `JSONEncoder`.
+    var isFinite: Bool {
+        [lat, lon, zoom, south, west, north, east, maxZoom].allSatisfy { $0?.isFinite ?? true }
     }
 }
 
@@ -324,22 +392,28 @@ struct MapMessage: Encodable {
     var append: [MapDiff.Append]?
     var remove: [String]?
     var commands: [MapCommand]?
+    /// Die Seite verwirft vorher alles (nach einer gescheiterten Zustellung – ihr
+    /// Stand ist dann unbekannt, `upsert` bringt den ganzen Stand).
+    var reset: Bool?
 
-    init(options: MapOptions? = nil, diff: MapDiff = MapDiff(), commands: [MapCommand] = []) {
+    init(options: MapOptions? = nil, diff: MapDiff = MapDiff(), commands: [MapCommand] = [], reset: Bool = false) {
         self.options = options
+        self.reset = reset ? true : nil
         upsert = diff.upsert.isEmpty ? nil : diff.upsert
         append = diff.append.isEmpty ? nil : diff.append
         remove = diff.remove.isEmpty ? nil : diff.remove
         self.commands = commands.isEmpty ? nil : commands
     }
 
-    var isEmpty: Bool { options == nil && upsert == nil && append == nil && remove == nil && commands == nil }
+    var isEmpty: Bool { options == nil && upsert == nil && append == nil && remove == nil && commands == nil && reset == nil }
 
     /// JSON-Text – geht als Argument (Daten) an `PPM.receive`, nie als JS-Quelltext.
-    func json() -> String {
+    /// `nil`, wenn sich die Nachricht nicht kodieren lässt (dann darf der
+    /// gesendete Stand nicht übernommen werden).
+    func json() -> String? {
         // Schrägstriche bleiben maskiert („<\/script>“) – doppelte Vorsicht, falls der
         // Text je in HTML landet.
-        guard let data = try? JSONEncoder().encode(self) else { return "{}" }
+        guard let data = try? JSONEncoder().encode(self) else { return nil }
         return String(decoding: data, as: UTF8.self)
     }
 }

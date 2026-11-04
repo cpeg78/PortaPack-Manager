@@ -1,4 +1,5 @@
 import Foundation
+import Observation
 import SQLite3
 import Testing
 @testable import PortaPackManager
@@ -254,5 +255,147 @@ struct ArchiveMigrationCopyTests {
             (try conn.sightingSummary(kind: .adsb), try conn.sightingSummary(kind: .ais), try conn.sondeSummary(), try conn.airbandSummary())
         }
         print("BENCH Kopie in der DB: ADS-B \(counts.0.entries)/\(counts.0.distinct), AIS \(counts.1.entries)/\(counts.1.distinct), Sonden \(counts.2.entries) Flüge/\(counts.2.distinct) Meldungen, Flugfunk \(counts.3.entries), \(db.database.fileSize() / 1024) KB")
+    }
+}
+
+/// Review 01.11.2026: Fehlerwege und Wartezeiten der Archiv-Datenbank.
+@Suite("Archiv-Datenbank: Sicherung, Lese-Verbindung, Hinweise")
+struct ArchiveDatabaseReviewTests {
+    private func sighting(_ id: String, last: TimeInterval = 1_793_000_600) -> ArchiveSighting {
+        ArchiveSighting(id: id, key: "3c6444", name: "TEST", first: Date(timeIntervalSince1970: last - 600),
+                        last: Date(timeIntervalSince1970: last), messages: 3)
+    }
+
+    @Test("Sicherung voller Zufallsbytes: eigener Fehler, das Hauptarchiv bleibt unangetastet")
+    func randomBackup() throws {
+        let db = TestDatabase()
+        defer { db.remove() }
+        _ = try db.database.sync { try $0.insertMissingSightings([sighting("a1")], kind: .adsb, day: "2026-10-27") }
+        var generator = SystemRandomNumberGenerator()
+        for size in [8192, 100, 65_536] {
+            let backup = db.folder.appendingPathComponent("Sicherung-\(size).sqlite")
+            try Data((0..<size).map { _ in UInt8.random(in: 0...255, using: &generator) }).write(to: backup)
+            #expect {
+                _ = try db.database.merge(from: backup)
+            } throws: { error in
+                guard case ArchiveDatabaseError.badBackup = error else { return false }
+                return true
+            }
+        }
+        // Auch eine echte Datenbank mit kaputtem Seiteninhalt fällt vorher auf.
+        let damaged = TestDatabase()
+        defer { damaged.remove() }
+        _ = try damaged.database.sync { try $0.insertMissingSightings((0..<500).map { sighting("d\($0)", last: 1_793_000_600 + Double($0)) },
+                                                                         kind: .adsb, day: "2026-10-27") }
+        let copy = db.folder.appendingPathComponent("Kopie.sqlite")
+        try damaged.database.copy(to: copy)
+        var bytes = try Data(contentsOf: copy)
+        // Seitentyp jeder Seite ab der zweiten ungültig machen (Seitengröße 4096).
+        #expect(bytes.count > 3 * 4096)
+        for i in stride(from: 4096, to: bytes.count, by: 4096) { bytes[i] = 0x07 }
+        try bytes.write(to: copy)
+        #expect(throws: ArchiveDatabaseError.self) { _ = try db.database.merge(from: copy) }
+
+        #expect(try db.database.sync { try $0.sightings(kind: .adsb, days: nil) }.map(\.id) == ["a1"])
+        #expect(db.database.notice == nil)
+        let names = try FileManager.default.contentsOfDirectory(atPath: db.folder.path)
+        #expect(!names.contains { $0.hasPrefix("Archiv-beschädigt-") })
+        #expect(ArchiveDatabaseError.badBackup("x").errorDescription?.contains("unverändert") == true)
+    }
+
+    @Test("Lese-Verbindung wartet nicht hinter der Schreibwarteschlange und sieht Festgeschriebenes")
+    func readerDoesNotWait() throws {
+        let db = TestDatabase()
+        defer { db.remove() }
+        // Ohne Datei: fällt auf die Warteschlange zurück (legt die Datei an).
+        #expect(try db.database.readNow { try $0.scalar("SELECT COUNT(*) FROM sightings") } == 0)
+        _ = try db.database.sync { try $0.insertMissingSightings([sighting("a1")], kind: .adsb, day: "2026-10-27") }
+        // Ein langer Lauf in der Warteschlange (wie Übernahme oder `VACUUM INTO`).
+        let started = DispatchSemaphore(value: 0)
+        db.database.write("Test: lange Arbeit") { _ in
+            started.signal()
+            Thread.sleep(forTimeInterval: 1.5)
+        }
+        started.wait()
+        let clock = ContinuousClock()
+        var found: (sighting: ArchiveSighting, day: String)?
+        let elapsed = try clock.measure {
+            found = try db.database.readNow { try $0.latestSighting(kind: .adsb, key: "3c6444", after: .distantPast) }
+        }
+        #expect(found?.sighting.id == "a1")
+        #expect(elapsed < .milliseconds(500), "Lese-Verbindung hat \(elapsed) gewartet")
+        // Schreiben über die Lese-Verbindung geht nicht.
+        #expect(throws: SQLiteError.self) { try db.database.readNow { try $0.execute("DELETE FROM sightings") } }
+        #expect(db.database.waitForPendingWrites(timeout: 5))
+        #expect(try db.database.sync { try $0.scalar("SELECT COUNT(*) FROM sightings") } == 1)
+    }
+
+    @Test("Beenden: Warten auf die Schreibwarteschlange, mit Zeitlimit")
+    func waitForWrites() throws {
+        let db = TestDatabase()
+        defer { db.remove() }
+        db.database.write { _ = try $0.insertMissingSightings([sighting("a1")], kind: .adsb, day: "2026-10-27") }
+        #expect(db.database.waitForPendingWrites(timeout: 5))
+        #expect(try db.database.readNow { try $0.scalar("SELECT COUNT(*) FROM sightings") } == 1)
+        db.database.write("Test: hängt") { _ in Thread.sleep(forTimeInterval: 1) }
+        #expect(!db.database.waitForPendingWrites(timeout: 0.1))
+        #expect(db.database.waitForPendingWrites(timeout: 5))
+    }
+
+    @Test("Hinweis „Speicher voll“ verschwindet, sobald wieder geschrieben werden kann")
+    func diskFullNoticeClears() throws {
+        let db = TestDatabase()
+        defer { db.remove() }
+        _ = try db.database.sync { try $0.scalar("SELECT COUNT(*) FROM sightings") }
+        // Speicher künstlich begrenzen: höchstens so viele Seiten, wie die Datei schon hat.
+        let pages = try db.database.sync { try $0.scalar("PRAGMA page_count") ?? 0 }
+        _ = try db.database.sync { try $0.scalar("PRAGMA max_page_count = \(pages)") }
+        let big = (0..<2000).map { sighting("s\($0)", last: 1_793_000_600 + Double($0)) }
+        db.database.write { _ = try $0.insertMissingSightings(big, kind: .adsb, day: "2026-10-27") }
+        #expect(db.database.waitForPendingWrites(timeout: 5))
+        #expect(db.database.notice?.contains("Speicher") == true)
+        _ = try db.database.sync { try $0.scalar("PRAGMA max_page_count = 1000000") }
+        db.database.write { _ = try $0.insertMissingSightings([sighting("ok")], kind: .adsb, day: "2026-10-27") }
+        #expect(db.database.waitForPendingWrites(timeout: 5))
+        #expect(db.database.notice == nil)
+    }
+
+    @Test("Hinweis ist beobachtbar (Einstellungen ▸ Archiv aktualisiert sich)")
+    @MainActor
+    func noticeObservable() async throws {
+        let db = TestDatabase()
+        defer { db.remove() }
+        let changed = Flag()
+        withObservationTracking { _ = db.database.notice } onChange: { changed.set() }
+        db.database.notice = "Test"
+        #expect(changed.value)
+        db.database.notice = nil
+    }
+
+    private final class Flag: @unchecked Sendable {
+        private let lock = NSLock()
+        private var stored = false
+        var value: Bool { lock.withLock { stored } }
+        func set() { lock.withLock { stored = true } }
+    }
+
+    @Test("Aufbewahrung: scheitert das Löschen der Zeilen, bleiben die Mitschnitte liegen")
+    func retentionKeepsRecordingsOnFailure() throws {
+        let db = TestDatabase()
+        defer { db.remove() }
+        let now = Date()
+        let recordings = db.folder.appendingPathComponent("Mitschnitte")
+        try FileManager.default.createDirectory(at: recordings, withIntermediateDirectories: true)
+        try Data("m4a".utf8).write(to: recordings.appendingPathComponent("alt.m4a"))
+        var oldCall = AirbandTransmission(start: now.addingTimeInterval(-400 * 86_400), duration: 1, index: 1, name: "", peakDB: 1)
+        oldCall.recording = "alt.m4a"
+        _ = try db.database.sync { try $0.insertTransmissions([oldCall]) }
+        // Löschen schlägt fehl (nur lesend) – vorher waren die Dateien dann schon weg.
+        try db.database.sync { try $0.execute("PRAGMA query_only = ON") }
+        #expect(ArchiveMaintenance.run(database: db.database, recordings: recordings, retentionDays: 365, now: now).deleted == 0)
+        #expect(FileManager.default.fileExists(atPath: recordings.appendingPathComponent("alt.m4a").path))
+        try db.database.sync { try $0.execute("PRAGMA query_only = OFF") }
+        #expect(ArchiveMaintenance.run(database: db.database, recordings: recordings, retentionDays: 365, now: now).deleted == 1)
+        #expect(!FileManager.default.fileExists(atPath: recordings.appendingPathComponent("alt.m4a").path))
     }
 }

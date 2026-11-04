@@ -158,24 +158,17 @@ enum BandScanner {
 final class ScanAccumulator: @unchecked Sendable {
     private let lock = NSLock()
     private let size = BandScanner.fftSize
-    private let log2n: vDSP_Length
-    private let setup: FFTSetup
-    private let window: [Float]
+    /// Fenster, FFT und Betragsquadrat – gemeinsam mit den anderen Spektren (`HannPowerFFT`).
+    private let fft: HannPowerFFT
     private var group: [Float]
     private var groupCount = 0
     private var maxHold: [Float]
 
     init() {
-        log2n = vDSP_Length(log2(Double(BandScanner.fftSize)))
-        setup = vDSP_create_fftsetup(log2n, FFTRadix(kFFTRadix2))!
-        var w = [Float](repeating: 0, count: BandScanner.fftSize)
-        vDSP_hann_window(&w, vDSP_Length(BandScanner.fftSize), Int32(vDSP_HANN_NORM))
-        window = w
+        fft = HannPowerFFT(size: BandScanner.fftSize)
         group = [Float](repeating: 0, count: BandScanner.fftSize)
         maxHold = [Float](repeating: 0, count: BandScanner.fftSize)
     }
-
-    deinit { vDSP_destroy_fftsetup(setup) }
 
     func reset() {
         lock.withLock {
@@ -196,16 +189,10 @@ final class ScanAccumulator: @unchecked Sendable {
             for f in 0..<min(frames, 8) {
                 let base = f * 2 * size
                 for n in 0..<size {
-                    re[n] = Float(p[base + 2 * n]) * window[n]
-                    im[n] = Float(p[base + 2 * n + 1]) * window[n]
+                    re[n] = Float(p[base + 2 * n])
+                    im[n] = Float(p[base + 2 * n + 1])
                 }
-                re.withUnsafeMutableBufferPointer { r in
-                    im.withUnsafeMutableBufferPointer { i in
-                        var split = DSPSplitComplex(realp: r.baseAddress!, imagp: i.baseAddress!)
-                        vDSP_fft_zip(setup, &split, 1, log2n, FFTDirection(kFFTDirection_Forward))
-                        vDSP_zvmags(&split, 1, &power, 1, vDSP_Length(size))
-                    }
-                }
+                fft.power(&re, &im, into: &power)
                 lock.withLock {
                     vDSP_vadd(group, 1, power, 1, &group, 1, vDSP_Length(size))
                     groupCount += 1

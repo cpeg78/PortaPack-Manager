@@ -207,10 +207,22 @@ struct RemoteAccountBook: Codable, Equatable, Sendable {
 
 /// Bremse für Fehlversuche je Gegenstelle (`RemoteAccessPolicy.peerKey`): fünf frei,
 /// danach Sperre ab 30 s, je weiterem Fehlversuch doppelt so lang, höchstens 15 min.
-/// Ein Erfolg löscht den Zähler.
+/// Ein Erfolg löscht den Zähler, 24 h ohne Fehlversuch ebenso.
+///
+/// Seit 02.11.2026 (Review 01.11.2026): Jeder Versuch wird **vor** der Prüfung als
+/// Fehlversuch belegt (`reserve`) und erst bei Erfolg wieder gelöscht – vorher
+/// zählte er erst nach dem `await` auf PBKDF2, und bis zu 16 parallele Anfragen je
+/// Gegenstelle kamen an der Grenze von fünf vorbei. Zusätzlich laufen höchstens
+/// `maximumParallelChecks` PBKDF2-Rechnungen gleichzeitig (über alle Gegenstellen),
+/// sonst konnten Unangemeldete 64 Läufe à 600 000 Runden anstoßen.
 struct LoginThrottle: Sendable {
-    private var failures: [String: (count: Int, until: Date)] = [:]
+    private var failures: [String: (count: Int, until: Date, last: Date)] = [:]
     static let freeAttempts = 5
+    /// Nach so langer Zeit ohne Fehlversuch beginnt der Zähler neu.
+    static let forgetAfter: TimeInterval = 24 * 3600
+    /// Höchstens so viele Passwortprüfungen gleichzeitig.
+    static let maximumParallelChecks = 2
+    private(set) var activeChecks = 0
 
     /// Wartezeit in Sekunden, solange gesperrt; sonst `nil`.
     func blocked(_ peer: String, now: Date = Date()) -> Int? {
@@ -218,15 +230,35 @@ struct LoginThrottle: Sendable {
         return Int(entry.until.timeIntervalSince(now).rounded(.up))
     }
 
-    mutating func fail(_ peer: String, now: Date = Date()) {
-        let count = (failures[peer]?.count ?? 0) + 1
-        let extra = count - Self.freeAttempts
-        let wait = extra > 0 ? min(30 * pow(2, Double(extra - 1)), 900) : 0
-        failures[peer] = (count, now.addingTimeInterval(wait))
-        if failures.count > 1000 { failures = failures.filter { $0.value.until > now } }
+    /// Zahl der gezählten Fehlversuche (abgelaufene zählen nicht).
+    func failureCount(_ peer: String, now: Date = Date()) -> Int {
+        guard let entry = failures[peer], now.timeIntervalSince(entry.last) <= Self.forgetAfter else { return 0 }
+        return entry.count
     }
 
+    mutating func fail(_ peer: String, now: Date = Date()) {
+        let count = failureCount(peer, now: now) + 1
+        let extra = count - Self.freeAttempts
+        let wait = extra > 0 ? min(30 * pow(2, Double(extra - 1)), 900) : 0
+        failures[peer] = (count, now.addingTimeInterval(wait), now)
+        if failures.count > 1000 {
+            failures = failures.filter { $0.value.until > now || now.timeIntervalSince($0.value.last) <= Self.forgetAfter }
+        }
+    }
+
+    /// Belegt einen Versuch vor der Prüfung (zählt wie ein Fehlversuch, bis `succeed`).
+    mutating func reserve(_ peer: String, now: Date = Date()) { fail(peer, now: now) }
+
     mutating func succeed(_ peer: String) { failures[peer] = nil }
+
+    /// Freien Platz für eine Passwortprüfung belegen; `false` = gerade zu viele (429).
+    mutating func beginCheck() -> Bool {
+        guard activeChecks < Self.maximumParallelChecks else { return false }
+        activeChecks += 1
+        return true
+    }
+
+    mutating func endCheck() { activeChecks = max(0, activeChecks - 1) }
 }
 
 /// Ablage der Konten im Anmelde-Schlüsselbund (ein JSON-Eintrag).

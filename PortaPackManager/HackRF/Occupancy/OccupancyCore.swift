@@ -456,9 +456,8 @@ final class OccupancyCollector: @unchecked Sendable {
     static let framesPerGroup = 4
 
     let fftSize: Int
-    private let log2n: vDSP_Length
-    private let setup: FFTSetup
-    private let window: [Float]
+    /// Fenster, FFT und Betragsquadrat – gemeinsam mit den anderen Spektren (`HannPowerFFT`).
+    private let fft: HannPowerFFT
     private let lock = NSLock()
     private var accumulator: OccupancyVisitAccumulator?
     private var group: [Float]
@@ -466,15 +465,9 @@ final class OccupancyCollector: @unchecked Sendable {
 
     init(fftSize: Int) {
         self.fftSize = fftSize
-        log2n = vDSP_Length(log2(Double(fftSize)))
-        setup = vDSP_create_fftsetup(log2n, FFTRadix(kFFTRadix2))!
-        var w = [Float](repeating: 0, count: fftSize)
-        vDSP_hann_window(&w, vDSP_Length(fftSize), Int32(vDSP_HANN_NORM))
-        window = w
+        fft = HannPowerFFT(size: fftSize)
         group = [Float](repeating: 0, count: fftSize)
     }
-
-    deinit { vDSP_destroy_fftsetup(setup) }
 
     /// Neuer Besuch: ab jetzt zählen eintreffende Blöcke.
     func begin(mapping: OccupancyMapping, thresholdLinear: Float?) {
@@ -512,15 +505,7 @@ final class OccupancyCollector: @unchecked Sendable {
                 let p = base + f * 2 * n
                 vDSP_vflt8(p, 2, &re, 1, vDSP_Length(n))
                 vDSP_vflt8(p + 1, 2, &im, 1, vDSP_Length(n))
-                vDSP_vmul(re, 1, window, 1, &re, 1, vDSP_Length(n))
-                vDSP_vmul(im, 1, window, 1, &im, 1, vDSP_Length(n))
-                re.withUnsafeMutableBufferPointer { r in
-                    im.withUnsafeMutableBufferPointer { i in
-                        var split = DSPSplitComplex(realp: r.baseAddress!, imagp: i.baseAddress!)
-                        vDSP_fft_zip(setup, &split, 1, log2n, FFTDirection(kFFTDirection_Forward))
-                        vDSP_zvmags(&split, 1, &power, 1, vDSP_Length(n))
-                    }
-                }
+                fft.power(&re, &im, into: &power)
                 lock.withLock {
                     guard accumulator != nil else { return }
                     vDSP_vadd(group, 1, power, 1, &group, 1, vDSP_Length(n))

@@ -387,6 +387,43 @@ struct ParserFuzzTests {
         }
     }
 
+    @Test("APRS: „inf“, „nan“ und „1e9999“ in Kurs, Tempo, Höhe und Position – auch im Fernzugriff kein Absturz")
+    @MainActor
+    func aprsNonFiniteNumbers() {
+        let infos = [
+            "!5330.00N/00950.00E>inf/inf", "!5330.00N/00950.00E>nan/nan", "!5330.00N/00950.00E>1e9/1e9",
+            "!5330.00N/00950.00E>-12/+12", "!5330.00N/00950.00E>090/0x1", "!5330.00N/00950.00E>.../...",
+            "!5330.00N/00950.00E>090/010/A=1e9999", "!5330.00N/00950.00E>/A=inf000", "!5330.00N/00950.00E>/A=nan000",
+            "!5330.00N/00950.00E>/A=-00123", "!5330.00N/00950.00E>/A=+00123", "!53inf.0N/00950.00E>", "!001e999N/00950.00E>",
+            "!5330.00N/009nan.0E>", "!53 0.  N/00950.00E>inf/inf", "=5330.00N/00950.00E_inf/nang005t-05h99b1e999",
+            ";OBJEKT   *111111z5330.00N/00950.00E>inf/inf",
+        ]
+        var tracker = APRSStationTracker()
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        for (n, info) in infos.enumerated() {
+            guard let packet = APRSPacket.parse(tnc2: "DL\(n)ABC>APRS,WIDE1-1:" + info) else { continue }
+            for value in [packet.courseDegrees, packet.speedKnots, packet.altitudeMeters, packet.latitude, packet.longitude] {
+                if let value { #expect(value.isFinite, "\(info)") }
+            }
+            tracker.ingest(packet, at: now)
+        }
+        // Gültige Werte bleiben erhalten.
+        let ok = APRSPacket.parse(tnc2: "DL1ABC>APRS:!5330.00N/00950.00E>090/010/A=-00123")
+        #expect(ok?.courseDegrees == 90)
+        #expect(ok?.speedKnots == 10)
+        #expect(ok.flatMap(\.altitudeMeters).map { ($0 / 0.3048).rounded() } == -123)
+        _ = RemoteAPRSAPI.stations(tracker.sorted, home: [53.5, 9.9], selected: tracker.sorted.first?.id)
+        // Zweite Sicherung: auch ein Paket, das am Decoder vorbei NaN/∞ trägt, übersteht die Liste.
+        var bad = APRSPacket(source: "DL9BAD", destination: "APRS", path: "", raw: "DL9BAD>APRS:!x")
+        bad.latitude = 53.5; bad.longitude = 9.9
+        bad.courseDegrees = .nan; bad.speedKnots = .infinity; bad.altitudeMeters = -.infinity
+        let station = APRSStation(id: "DL9BAD", last: bad, latitude: 53.5, longitude: 9.9)
+        let out = RemoteAPRSAPI.stations([station], home: [53.5, 9.9], selected: "DL9BAD")
+        #expect(out.first?.course == nil && out.first?.speedKmh == nil && out.first?.altitude == nil)
+        #expect(RemoteAPRSAPI.finiteInt(1e300) == nil)
+        #expect(RemoteAPRSAPI.finiteInt(12.6) == 13)
+    }
+
     @Test("Radiosonden RS41 und Funkruf: Zufallsrahmen stürzen nicht ab")
     func sondeAndPager() {
         var rng = Self.rng(12)

@@ -166,8 +166,14 @@ final class SensorModel {
         running = false
     }
 
+    /// Ohne eigenen Empfang nur merken – sonst verstellte die Bandwahl den
+    /// Strom einer anderen Seite (Gerätebesitz, Review 01.11.2026).
     func tune(to mhz: Double) {
         frequencyMHz = max(1, min(6000, mhz))
+        guard running, device?.isReceiving(for: self) == true else {
+            shared.lock.withLock { shared.frequencyMHz = frequencyMHz }
+            return
+        }
         do { try retune() } catch { self.error = error.localizedDescription }
     }
 
@@ -185,7 +191,9 @@ final class SensorModel {
         try device.setAntennaPower(antennaPower)
     }
 
+    /// Nur am eigenen, laufenden Strom (Gerätebesitz); sonst gelten die Werte beim nächsten Start.
     func applyGainsQuietly() {
+        guard running, device?.isReceiving(for: self) == true else { return }
         do { try applyGains() } catch { self.error = error.localizedDescription }
     }
 

@@ -307,6 +307,9 @@ struct RadioView: View {
                 model.select(mode: mode, bandwidthHz: favorite.bandwidthHz.map(Double.init))
                 model.stepKHz = favorite.stepKHz ?? mode.defaultStepKHz
             }
+            // Läuft das Radio nicht (oder hat jemand anderes das Gerät), merkt
+            // `tune` nur die Frequenz – lehnt der Nutzer die Übernahme ab, bleibt
+            // der fremde Strom unberührt; `start` stimmt sonst darauf ab.
             model.tune(to: mhz)
             if !model.running { ReceiverStore.shared.requestStart(model, session: session) { device in model.start(on: device) } }
         } label: {

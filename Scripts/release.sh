@@ -15,6 +15,9 @@
 # - Config/Signing.local.xcconfig mit DEVELOPMENT_TEAM
 # - notarytool-Profil im Schlüsselbund, Name in NOTARY_PROFILE
 #   (Standard: portapack-notarisierung). Anlegen siehe ~/Documents/Codex/CLAUDE.md.
+#   Fehlt es (oder ist der Schlüsselbund für den Aufrufer nicht lesbar), nimmt
+#   das Skript den App-Store-Connect-API-Schlüssel NOTARY_KEY_ID (Standard
+#   R3LN828BQJ) aus ~/.appstoreconnect/private_keys, Issuer-ID daneben in `issuerid`.
 #
 # Kein -allowProvisioningUpdates, kein -exportArchive: beides spricht mit Apple
 # und hat den Xcode-Account abgemeldet. Gebaut wird außerhalb von ~/Documents
@@ -29,6 +32,8 @@ DERIVED="$CACHE/DerivedData-Release"
 OUT="$CACHE/Release"
 IDENTITY="${PORTAPACK_IDENTITY:-Developer ID Application}"
 NOTARY_PROFILE="${NOTARY_PROFILE:-portapack-notarisierung}"
+NOTARY_KEY_ID="${NOTARY_KEY_ID:-R3LN828BQJ}"
+ASC_DIR="$HOME/.appstoreconnect"
 
 DRY=0
 TESTS=1
@@ -46,9 +51,17 @@ fail() { echo "✗ $*" >&2; exit 1; }
 
 [[ -f Config/Signing.local.xcconfig ]] || fail "Config/Signing.local.xcconfig fehlt (Vorlage: .example)."
 [[ "$(security find-identity -v -p codesigning)" == *"\"$IDENTITY"* ]] || fail "Keine Signieridentität „$IDENTITY“ im Schlüsselbund."
+NOTARY_AUTH=()
 if (( ! DRY )); then
-    xcrun notarytool history --keychain-profile "$NOTARY_PROFILE" >/dev/null 2>&1 \
-        || fail "notarytool-Profil „$NOTARY_PROFILE“ fehlt – anlegen mit: xcrun notarytool store-credentials \"$NOTARY_PROFILE\" --apple-id … --team-id … --password <app-spezifisch>"
+    if xcrun notarytool history --keychain-profile "$NOTARY_PROFILE" >/dev/null 2>&1; then
+        NOTARY_AUTH=(--keychain-profile "$NOTARY_PROFILE")
+    elif [[ -f "$ASC_DIR/private_keys/AuthKey_$NOTARY_KEY_ID.p8" && -f "$ASC_DIR/private_keys/issuerid" ]]; then
+        NOTARY_AUTH=(--key "$ASC_DIR/private_keys/AuthKey_$NOTARY_KEY_ID.p8" --key-id "$NOTARY_KEY_ID"
+                     --issuer "$(tr -d '[:space:]' < "$ASC_DIR/private_keys/issuerid")")
+        echo "› notarytool-Profil „$NOTARY_PROFILE“ nicht lesbar – notarisiere mit API-Schlüssel $NOTARY_KEY_ID"
+    else
+        fail "Weder notarytool-Profil „$NOTARY_PROFILE“ noch API-Schlüssel $NOTARY_KEY_ID – Profil anlegen mit: xcrun notarytool store-credentials \"$NOTARY_PROFILE\" --apple-id … --team-id … --password <app-spezifisch>"
+    fi
 fi
 [[ -z "$(git status --porcelain)" ]] || echo "! Arbeitskopie hat ungesicherte Änderungen – die App enthält sie."
 
@@ -112,8 +125,8 @@ if (( ! DRY )); then
     echo "› Notarisieren (App)"
     ZIP="$OUT/$APP_NAME-$VERSION-notarize.zip"
     ditto -c -k --keepParent "$APP" "$ZIP"
-    xcrun notarytool submit "$ZIP" --keychain-profile "$NOTARY_PROFILE" --wait | tee "$OUT/notary-app.log"
-    grep -q "status: Accepted" "$OUT/notary-app.log" || fail "Notarisierung abgelehnt – Bericht: xcrun notarytool log <id> --keychain-profile $NOTARY_PROFILE"
+    xcrun notarytool submit "$ZIP" "${NOTARY_AUTH[@]}" --wait | tee "$OUT/notary-app.log"
+    grep -q "status: Accepted" "$OUT/notary-app.log" || fail "Notarisierung abgelehnt – Bericht: xcrun notarytool log <id> (Anmeldung wie oben)"
     rm -f "$ZIP"
     xcrun stapler staple "$APP"
     xattr -cr "$APP"
@@ -125,7 +138,7 @@ codesign --sign "$IDENTITY" --timestamp "$DMG"
 
 if (( ! DRY )); then
     echo "› Notarisieren (Disk-Image)"
-    xcrun notarytool submit "$DMG" --keychain-profile "$NOTARY_PROFILE" --wait | tee "$OUT/notary-dmg.log"
+    xcrun notarytool submit "$DMG" "${NOTARY_AUTH[@]}" --wait | tee "$OUT/notary-dmg.log"
     grep -q "status: Accepted" "$OUT/notary-dmg.log" || fail "Notarisierung des Disk-Images abgelehnt."
     xcrun stapler staple "$DMG"
     echo "› Gatekeeper-Prüfung"

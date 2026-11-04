@@ -14,6 +14,10 @@ struct ADSBView: View {
     @AppStorage("homeLon") private var homeLon = 0.0
     @State private var showTrails = true
     @AppStorage("adsbShowAirports") private var showAirports = true
+    /// Tabelle nur mit Kontakt der letzten n Minuten (15/30/60/180); Wunsch
+    /// 03.11.2026 – nach Stunden stand die Liste voller alter Flüge. Länger als
+    /// 3 h hält das Model ohnehin nichts (`AircraftTracker.keepSeconds`).
+    @AppStorage("adsbListMinutes") private var listMinutes = 30
     private var database: AircraftDatabase { .shared }
     private var airportDatabase: AirportDatabase { .shared }
     private var routes: FlightRouteLookup { .shared }
@@ -41,7 +45,9 @@ struct ADSBView: View {
             }
             .onAppear {
                 model.setReceiver(home); database.loadIfNeeded(); takeRequestedAircraft()
-                if showAirports { airportDatabase.loadIfNeeded() }
+                // Auch bei ausgeschalteten Flugplätzen lesen – sonst stand unter „Daten“
+                // „nicht geladen“, obwohl die Liste längst auf dem Mac liegt (03.11.2026).
+                airportDatabase.loadIfNeeded()
             }
             .onChange(of: showAirports) { _, on in if on { airportDatabase.loadIfNeeded() } }
             .onChange(of: AppNavigation.shared.aircraft) { _, _ in takeRequestedAircraft() }
@@ -57,14 +63,31 @@ struct ADSBView: View {
         if model.aircraft.contains(where: { $0.icao == icao }) { selection = icao }
     }
 
+    /// Was die Tabelle zeigt (Zeitgrenze `listMinutes`).
+    private var listed: [Aircraft] {
+        let since = Date().addingTimeInterval(-Double(listMinutes) * 60)
+        return model.aircraft.filter { $0.lastSeen >= since }
+    }
+
     private var positioned: [Aircraft] {
-        model.aircraft.filter { $0.latitude != nil && $0.longitude != nil }
+        listed.filter { $0.latitude != nil && $0.longitude != nil }
     }
 
     private var map: some View {
-        ADSBMapView(planes: model.mapAircraft, home: home, showTrails: showTrails, showAirports: showAirports,
+        ADSBMapView(planes: mapPlanes, home: home, showTrails: showTrails, showAirports: showAirports,
                     running: model.running, selected: selectedInfo, selection: $selection)
             .equatable()
+    }
+
+    /// Die Karte zeigt nur Kontakte der letzten 15 min – ein älteres, in der
+    /// Tabelle ausgewähltes Flugzeug kommt grau an seiner letzten Position dazu,
+    /// sonst gab es kein Ziel zum Hinspringen (Fund 03.11.2026).
+    private var mapPlanes: [MapAircraft] {
+        guard let selection, !model.mapAircraft.contains(where: { $0.id == selection }),
+              let plane = model.aircraft.first(where: { $0.id == selection }),
+              let old = MapAircraft(plane, now: plane.lastSeen.addingTimeInterval(MapAircraft.staleSeconds + 1))
+        else { return model.mapAircraft }
+        return model.mapAircraft + [old]
     }
 
     /// Steckbrief des ausgewählten Flugzeugs für die Karte.
@@ -148,7 +171,7 @@ struct ADSBView: View {
         MainActor.assumeIsolated { FlightRouteLookup.shared.route(for: p.callsign)?.codesText } })
 
     private var table: some View {
-        Table(model.aircraft.sorted(by: order), selection: $selection, sortOrder: $order) {
+        Table(listed.sorted(by: order, current: [byDistance]), selection: $selection, sortOrder: $order) {
             Group {
                 TableColumn("ICAO", sortUsing: Self.byICAO) { (p: Aircraft) in Text(p.icaoHex).font(.body.monospaced()) }.width(70)
                 TableColumn("Kennung", sortUsing: Self.byCallsign) { (p: Aircraft) in Text(p.callsign ?? "–").font(.body.monospaced()) }.width(80)
@@ -226,7 +249,7 @@ struct ADSBView: View {
                 ReceiverControls(model: model, device: session.hackRF)
             }
             Section(PanelSection.status) {
-                LabeledContent("Flugzeuge", value: "\(model.aircraft.count)")
+                LabeledContent("Flugzeuge", value: "\(listed.count)")
                 LabeledContent("Mit Position", value: "\(positioned.count)")
                 if let maxRange = maxRangeKm {
                     LabeledContent("Weitestes Flugzeug", value: metric ? String(format: "%.1f km", maxRange)
@@ -245,7 +268,7 @@ struct ADSBView: View {
                 // Einstellungen weit nach unten.
                 ForEach(Array(model.log.prefix(logExpanded ? 30 : 5).enumerated()), id: \.offset) { _, message in
                     VStack(alignment: .leading, spacing: 1) {
-                        Text("\(message.icaoHex) · TC \(message.typeCode)").font(.caption.weight(.medium))
+                        Text(message.typeCode > 0 ? "\(message.icaoHex) · TC \(message.typeCode)" : "\(message.icaoHex) · DF \(message.downlinkFormat)").font(.caption.weight(.medium))
                         Text(message.rawHex).font(.caption2.monospaced()).foregroundStyle(.secondary).textSelection(.enabled)
                     }
                 }
@@ -255,6 +278,14 @@ struct ADSBView: View {
             Section(PanelSection.anzeige) {
                 Toggle("Metrische Einheiten", isOn: $metric)
                 Toggle("Flugspuren zeigen", isOn: $showTrails)
+                Picker("Liste zeigt", selection: $listMinutes) {
+                    Text(verbatim: "15 min").tag(15)
+                    Text(verbatim: "30 min").tag(30)
+                    Text(verbatim: "1 h").tag(60)
+                    Text(verbatim: "3 h").tag(180)
+                }
+                .onAppear { if ![15, 30, 60, 180].contains(listMinutes) { listMinutes = 180 } }
+                .help("Flugzeuge ohne Meldung seit dieser Zeit verschwinden aus der Tabelle. Im Archiv bleiben sie; auf der Karte stehen sie höchstens 15 Minuten.")
                 Toggle("Flugplätze zeigen", isOn: $showAirports)
                     .help("Flughäfen und Flugplätze im sichtbaren Ausschnitt; Hubschrauberlandeplätze erst bei größerem Zoom.")
                 if showAirports, airportDatabase.airports.isEmpty, !airportDatabase.loading {
@@ -404,9 +435,19 @@ struct ADSBMapView: View, Equatable {
     @Binding var selection: Aircraft.ID?
     /// Angeklickter Flugplatz (Infokarte); schließt sich mit einer Flugzeugauswahl.
     @State private var airport: Airport?
+    /// Infokarte zugeklappt – das Flugzeug bleibt ausgewählt (Spur, Mitte).
+    /// Ein Klick auf ein Flugzeug oder eine neue Auswahl öffnet sie wieder.
+    @State private var cardHidden = false
+    /// Die Karte führt dem ausgewählten Flugzeug nach, bis der Nutzer sie
+    /// verschiebt oder „Alle Flugzeuge zeigen“ wählt.
+    @State private var tracking = false
 
     @State private var map = MapController()
     @State private var pendingCenter: Aircraft.ID?
+    /// Flugplätze für den ruhenden Ausschnitt – nur neu gesucht, wenn sich
+    /// Ausschnitt, Auswahl oder Datenbank ändern, nicht bei jeder
+    /// Flugzeugaktualisierung (2× je Sekunde, bis zu 72 000 Plätze; Review 01.11.2026).
+    @State private var airportLayer: [MapFeature] = []
 
     nonisolated static func == (a: ADSBMapView, b: ADSBMapView) -> Bool {
         a.planes == b.planes && a.showTrails == b.showTrails && a.showAirports == b.showAirports && a.running == b.running
@@ -419,20 +460,27 @@ struct ADSBMapView: View, Equatable {
                    options: MapOptions(fitMaxZoom: 10, center: home.map(MapPoint.init) ?? MapPoint(51, 10), zoom: home == nil ? 5 : 8),
                    onSelect: select)
             .overlay {
-                if let selected {
-                    AircraftInfoCard(info: selected, controller: map) { selection = nil }
+                if let selected, !cardHidden {
+                    AircraftInfoCard(info: selected, controller: map) { cardHidden = true }
                 } else if showAirports, let airport {
                     AirportInfoCard(airport: airport, controller: map) { self.airport = nil }
                 }
             }
             .onChange(of: selection) { _, id in
                 if id != nil { airport = nil }
+                cardHidden = false
                 centerOnSelection(id)
             }
             .onChange(of: pendingCoordinateKey) { _, _ in
                 // Position kam erst nach dem Anklicken an → jetzt nachholen.
                 if let pendingCenter, center(on: pendingCenter) { self.pendingCenter = nil }
             }
+            .onChange(of: selectedCoordinateKey) { _, _ in
+                if tracking, pendingCenter == nil { center(on: selection) }
+            }
+            .onChange(of: airportKey, initial: true) { _, key in airportLayer = Self.airportFeatures(key) }
+            .onChange(of: map.userPans) { _, _ in tracking = false }
+            .onChange(of: map.following) { _, following in if following { tracking = false } }
             .overlay(alignment: .topLeading) {
                 if planes.isEmpty {
                     Text(running ? "Noch keine Position empfangen" : "Empfang starten")
@@ -444,27 +492,46 @@ struct ADSBMapView: View, Equatable {
             .overlay(alignment: .bottomLeading) {
                 if !map.following, !planes.isEmpty {
                     Button("Alle Flugzeuge zeigen", systemImage: "scope") { map.showAll() }
+                        .buttonStyle(.mapOverlay)
                         .padding(10)
                 }
             }
     }
 
     private var features: [MapFeature] {
-        var list = airportFeatures
+        var list = showAirports ? airportLayer : []
         if let home { list.append(.home(home)) }
         list += MapFeature.targets(planes, showTrails: showTrails, selection: selection, prefix: "pl:")
         return list
     }
 
+    /// Wovon die Flugplätze abhängen; `count` ändert sich, sobald die Datenbank geladen ist.
+    struct AirportKey: Equatable {
+        var bounds: AirportFilter.Bounds?
+        var selected: Airport.ID?
+        var count: Int
+    }
+
+    private var airportKey: AirportKey {
+        guard showAirports else { return AirportKey(bounds: nil, selected: nil, count: 0) }
+        return AirportKey(bounds: map.settledViewport?.bounds, selected: airport?.id,
+                          count: AirportDatabase.shared.airports.count)
+    }
+
     /// Flugplätze im zuletzt ruhenden Ausschnitt (nicht bei jedem Bild beim Ziehen).
-    private var airportFeatures: [MapFeature] {
-        guard showAirports, let bounds = map.settledViewport?.bounds else { return [] }
+    static func airportFeatures(_ key: AirportKey) -> [MapFeature] {
+        guard let bounds = key.bounds, key.count > 0 else { return [] }
         return MapFeature.airports(AirportFilter.visible(AirportDatabase.shared.airports, in: bounds),
-                                   selected: airport?.id, labelAll: bounds.latSpan <= 1.5)
+                                   selected: key.selected, labelAll: bounds.latSpan <= 1.5)
     }
 
     /// Position des vorgemerkten Flugzeugs als vergleichbarer Schlüssel –
     /// wechselt von "" auf Koordinaten, sobald die Position eintrifft.
+    private var selectedCoordinateKey: String {
+        guard let selection, let plane = planes.first(where: { $0.id == selection }) else { return "" }
+        return "\(plane.coordinate.latitude),\(plane.coordinate.longitude)"
+    }
+
     private var pendingCoordinateKey: String {
         guard let pendingCenter, let plane = planes.first(where: { $0.id == pendingCenter }) else { return "" }
         return "\(plane.coordinate.latitude),\(plane.coordinate.longitude)"
@@ -473,7 +540,9 @@ struct ADSBMapView: View, Equatable {
     /// Klick auf ein Flugzeug oder einen Flugplatz; ins Leere hebt die Auswahl auf.
     private func select(_ key: String?) {
         if let key, key.hasPrefix("pl:"), let id = UInt32(key.dropFirst(3)) {
+            if selection == id { centerOnSelection(id) }   // erneuter Klick: wieder nachführen
             selection = id
+            cardHidden = false
         } else if let key, key.hasPrefix("ap:") {
             let ident = String(key.dropFirst(3))
             selection = nil
@@ -486,6 +555,7 @@ struct ADSBMapView: View, Equatable {
 
     /// Reaktion auf eine Auswahl: sofort hinspringen, sonst vormerken.
     private func centerOnSelection(_ id: Aircraft.ID?) {
+        tracking = id != nil
         pendingCenter = id
         if center(on: id) { pendingCenter = nil }
     }
@@ -495,7 +565,7 @@ struct ADSBMapView: View, Equatable {
     @discardableResult
     private func center(on id: Aircraft.ID?) -> Bool {
         guard let id, let plane = planes.first(where: { $0.id == id }) else { return false }
-        map.center(on: plane.coordinate)
+        map.center(on: plane.coordinate, pin: tracking)
         return true
     }
 }

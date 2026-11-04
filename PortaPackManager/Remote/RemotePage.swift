@@ -669,6 +669,9 @@ enum RemotePage {
       '<path d="' + d + '" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round"/>';
     const SYM = {
       plane: '<path d="M12 1.5c.9 0 1.5.9 1.5 2V9l8 4.6v2.2l-8-2.4v5l2.6 2v1.7L12 21.2l-4.1.9v-1.7l2.6-2v-5l-8 2.4v-2.2l8-4.6V3.5c0-1.1.6-2 1.5-2z"' + EDGE + '/>',
+      helicopter: '<ellipse cx="12" cy="9.5" rx="3.4" ry="4.6"' + EDGE + '/><path d="M11.1 13.5h1.8v5.6h2.6v1.6h-2.6v1.3h-1.8v-1.3H8.5v-1.6h2.6z"' + EDGE + '/><path d="M4.6.9L20.6 16.9L19.4 18.1L3.4 2.1zM20.6 2.1L4.6 18.1L3.4 16.9L19.4.9z"' + EDGE + '/>',
+      planeLight: '<path d="M11 3.2c0-.8.4-1.2 1-1.2s1 .4 1 1.2V7.5h9.5v2.6H13l-.3 7.9h3.3v2.2h-3.4l-.6 1.6-.6-1.6H8v-2.2h3.3L11 10.1H1.5V7.5H11z"' + EDGE + '/>',
+      glider: '<path d="M11.4 4c0-.7.3-1 .6-1s.6.3.6 1l.1 5.5h10.3v1.5H12.7l-.2 7.7h2.9v1.5h-2.9l-.5 1.3-.5-1.3H8.6v-1.5h2.9l-.2-7.7H1v-1.5h10.3z"' + EDGE + '/>',
       hull: '<path d="M12 1.5c2.6 2.4 4.2 5.3 4.2 8.8V21.3a1.2 1.2 0 0 1-1.2 1.2H9a1.2 1.2 0 0 1-1.2-1.2V10.3c0-3.5 1.6-6.4 4.2-8.8z"' + EDGE + ' stroke-width="1.6"/>',
       dot: '<circle cx="12" cy="12" r="7"' + EDGE + '/>',
       antenna: '<circle cx="12" cy="12" r="3.1"' + EDGE + '/>' + ARCS('M8.2 8a5.5 5.5 0 0 0 0 8M15.8 8a5.5 5.5 0 0 1 0 8M5 5a9.8 9.8 0 0 0 0 14M19 5a9.8 9.8 0 0 1 0 14'),
@@ -696,7 +699,11 @@ enum RemotePage {
     }
     function icon(kind, it, color, label, stale) {
       let name, size, rot = 0;
-      if (kind === 'adsb') { name = 'plane'; size = 26; rot = it.track ?? 90; }
+      if (kind === 'adsb') {
+        // Art und Größe wie auf dem Mac (AircraftClass): Großraum größer, Kleinflugzeug kleiner.
+        name = { helicopter: 'helicopter', light: 'planeLight', glider: 'glider' }[it.kind] || 'plane';
+        size = it.kind === 'heavy' ? 32 : it.kind === 'light' ? 21 : 26; rot = it.track ?? 90;
+      }
       else if (it.fixed) { name = it.fixed === 'base' ? 'antenna' : 'beacon'; size = 20; }
       else if (it.heading == null) { name = 'dot'; size = 14; }
       else { name = 'hull'; size = 26; rot = it.heading; }
@@ -881,8 +888,12 @@ enum RemotePage {
     }
 
     function select(key, center) {
-      sel = key; centered = null; cardHidden = false; render(); poll(true);
-      if (center) { const it = items().find(i => tab + ':' + i.id === key); if (it && it.lat != null) { centered = [it.lat, it.lon]; centerVisible(centered); } }
+      sel = key; centered = null; cardHidden = false; render();
+      const polled = poll(true);
+      const focus = () => { const it = items().find(i => tab + ':' + i.id === key); if (it && it.lat != null) { centered = [it.lat, it.lon]; centerVisible(centered); return true; } return false; };
+      // Aus einem anderen Reiter (ACARS „Auf der Karte zeigen“) fehlen die Flugzeuge
+      // noch – dann nach dem Abruf mit `tab` einmal nachholen.
+      if (center && !focus()) polled.then(() => { if (sel === key && !centered) focus(); });
     }
 
     // ---------- Digitalradio ----------
@@ -1016,7 +1027,8 @@ enum RemotePage {
           .bindTooltip(t('Heimatstandort'), { className: 'sp-tip' }).addTo(g);
         bounds.push([d.home.lat, d.home.lon]);
       }
-      for (const s of d.live) {
+      // Wie die Liste: Sonden ohne Meldung seit 5 min stehen im Archiv, nicht live.
+      for (const s of d.live.filter(s => s.age < 300)) {
         if (s.track.length > 1) {
           const tp = s.track.map(q => [q[0], q[1]]);
           L.polyline(tp, { color: accent, weight: 3, opacity: 0.8 }).addTo(g);
@@ -1170,7 +1182,8 @@ enum RemotePage {
     // Überflug der Liste, auch ein laufender oder gar nicht geplanter (Fund 30.10.2026).
     function wxNext() {
       const now = Date.now();
-      const pass = (plan.passes || []).find(x => x.planned && x.start > now);
+      const pass = (plan.passes || []).concat(plan.amateurPasses || []).filter(x => x.planned && x.start > now)
+        .sort((a, b) => a.start - b.start)[0];
       // Ausgelassene Fenster zählen nicht; ein offenes, das auf eine Sonde wartet, sagt es (Fund 31.10.2026).
       const win = plan.autoSonde ? (plan.sondeWindows || []).find(x => x.end > now && !x.skipped) : null;
       if (win && (!pass || win.start <= pass.start)) {
@@ -1181,7 +1194,10 @@ enum RemotePage {
       return plan.autoMeteor || plan.autoAmateur || plan.autoSonde ? tt('Kein Termin geplant') : tt('Empfangsplan aus');
     }
     function renderBalloons(p) {
-      const live = p.balloons || [], flights = p.flights || [];
+      // „live“ nur, was in den letzten 5 min zu hören war (wie der Nachlauf des
+      // Plans) – der Empfänger behält Sonden nach Fensterende in der Liste; ältere
+      // stehen unten im Archiv (Nutzerwunsch 02.11.2026).
+      const flights = p.flights || [], live = (p.balloons || []).filter(b => b.age < 300);
       queueMicrotask(sondeMount);
       let body = '<div class="sp-slot" style="min-height:' + sondeSlotHeight() + 'px"></div>';
       if (live.length) body += live.map(b => {
@@ -1202,10 +1218,7 @@ enum RemotePage {
           (f.peak != null ? ' · ' + tt('Gipfel {0} km', (f.peak / 1000).toFixed(1)) : '') +
           (f.minTemperature != null ? ' · ' + tt('bis {0} °C', Math.round(f.minTemperature)) : '') +
           (f.distanceKm != null ? ' · ' + tt('{0} km Strecke', f.distanceKm) : '') + ' · ' + tt('{0} Meldungen', f.samples)) + '</div></div></div>').join('');
-      // „live“ nur, was in den letzten 5 min zu hören war (wie der Nachlauf des
-      // Plans) – der Empfänger behält Sonden nach Fensterende in der Liste.
-      const heard = live.filter(b => b.age < 300).length;
-      return wxBox('balloons', t('Wetterballons'), body, heard ? t('{0} live', heard) : (flights.length || null));
+      return wxBox('balloons', t('Wetterballons'), body, live.length ? t('{0} live', live.length) : (flights.length || null));
     }
     // Termine (Überflüge, Sondenfenster): Antippen klappt Details auf, dort lässt sich
     // der Termin auslassen bzw. wieder einplanen – wie der Schalter am Mac (31.10.2026).
@@ -1260,21 +1273,30 @@ enum RemotePage {
       let passes = '';
       if (!p.homeSet) passes += '<div class="empty">' + t('Für die Vorhersage fehlt der Standort in der App.') + '</div>';
       else if (!p.passes.length) passes += '<div class="empty">' + esc(p.tleError || t('Bahndaten werden geladen …')) + '</div>';
-      passes += p.passes.map(x => '<div class="item job' + (jobOpen.has(x.id) ? ' open' : '') + (x.skipped ? ' dim' : '') + '" data-job="' + esc(x.id) + '"><span>' + (x.daylight ? '☀︎' : '☾') + '</span><div class="grow"><div>' + esc(x.satellite) + '</div>' +
+      // Ein Überflug als Zeile mit aufklappbaren Details (METEOR und ISS/Amateurfunk).
+      const passRow = (x, minEl, light) => '<div class="item job' + (jobOpen.has(x.id) ? ' open' : '') + (x.skipped ? ' dim' : '') + '" data-job="' + esc(x.id) + '"><span>' + (light ? (x.daylight ? '☀︎' : '☾') : '📡') + '</span><div class="grow"><div>' + esc(x.satellite) + '</div>' +
         '<div class="sub">' + esc(fmtDay(x.start) + ' · ' + fmtTime(x.start) + '–' + fmtTime(x.end) + ' · ' + x.from + ' → ' + x.to) + '</div></div>' +
         '<span class="el">' + x.maxElevation + '°</span>' + jobMark(x, x.planned) + '<span class="chev">›</span></div>' +
         (jobOpen.has(x.id) ? jobDetails(x, [
-          [t('Höchster Stand'), x.maxElevation + '°'], [t('Richtung'), x.from + ' → ' + x.to],
-          [t('Licht'), x.daylight ? t('Tag (sichtbares Bild)') : t('Nacht (Infrarot)')]],
-          x.wanted ? '' : tt('Unter der Mindesthöhe von {0}° – wird nicht aufgenommen.', p.minElevation), x.wanted || x.skipped) : '')).join('');
-      html += wxBox('passes', t('Überflüge (nächste 48 h)'), passes, p.passes.length || null);
+          [t('Höchster Stand'), x.maxElevation + '°'], [t('Richtung'), x.from + ' → ' + x.to]].concat(light ? [
+          [t('Licht'), x.daylight ? t('Tag (sichtbares Bild)') : t('Nacht (Infrarot)')]] : []),
+          x.wanted ? '' : tt('Unter der Mindesthöhe von {0}° – wird nicht aufgenommen.', minEl), x.wanted || x.skipped) : '');
+      passes += p.passes.map(x => passRow(x, p.minElevation, true)).join('');
+      // METEOR wie ISS/Amateurfunk nur bei eingeschalteter Automatik (Nutzerwunsch 02.11.2026).
+      if (p.autoMeteor) html += wxBox('passes', t('Überflüge (nächste 48 h)'), passes, p.passes.length || null);
+      // ISS und Amateurfunksatelliten: nur bei eingeschalteter Automatik (sonst plant der Mac nichts).
+      const ham = p.amateurPasses || [];
+      if (p.autoAmateur) html += wxBox('amateur', t('ISS & Amateurfunk (nächste 48 h)'),
+        ham.length ? ham.map(x => passRow(x, p.amateurMinElevation, false)).join('') : '<div class="empty">' + t('Keine Überflüge der gewählten Satelliten.') + '</div>', ham.length || null);
       // Vorhersage gehört zu einem Fenster – dort in den Details, sonst wie bisher unten.
       const fcWin = p.sondeForecastFor != null && p.sondeWindows.some(w => w.start === p.sondeForecastFor) ? p.sondeForecastFor : null;
       const fcList = () => (p.sondeForecast || []).map(f =>
           '<div class="item"><span>' + (f.from ? '✓' : '✗') + '</span><div class="grow"><div>' + esc(f.site + (f.frequency ? ' · ' + f.frequency.toFixed(1) + ' MHz' : '')) + '</div>' +
           '<div class="sub">' + esc((f.from ? tt('in Reichweite {0}–{1}', fmtTime(f.from), fmtTime(f.to)) : tt('nicht in Reichweite')) + ' · ' +
           tt('nächster Punkt {0} km um {1} in {2} km Höhe', f.closestKm, fmtTime(f.closestAt), (f.closestAltitude / 1000).toFixed(1)) + ' · ' + tt('Landung {0} km', f.landingKm)) + '</div></div></div>').join('');
-      html += wxBox('windows', t('Sondenfenster'), (p.sondeWindows.length ? p.sondeWindows.map(w =>
+      // Sondenfenster und -empfang wie die Überflüge nur bei eingeschalteter Automatik
+      // (Nutzerwunsch 02.11.2026); empfängt die Sondenseite gerade, bleibt der Pegel sichtbar.
+      if (p.autoSonde) html += wxBox('windows', t('Sondenfenster'), (p.sondeWindows.length ? p.sondeWindows.map(w =>
         '<div class="item job' + (jobOpen.has(w.id) ? ' open' : '') + (w.skipped ? ' dim' : '') + '" data-job="' + esc(w.id) + '"><span>🎈</span><div class="grow">' + esc(fmtDay(w.start) + ' · ' + fmtTime(w.start) + '–' + fmtTime(w.end)) + '</div>' +
           jobMark(w, p.autoSonde && !w.skipped) + '<span class="chev">›</span></div>' +
         (jobOpen.has(w.id) ? jobDetails(w, [],
@@ -1283,9 +1305,12 @@ enum RemotePage {
           w.start === fcWin && (p.sondeForecast || []).length ? '<div class="sub">' + t('Vorhersage (SondeHub-Bahnrechner):') + '</div>' + fcList()
             : '<div class="sub">' + t('Die Flugvorhersage holt die App kurz vor dem Fenster.') + '</div>') : '')).join('')
         : '<div class="empty">' + t('Keine Startzeiten gewählt.') + '</div>') +
-        (fcWin == null && (p.sondeForecast || []).length ? '<div class="sub" style="margin-top:6px">' + t('Vorhersage (SondeHub-Bahnrechner):') + '</div>' + fcList() : ''), p.sondeWindows.length || null);
+        // Fenster schon vorbei: nur mit Zeitangabe zeigen, sonst wirkt sie wie die
+        // Vorhersage fürs nächste Fenster (Fund 04.11.2026: 05:45-Vorhersage um 08:06).
+        (fcWin == null && p.sondeForecastFor != null && (p.sondeForecast || []).length ? '<div class="sub" style="margin-top:6px">' +
+          tt('Letzte Vorhersage – Fenster {0} · {1} (vorbei):', fmtDay(p.sondeForecastFor), fmtTime(p.sondeForecastFor)) + '</div>' + fcList() : ''), p.sondeWindows.length || null);
       const g = p.sondeGain;
-      if (g) {
+      if (g && (p.autoSonde || g.rms != null)) {
         const clip = g.clipped == null ? '' : ' · ' + tt('{0} % am Anschlag', (g.clipped * 100).toFixed(2));
         html += wxBox('gain', t('Sondenempfang'),
           '<label class="sw"><span>LNA</span><select id="slna">' + [0,8,16,24,32,40].map(v => '<option' + (v === g.lna ? ' selected' : '') + ' value="' + v + '">' + v + ' dB</option>').join('') + '</select></label>' +
@@ -3060,7 +3085,14 @@ enum RemotePage {
     async function poll(once) {
       clearTimeout(timer);
       try {
-        state = await api('/api/state', sel && sel.startsWith(tab) ? { sel } : {});
+        // `tab`: der Mac schickt Flugzeuge, Schiffe und DAB-Sender nur für ihren Reiter
+        // (beim ersten Abruf ohne gemerkten Reiter alles – der Reiter folgt dann dem Modus).
+        const q = tabFromState ? {} : { tab };
+        if (sel && sel.startsWith(tab)) q.sel = sel;
+        const fresh = await api('/api/state', q);
+        // Inzwischen den Reiter gewechselt: dessen eigener Abruf läuft schon.
+        if (q.tab && q.tab !== tab) return;
+        state = fresh;
         if (tabFromState) { tabFromState = false; if (state.mode) tab = state.mode; }
         render();
         // Plan seltener: alle 10 s, solange der Reiter offen ist.

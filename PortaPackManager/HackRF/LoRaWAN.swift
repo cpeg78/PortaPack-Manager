@@ -101,11 +101,15 @@ struct LoRaWANFrame: Sendable, Equatable {
     var mType: MType
     var devAddr: UInt32?
     var fCnt: UInt16?
+    /// Voller 32-Bit-Zähler, mit dem die MIC aufging (obere 16 Bit aus dem
+    /// letzten gültigen Rahmen desselben Geräts fortgeführt).
+    var fullFCnt: UInt32?
     var fPort: UInt8?
     var adr: Bool
     var ack: Bool
     var framePending: Bool
-    /// Entschlüsselte Anwendungsnutzlast, falls Schlüssel passten.
+    /// Entschlüsselte Anwendungsnutzlast – nur bei gültiger MIC (sonst wäre es
+    /// bei gefälschten Rahmen oder falschem Zähler Müll).
     var decrypted: [UInt8]?
     var micValid: Bool?
     var fOpts: [UInt8]
@@ -118,7 +122,7 @@ struct LoRaWANFrame: Sendable, Equatable {
         var parts = [mType.name]
         if let devAddr { parts.append(String(format: "DevAddr %08X", devAddr)) }
         if let devEUI { parts.append(String(format: "DevEUI %016llX", devEUI)) }
-        if let fCnt { parts.append("FCnt \(fCnt)") }
+        if let fCnt { parts.append("FCnt \(fullFCnt ?? UInt32(fCnt))") }
         if let fPort { parts.append("Port \(fPort)") }
         if let decrypted { parts.append("\(decrypted.count) B: " + decrypted.map { String(format: "%02X", $0) }.joined()) }
         else if mType == .unconfirmedUp || mType == .confirmedUp || mType == .unconfirmedDown || mType == .confirmedDown {
@@ -138,8 +142,32 @@ struct LoRaWANSession: Codable, Sendable, Equatable {
 }
 
 enum LoRaWANParser {
+    /// Schlüssel für `counters`: Gerät und Richtung (Auf- und Abwärtszähler sind getrennt).
+    static func counterKey(devAddr: UInt32, uplink: Bool) -> UInt64 {
+        UInt64(devAddr) << 1 | (uplink ? 0 : 1)
+    }
+
+    /// Kandidaten für den vollen Zähler aus den unteren 16 Bit der Luft und dem
+    /// letzten gültigen vollen Zähler: zuerst fortgeführt (bei Überlauf der
+    /// unteren 16 Bit eine Stufe höher), dann dieselbe Stufe (Wiederholung,
+    /// vertauschte Reihenfolge), zuletzt nur 16 Bit (Gerät neu gestartet).
+    static func counterCandidates(low: UInt16, last: UInt32?) -> [UInt32] {
+        let plain = UInt32(low)
+        guard let last else { return [plain] }
+        let same = last & 0xFFFF_0000 | plain
+        var result: [UInt32] = []
+        if same < last, last < 0xFFFF_0000 { result.append(same + 0x1_0000) }
+        result.append(same)
+        if !result.contains(plain) { result.append(plain) }
+        return result
+    }
+
     /// Zerlegt einen PHYPayload und entschlüsselt ihn mit passenden Sitzungen.
-    static func parse(_ phy: [UInt8], sessions: [UInt32: LoRaWANSession]) -> LoRaWANFrame? {
+    /// `counters`: letzter gültiger voller Zähler je Gerät und Richtung
+    /// (`counterKey`) – über die Luft kommen nur die unteren 16 Bit, ab
+    /// FCnt 65 536 ginge die MIC sonst nie mehr auf (Review 01.11.2026).
+    static func parse(_ phy: [UInt8], sessions: [UInt32: LoRaWANSession],
+                      counters: [UInt64: UInt32] = [:]) -> LoRaWANFrame? {
         guard phy.count >= 5, let mType = LoRaWANFrame.MType(rawValue: Int(phy[0] >> 5)) else { return nil }
         if mType == .joinRequest || mType == .rejoinRequest {
             guard phy.count >= 23 else { return nil }
@@ -172,11 +200,17 @@ enum LoRaWANParser {
         }
         frame.fPort = fPort
         if let session = sessions[devAddr] {
-            let fullCnt = UInt32(fCnt)   // nur die unteren 16 Bit bekannt
-            let mic = LoRaWANCrypto.dataMIC(nwkSKey: session.nwkSKey, devAddr: devAddr, fCnt: fullCnt, dir: dir,
-                                            msg: Array(phy[..<micStart]))
-            frame.micValid = mic == Array(phy[micStart...])
-            if let fPort, !frmPayload.isEmpty {
+            let message = Array(phy[..<micStart]), received = Array(phy[micStart...])
+            let last = counters[counterKey(devAddr: devAddr, uplink: mType.isUplink)]
+            let fullCnt = counterCandidates(low: fCnt, last: last).first { candidate in
+                LoRaWANCrypto.dataMIC(nwkSKey: session.nwkSKey, devAddr: devAddr, fCnt: candidate, dir: dir,
+                                      msg: message) == received
+            }
+            frame.micValid = fullCnt != nil
+            frame.fullFCnt = fullCnt
+            // Nur mit gültiger MIC entschlüsseln: Gefälschte Rahmen oder ein
+            // falsch geratener Zähler ergäben sonst Müll als „letzte Nutzlast“.
+            if let fullCnt, let fPort, !frmPayload.isEmpty {
                 let key = fPort == 0 ? session.nwkSKey : session.appSKey
                 frame.decrypted = LoRaWANCrypto.cryptPayload(key: key, devAddr: devAddr, fCnt: fullCnt, dir: dir, frmPayload)
             }

@@ -170,13 +170,7 @@ actor FirmwareInstaller {
 
             // 3. Prüfen
             update(.verifying, 0, remotePath)
-            let expected = MayhemCRC32.checksum(data)
-            let actual = try await device.crc32(remotePath)
-            guard expected == actual else { throw MayhemError.checksumMismatch(expected: expected, actual: actual) }
-            let remoteSize = try await device.fileSize(remotePath)
-            guard remoteSize == data.count else {
-                throw MayhemError.unexpectedResponse(String(localized: "Auf dem Gerät liegen \(remoteSize) statt \(data.count) Bytes – die Übertragung ist unvollständig."))
-            }
+            try await device.verifyUpload(data, at: remotePath)
 
             // 4. Flashen
             update(.flashing, 0, String(localized: "Das Gerät schreibt die Firmware – nicht abstecken!"))
@@ -221,14 +215,28 @@ actor FirmwareInstaller {
     private func installApps(from data: Data, on device: MayhemDevice,
                              update: (InstallProgress.Phase, Double, String) -> Void) async throws {
         let archive = try TarArchive(data: data)
+        guard !archive.apps.isEmpty else { throw MayhemError.unexpectedResponse(String(localized: "Das Paket enthält keine Apps.")) }
+        try await Self.copyApps(of: archive, to: device, update: update)
+    }
+
+    /// Kopiert die Apps eines Pakets nach `/APPS` und prüft jede per CRC und
+    /// Größe – wie Firmware und Datei-Upload. Vorher landeten `.ppma` ungeprüft
+    /// auf der Karte (Review 01.11.2026); die Schleife gab es doppelt, auch im
+    /// Rettungsweg über den HackRF-Modus.
+    /// Läuft in der Isolation des Aufrufers (`#isolation`), damit `update` nicht `@Sendable` sein muss.
+    static func copyApps(of archive: TarArchive, to device: MayhemDevice,
+                         isolation: isolated (any Actor)? = #isolation,
+                         update: (InstallProgress.Phase, Double, String) -> Void) async throws {
         let apps = archive.apps
-        guard !apps.isEmpty else { throw MayhemError.unexpectedResponse(String(localized: "Das Paket enthält keine Apps.")) }
         try await device.makeDirectory("/APPS")
         for (index, entry) in apps.enumerated() {
             try Task.checkCancellation()
             let name = TarArchive.lastComponent(entry.name)
-            update(.installingApps, Double(index) / Double(apps.count), "\(name) (\(index + 1)/\(apps.count))")
-            try await device.upload(try archive.contents(of: entry), to: "/APPS/\(name)") { _, _ in }
+            update(.installingApps, Double(index) / Double(max(apps.count, 1)), "\(name) (\(index + 1)/\(apps.count))")
+            let contents = try archive.contents(of: entry)
+            let path = "/APPS/\(name)"
+            try await device.upload(contents, to: path) { _, _ in }
+            try await device.verifyUpload(contents, at: path)
         }
     }
 

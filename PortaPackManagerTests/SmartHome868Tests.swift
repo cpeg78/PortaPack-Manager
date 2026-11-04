@@ -126,6 +126,76 @@ struct SmartHome868ProtocolTests {
         #expect(frame.values.contains { $0.name == "Durchfluss" && $0.value == 0 })
     }
 
+    @Test("Techem-Heizkostenverteiler: Einheiten, Perioden, Temperaturen (wmbusmeters-Vektoren und eigener Rahmen)")
+    func techemHeatCostAllocator() throws {
+        // wmbusmeters `fhkvdataiii`: Version 0x69 mit Kennbyte 0x11.
+        let v69 = SmartHomeHex.parse("34446850226677116980A0119F27020480048300C408F709143C003D341A2B0B2A0707000000000000062D114457563D71A1850000")!
+        var frame = try #require(WMBus.parse(v69, mode: "T1", keys: [:]))
+        #expect(frame.address == "TCH 11776622")
+        #expect(frame.deviceType == "Techem · Heizkostenverteiler")
+        #expect(frame.values.first { $0.name == "Heizkosten-Einheiten" }?.value == 131)
+        #expect(frame.values.first { $0.name == "Raumtemperatur" }?.value == 22.44)
+        #expect(frame.values.first { $0.name == "Heizkörpertemperatur" }?.value == 25.51)
+        #expect(frame.fields.first { $0.name == "Verbrauch Vorperiode" }?.value == "1026")
+        #expect(frame.fields.first { $0.name == "Vorperiode bis" }?.value.contains("2019") == true)
+        #expect(frame.fields.first { $0.name == "Stand vom" }?.value.contains("2020") == true)
+        #expect(frame.encrypted == false)
+        // Version 0x94, CI 0xA2, Kennbyte 0x0F mit Zwischenbyte vor den Temperaturen.
+        let v94 = SmartHomeHex.parse("33446850341211119480A20F9F292D005024040011BD08380904000000070000000000000000000000000001000000000003140E")!
+        frame = try #require(WMBus.parse(v94, mode: "T1", keys: [:]))
+        #expect(frame.values.first { $0.name == "Heizkosten-Einheiten" }?.value == 4)
+        #expect(frame.values.first { $0.name == "Raumtemperatur" }?.value == 22.37)
+        #expect(frame.values.first { $0.name == "Heizkörpertemperatur" }?.value == 23.6)
+        #expect(frame.fields.first { $0.name == "Verbrauch Vorperiode" }?.value == "45")
+        // Am 03.11.2026 empfangen (Techem 84822684): Vorperiode bis 31.12.2025, Stand 3.11.
+        let own = SmartHomeHex.parse("32446850842682846980A0119F33CA0A3016B90709096B091B7C017C1A000000000000000200020A3D1E494D74A464B0B24D4894")!
+        frame = try #require(WMBus.parse(own, mode: "T1", keys: [:]))
+        #expect(frame.values.first { $0.name == "Heizkosten-Einheiten" }?.value == 1977)
+        #expect(frame.fields.first { $0.name == "Verbrauch Vorperiode" }?.value == "2762")
+        #expect(frame.fields.first { $0.name == "Vorperiode bis" }?.value.contains("2025") == true)
+        #expect(frame.fields.first { $0.name == "Stand vom" }?.value.contains("2026") == true)
+        #expect(frame.values.first { $0.name == "Raumtemperatur" }?.value == 23.13)
+        #expect(frame.values.first { $0.name == "Heizkörpertemperatur" }?.value == 24.11)
+        // Unbekanntes Kennbyte: bleibt „herstellerspezifisch“ mit Rohbytes.
+        var other = v69
+        other[11] = 0x33
+        frame = try #require(WMBus.parse(other, mode: "T1", keys: [:]))
+        #expect(frame.values.isEmpty)
+        #expect(frame.summary.contains("herstellerspezifisch"))
+    }
+
+    @Test("Sicherheitsmodus 7 mit AFL: Schlüsselableitung, Entschlüsselung und MAC (wmbusmeters-Vektor)")
+    func securityMode7() throws {
+        // Engelmann Sensostar, Format B mit CRCs (wmbusmeters tests/test_frame_b_trim.sh):
+        // erwartet 9341 kWh und 1348,631 m³.
+        let raw = SmartHomeHex.parse("C244C5140443054300048C200E900F002C25895E02003B0877D31DA840B17A0E009007100F8FAD4C4E61400DA4F3B1F7E273CC4C5C07F93CD20B237345DB39F9A98F8415E1C4B7A25C86E4C22D05C3352FA7E2E5627031F14643063F1DC8FE2C32459B6F02E4234B447B18E4BFDA8C4DA9B1EDE6CF29D0B2122A3E8B9DEEBEE3E6DBE6617B4E709EC6B595179CB01C2C0BDE6723A345B708652880C114A58DA07C73AD9EB8ACB17FA0A88F19BC84CB1FC56672DE8A9603FD0C05010002FD0B2111F60B")!
+        let stripped = try #require(WMBus.stripFormatB(raw))
+        #expect(stripped.crcOK)
+        let key = SmartHomeHex.parse("622b9656991ff0c1574c0950cf9278d1")!
+        let frame = try #require(WMBus.parse(stripped.data, mode: "C1", keys: ["43054304": key]))
+        #expect(frame.address == "EFE 43054304")
+        #expect(frame.encrypted == false)
+        #expect(frame.fields.first { $0.name == "Nachrichtenzähler" }?.value == "\(0x00025E89)")
+        #expect(frame.fields.first { $0.name == "Entschlüsselt" }?.value.contains("MAC geprüft") == true)
+        let energy = try #require(frame.values.first { $0.name == "Energie" })
+        #expect(energy.value == 9341 && energy.unit == "kWh")
+        let volume = try #require(frame.values.first { $0.name == "Volumen" })
+        #expect(abs(volume.value - 1348.631) < 1e-9)
+        // Falscher Schlüssel: Inhalt beginnt nicht mit 2F 2F.
+        var wrongKey = key
+        wrongKey[0] ^= 0x01
+        let wrong = try #require(WMBus.parse(stripped.data, mode: "C1", keys: ["43054304": wrongKey]))
+        #expect(wrong.encrypted && wrong.summary.contains("passt nicht"))
+        // Diehl-Wasserzähler, am 03.11.2026 empfangen, ohne Schlüssel: AFL wird
+        // trotzdem gelesen (Zähler 0x00F1EE90), der Rest bleibt verschlüsselt.
+        let diehl = SmartHomeHex.parse("6344A5115061826570078C007A900F002C2590EEF10032361B3B9FD39F0A7A90004007102C202E456122DA31090AC2D6157505238" + "09A6BBE131DFB58B8A01BA1FA846705B2C067A3D412CBCE1B5A9A0FA7AF873B45B51062C6C2E7875D89FE2895629C7C")!
+        let none = try #require(WMBus.parse(diehl, mode: "T1", keys: [:]))
+        #expect(none.address == "DME 65826150")
+        #expect(none.encrypted && none.summary.contains("Modus 7") && none.summary.contains("fehlt"))
+        #expect(none.fields.first { $0.name == "Nachrichtenzähler" }?.value == "15855248")
+        #expect(none.fields.first { $0.name == "MAC" }?.value == "32 36 1B 3B 9F D3 9F 0A")
+    }
+
     @Test("Herstellerkürzel aus dem M-Feld")
     func manufacturerCodes() {
         #expect(WMBus.manufacturer(0x1593) == "ELS")
@@ -306,6 +376,17 @@ struct SmartHome868ProtocolTests {
         let status = try #require(Homematic.parse(enc: Homematic.scramble(SmartHomeTestFrames.homematic(
             counter: 2, flags: 0xA0, type: 0x10, source: [0x11, 0x22, 0x33], target: [0x44, 0x55, 0x66], payload: [0x06, 0x01, 0xC8, 0x00]))))
         #expect(status.summary == "Status Kanal 1: ein")
+        // Heizkörperthermostat, am 03.11.2026 empfangen: 20,1 °C, Soll 17 °C, 3,0 V, Ventil zu, manuell.
+        let thermostat = try #require(Homematic.parse(enc: Homematic.scramble(SmartHomeTestFrames.homematic(
+            counter: 0xFE, flags: 0x86, type: 0x10, source: [0x24, 0xB5, 0x8B], target: [0, 0, 0],
+            payload: [0x0A, 0x88, 0xC9, 0x0F, 0x00, 0x58]))))
+        #expect(thermostat.summary == "20.1 °C, Soll 17.0 °C, Ventil 0 %, manuell")
+        #expect(thermostat.deviceType == "Heizkörperthermostat")
+        #expect(thermostat.values.contains(SmartHomeValue(name: "Temperatur", unit: "°C", value: 20.1)))
+        #expect(thermostat.values.contains(SmartHomeValue(name: "Sollwert", unit: "°C", value: 17)))
+        #expect(thermostat.values.contains(SmartHomeValue(name: "Batterie", unit: "V", value: 3.0)))
+        #expect(thermostat.values.contains(SmartHomeValue(name: "Ventil", unit: "%", value: 0)))
+        #expect(thermostat.fields.contains { $0.name == "Betriebsart" && $0.value == "manuell" })
         // −5,0 °C: 14-Bit-Zweierkomplement
         let raw = UInt16(bitPattern: Int16(-50)) & 0x7FFF
         let cold = try #require(Homematic.parse(enc: Homematic.scramble(SmartHomeTestFrames.homematic(

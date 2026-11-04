@@ -351,8 +351,8 @@ struct APRSPacket: Sendable, Equatable {
         let ns = text[start + 7]
         let lonText = digits(start + 9..<start + 17)
         let ew = text[start + 17]
-        guard let latDeg = Double(latText.prefix(2)), let latMin = Double(latText.dropFirst(2)),
-              let lonDeg = Double(lonText.prefix(3)), let lonMin = Double(lonText.dropFirst(3)),
+        guard let latDeg = Self.number(latText.prefix(2)), let latMin = Self.number(latText.dropFirst(2)),
+              let lonDeg = Self.number(lonText.prefix(3)), let lonMin = Self.number(lonText.dropFirst(3)),
               [UInt8(ascii: "N"), UInt8(ascii: "S")].contains(ns),
               [UInt8(ascii: "E"), UInt8(ascii: "W")].contains(ew) else { return }
         var lat = latDeg + latMin / 60
@@ -368,7 +368,7 @@ struct APRSPacket: Sendable, Equatable {
         // Datenerweiterung „Kurs/Tempo“ (ddd/ddd).
         if rest.count >= 7 {
             let ext = Array(rest.prefix(7))
-            if ext[3] == "/", let course = Double(String(ext[0..<3])), let speed = Double(String(ext[4..<7])) {
+            if ext[3] == "/", let course = Self.number(String(ext[0..<3])), let speed = Self.number(String(ext[4..<7])) {
                 if course > 0 { courseDegrees = course.truncatingRemainder(dividingBy: 360) }
                 speedKnots = speed
                 rest.removeFirst(7)
@@ -466,7 +466,7 @@ struct APRSPacket: Sendable, Equatable {
     private mutating func extractAltitude(from text: String) -> String {
         guard let range = text.range(of: "/A=") else { return text.trimmingCharacters(in: .whitespaces) }
         let digits = text[range.upperBound...].prefix(6)
-        if digits.count == 6, let feet = Double(digits) {
+        if digits.count == 6, let feet = Self.number(digits, signed: true) {
             altitudeMeters = feet * 0.3048
             var rest = text
             rest.removeSubrange(range.lowerBound..<text.index(range.upperBound, offsetBy: 6))
@@ -510,6 +510,18 @@ struct APRSPacket: Sendable, Equatable {
     }
 
     // MARK: Hilfen
+
+    /// Zahl nur aus ASCII-Ziffern (höchstens ein Dezimalpunkt, mit `signed` ein
+    /// führendes „-“). `Double(String)` nimmt auch „inf“, „nan“ und „1e9999“ an –
+    /// aus einem Funkpaket mit Kurs „inf“ wurde so NaN, und der Fernzugriff stürzte
+    /// bei `Int(…)` ab (Review 01.11.2026).
+    static func number<S: StringProtocol>(_ text: S, signed: Bool = false) -> Double? {
+        var body = Substring(text)
+        if signed, body.first == "-" { body = body.dropFirst() }
+        guard !body.isEmpty, body.contains(where: \.isASCIIDigit),
+              body.allSatisfy({ $0.isASCIIDigit || $0 == "." }), body.filter({ $0 == "." }).count <= 1 else { return nil }
+        return Double(text)
+    }
 
     static func base91<C: Collection>(_ chars: C) -> Int? where C.Element == UInt8 {
         var value = 0
@@ -588,4 +600,8 @@ struct APRSStationTracker {
     }
 
     var sorted: [APRSStation] { stations.values.sorted { $0.lastHeard > $1.lastHeard } }
+}
+
+private extension Character {
+    var isASCIIDigit: Bool { isASCII && isNumber }
 }

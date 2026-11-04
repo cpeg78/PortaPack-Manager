@@ -140,10 +140,8 @@ final class Notifier {
         // Überflug in den nächsten 10 Minuten (nur solche, die der Plan aufnimmt).
         let planner = ReceptionPlanner.shared
         if notifyPasses {
-            for pass in planner.passes where pass.maxElevation >= planner.minElevation {
-                let lead = pass.start.timeIntervalSince(now)
-                guard lead > 0, lead <= 600 else { continue }
-                post(key: "pass-\(pass.id)", title: String(localized: "Satellit kommt"),
+            for (id, pass) in Self.passesToAnnounce(planner.upcoming, now: now, isSkipped: planner.isSkipped) {
+                post(key: id, title: String(localized: "Satellit kommt"),
                      body: String(localized: "\(pass.satellite.name) ab \(pass.start.formatted(date: .omitted, time: .shortened)), bis \(Int(pass.maxElevation))° hoch."))
             }
         }
@@ -161,6 +159,22 @@ final class Notifier {
             }
         }
         sent = sent.filter { now.timeIntervalSince($0.value) < 86_400 }
+    }
+
+    /// Satelliten-Termine des Plans, deren Aufgang in den nächsten zehn
+    /// Minuten liegt – nicht übersprungen. Vorher prüfte die Meldung nur die
+    /// Mindesthöhe und meldete METEOR-Überflüge auch bei abgeschaltetem
+    /// Automatikempfang (Fund 01.11.2026).
+    nonisolated static func passesToAnnounce(_ jobs: [ReceptionPlanner.Job], now: Date,
+                                             isSkipped: (String) -> Bool) -> [(id: String, pass: SatellitePass)] {
+        jobs.compactMap { job in
+            switch job.kind {
+            case .pass(let p), .amateur(let p):
+                let lead = p.start.timeIntervalSince(now)
+                return lead > 0 && lead <= 600 && !isSkipped(job.id) ? (job.id, p) : nil
+            case .sonde: return nil
+            }
+        }
     }
 
     // MARK: Zustellung

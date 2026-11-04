@@ -3,6 +3,93 @@
 All notable changes to PortaPack Manager. Versions follow
 [Semantic Versioning](https://semver.org).
 
+## 1.2.0 – 2026-11-04
+
+### Added
+
+- **Aircraft without ADS-B:** helicopters, police, military and older aircraft
+  that only have a Mode S transponder (no position) now appear in the aircraft
+  list and the archive with registration, type and altitude – not on the map,
+  since they don't send a position. ADS-B reception is unchanged.
+- **Aircraft symbols by kind and size:** helicopters, light aircraft and
+  gliders get their own map symbol, wide-body aircraft a larger one – on the
+  Mac and on the phone. The kind comes from the category the aircraft sends,
+  otherwise from the aircraft database.
+- **Homematic radiator thermostats:** the status message of the HM-CC-RT-DN
+  (“Information 0x0A”) now shows measured and target temperature, valve
+  position, battery voltage, mode (automatic/manual/party/boost) and errors.
+- **Wireless M-Bus security mode 7:** meters using OMS security profile B
+  (authentication layer with message counter and MAC, per-message derived key –
+  e.g. Diehl water meters, Engelmann Sensostar) are decrypted with the meter
+  key like mode 5; the MAC is verified. Without a key, the message counter and
+  MAC are shown.
+- **Techem heat cost allocators (Wireless M-Bus):** their manufacturer-specific
+  frames now show the consumption units of the current and the previous billing
+  period with dates, plus room and radiator temperature – instead of raw bytes.
+- **Aircraft list time limit:** choose under Display how long aircraft without
+  messages stay in the table (15 min, 30 min – the default –, 1 h or 3 h).
+  Selecting an older aircraft in the table shows it greyed out at its last
+  position on the map, so the map can jump to it.
+- **Longer aircraft tracks:** ADS-B tracks now keep 1000 points (about three
+  minutes at cruise) instead of 200; the map only receives the new points.
+- **ISS and amateur satellites in remote access:** the phone lists the next
+  passes and can skip them, like METEOR passes and sondes.
+- **SD card transfers keep running** when you switch pages; progress and
+  “Cancel” come back when you return.
+
+### Fixed
+
+- **Airports “not loaded”:** the data section showed this while “Show
+  airports” was off, although the list was already on the Mac.
+- **Crash without login:** a malformed login form sent to remote access could
+  quit the app.
+- **Crash via radio:** an APRS packet with “inf” or “nan” as course, speed or
+  altitude crashed the app while the APRS tab was open on a phone.
+- **Radio and spectrum no longer retune another receiver:** tuning, crystal
+  correction and gain presets only change the device while that page owns it;
+  otherwise the value is remembered for the next start.
+- **Skipped satellite passes stay skipped** after the passes are recalculated.
+- **Restoring a damaged backup** no longer sets your intact archive aside; you
+  get a clear message instead.
+- **Manually started sonde, METEOR or amateur satellite pages** pause during
+  another schedule job and resume afterwards instead of showing “running”
+  without data.
+- **No data loss on quit:** aircraft and ship sightings and pending database
+  writes are saved before the app ends.
+- **Schedule doesn't wait for the network:** orbital data and SondeHub are
+  fetched in the background, so passes start on time.
+- **Aircraft list limited** to 2000 entries – forged signals can no longer
+  fill memory.
+- **Flashing:** the app no longer freezes while the HackRF chip is erased.
+- **App files (.ppma)** are checked after upload, like the firmware.
+- **Typing on the device** sends long text in pieces instead of cutting it off.
+- **Audio** comes back after switching the output device (e.g. Bluetooth).
+- **LoRaWAN** shows payloads only when the message check (MIC) is valid.
+- **GPS, occupancy monitor, archive retention** and several remote-access
+  details (login throttling, image sizes, header handling) hardened.
+- **METEOR passes and sonde windows in remote access** are only listed while
+  the matching automatic reception is on, like ISS and amateur satellites.
+- **Sondes in remote access** move from the live list to the archive once
+  they haven't been heard for 5 minutes (also on the map).
+- **ntfy over http** shows a warning, since the topic is sent unencrypted.
+- **Smart home device list:** a device with readable values no longer shows a
+  lock just because an AES signature frame followed (Homematic actuators).
+- **Sonde forecast in remote access:** the forecast of a window that is already
+  over is labelled with its date and “over” instead of looking like the next one.
+
+- **Aircraft and ship maps (Mac):** closing the info card keeps the aircraft or
+  ship selected – its track stays highlighted and the map keeps following it.
+  Clicking it again reopens the card; clicking an empty spot deselects.
+  The map now keeps the selected aircraft or ship in the centre as it moves,
+  until you drag the map (zooming doesn't stop it); clicking it again resumes.
+
+- **Map buttons easier to see:** “Show all …” on every map is now a capsule
+  with a background and shadow instead of plain text on the tiles.
+
+- **“Satellite coming” notification:** only for passes the schedule will
+  actually record – not when automatic METEOR reception is off or the pass was
+  skipped. Planned amateur satellites are announced as well.
+
 ## 1.1.1 – 2026-11-01
 
 ### Added

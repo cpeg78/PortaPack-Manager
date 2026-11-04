@@ -145,6 +145,11 @@ final class GPSReceiver: @unchecked Sendable {
     // Zwischen Threads
     private let lock = NSLock()
     private var inbox: (start: Int64, fixes: [GPSFix], kind: AcquisitionKind)?
+    /// Zählt `reset()`-Aufrufe. Ein Akquisitionsjob, der vor dem Zurücksetzen
+    /// gestartet wurde, legt sein Ergebnis nur ab, wenn die Generation noch
+    /// stimmt – sonst bekämen die neuen Kanäle Codephasen eines alten
+    /// Pufferbeginns (Review 01.11.2026).
+    private var generation = 0
     private var snapshot = GPSReceiverStatus()
     private var aidingOut = GPSAidingData()
     private var pendingWeakSearch: Bool?
@@ -157,6 +162,12 @@ final class GPSReceiver: @unchecked Sendable {
     }
 
     var status: GPSReceiverStatus { lock.withLock { snapshot } }
+
+    /// Für Tests: liegt ein noch nicht übernommenes Akquisitionsergebnis bereit?
+    var hasPendingAcquisition: Bool { lock.withLock { inbox != nil } }
+
+    /// Für Tests: wartet, bis laufende Akquisitionsjobs fertig sind.
+    func waitForAcquisitionJobs() { acquisitionQueue.sync {} }
 
     /// Hilfsdaten zum Speichern (Bahnen, Almanach, Position, Quarzablage).
     var aidingData: GPSAidingData { lock.withLock { aidingOut } }
@@ -253,7 +264,7 @@ final class GPSReceiver: @unchecked Sendable {
     }
 
     func reset() {
-        lock.withLock { inbox = nil; snapshot = GPSReceiverStatus() }
+        lock.withLock { inbox = nil; snapshot = GPSReceiverStatus(); generation += 1 }
         sampleIndex = 0; channels = []; subframes = [:]; ephemerides = [:]; ionoUTC = nil
         week10 = nil; acqBuffer = []; acqCollecting = false; acqInFlight = false
         nextAcquisition = 0; nextMeasurement = Int64(options.measurementInterval * options.sampleRate)
@@ -337,10 +348,15 @@ final class GPSReceiver: @unchecked Sendable {
             }
         }
         if options.asynchronousAcquisition {
+            let generation = lock.withLock { self.generation }
             acquisitionQueue.async { [weak self] in
                 let fixes = job()
                 guard let self else { return }
-                self.lock.withLock { self.inbox = (start, fixes, kind) }
+                self.lock.withLock {
+                    // Nach einem `reset()` gehört das Ergebnis zu einem anderen Lauf.
+                    guard self.generation == generation else { return }
+                    self.inbox = (start, fixes, kind)
+                }
             }
         } else {
             let fixes = job()

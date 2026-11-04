@@ -226,8 +226,14 @@ final class RadioModel {
         running = false
     }
 
+    /// Stimmt ab. Gehört der HackRF gerade nicht diesem Radio (gestoppt, oder
+    /// ein Plan-Termin, der Fernzugriff, eine andere Seite hat ihn), wird die
+    /// Frequenz nur gemerkt und gilt beim nächsten Start – sonst stellte das
+    /// Radio den fremden Strom um (Review 01.11.2026, Gerätebesitz).
     func tune(to mhz: Double) {
         frequencyMHz = max(1.24, min(6000, mhz))   // HackRF läuft 240 kHz darunter, ab 1 MHz
+        measurement = nil
+        guard ownsDevice else { return }
         do {
             try retune()
             audio.buffer.clear()
@@ -236,7 +242,6 @@ final class RadioModel {
                 shared.demod.radio.resetCarrierOffset()
             }
             rds = RDSInfo()
-            measurement = nil
         } catch {
             self.error = error.localizedDescription
         }
@@ -254,10 +259,14 @@ final class RadioModel {
         try device.setAntennaPower(antennaPower)
     }
 
+    /// Nur am eigenen, laufenden Strom; sonst gelten die Werte beim nächsten Start.
     func applyGainsQuietly() {
+        guard ownsDevice else { return }
         do { try applyGains() } catch { self.error = error.localizedDescription }
     }
 
+    /// Stellt das Gerät ohne Besitzprüfung um – nur für `start`, den Suchlauf
+    /// (der den Strom selbst hält) und nach `ownsDevice`.
     private func retune() throws {
         guard let device else { return }
         let plan = RadioTuning.plan(frequencyMHz: frequencyMHz, mode: mode)
@@ -389,7 +398,10 @@ final class RadioModel {
         HackRFDevice.frequencyCorrectionPPM = ppm
         correctionPPM = ppm
         measurement = nil
-        guard let device else { return }
+        // Ohne eigenen Empfang nur merken: Nach dem Quarzabgleich setzte das
+        // geteilte Radio sonst den fortgesetzten Strom (z. B. ADS-B) auf
+        // 2,4 MS/s und die Radiofrequenz – keine Daten, kein Fehler.
+        guard ownsDevice, let device else { return }
         do {
             try device.setSampleRate(UInt32(RadioDemodulator.inputRate))
             try retune()
@@ -466,15 +478,21 @@ final class RadioModel {
                 self.scanStatus = ""
             }
             // Abspielen wiederherstellen.
+            if let best = self.stations.max(by: { $0.levelDB < $1.levelDB }) {
+                self.frequencyMHz = best.mhz
+            } else {
+                self.frequencyMHz = band.channels.first ?? self.frequencyMHz
+            }
+            // Nur, wenn das Radio noch läuft und das Gerät frei ist: Abgebrochen
+            // wird der Suchlauf auch durch `stop()`, wenn ein anderer Empfänger
+            // übernimmt – der neue Strom gehört dann nicht mehr uns.
+            let free = device.currentOwner.map { $0 === self } ?? true
             do {
-                try device.setSampleRate(UInt32(RadioDemodulator.inputRate))
-                if let best = self.stations.max(by: { $0.levelDB < $1.levelDB }) {
-                    self.frequencyMHz = best.mhz
-                } else {
-                    self.frequencyMHz = band.channels.first ?? self.frequencyMHz
+                if self.running, free {
+                    try device.setSampleRate(UInt32(RadioDemodulator.inputRate))
+                    try self.retune()
+                    try self.startStream()
                 }
-                try self.retune()
-                if self.running { try self.startStream() }
             } catch {
                 self.error = error.localizedDescription
             }

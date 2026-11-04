@@ -190,6 +190,25 @@ struct OccupancyTests {
         #expect(store.list().map(\.url.lastPathComponent) == [url.lastPathComponent])
     }
 
+    @Test("Schreibfehler: Scheibe steht genau einmal im Speicher, danach wird die Datei neu geschrieben")
+    func appendFailure() throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("occ-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let store = OccupancyStore(folder: folder)
+        let url = store.newURL()
+        var rec = OccupancyRecording(name: "Fehler", plan: plan, sliceSeconds: 60, thresholdDB: 10)
+        let slices = randomSlices(3, bins: plan.binCount, start: Date(timeIntervalSince1970: 1_800_000_000))
+        try store.append(slices[0], to: &rec, url: url, maxBytes: 10_000_000)
+        // Ziel nicht beschreibbar (Ordner fehlt) – wie eine volle oder entfernte Platte.
+        let broken = folder.appendingPathComponent("fehlt/x.ppocc")
+        #expect(throws: (any Error).self) { try store.append(slices[1], to: &rec, url: broken, maxBytes: 10_000_000) }
+        #expect(rec.slices == Array(slices[0...1]))
+        // Nächstes Speichern schreibt die Datei vollständig neu – keine Lücke, nichts doppelt.
+        try store.append(slices[2], to: &rec, url: url, maxBytes: 10_000_000, rewrite: true)
+        #expect(rec.slices == slices)
+        #expect(try store.load(url).slices == slices)
+    }
+
     @Test("Aktivste Frequenzen mit Zeiträumen")
     func mostActive() {
         let p = OccupancyPlan(startMHz: 144, endMHz: 144.4, binKHz: 12.5)   // 32 Bins

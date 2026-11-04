@@ -197,7 +197,6 @@ final class SmartHome868Model {
             device.rssiDB = burst.powerDB
             device.snrDB = burst.snrDB
             device.lastSummary = frame.summary
-            device.encrypted = frame.encrypted
             // Gerätetyp aus der Geräteinfo hat Vorrang vor Vermutungen.
             if !frame.deviceType.isEmpty {
                 if device.deviceType.isEmpty || frame.deviceTypeFromInfo
@@ -212,6 +211,11 @@ final class SmartHome868Model {
                     device.values.append(value)
                 }
             }
+            // Das Schloss gilt dem Inhalt: Ein Gerät mit lesbaren Werten bleibt
+            // lesbar, auch wenn zwischendurch eine AES-Signatur oder ein
+            // verschlüsselter Rahmen kommt (Fund 03.11.2026: Homematic-Aktor
+            // zeigte „🔒 Pegel 2 %“).
+            device.encrypted = frame.encrypted && device.values.isEmpty
             devices[key] = device
             if devices.count > 1000 {
                 DevicePruning.prune(&devices, limit: 1000, maxAge: 86_400, now: burst.date) { $0.lastSeen }

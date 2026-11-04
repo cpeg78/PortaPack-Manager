@@ -82,18 +82,27 @@ enum RemoteAPRSAPI {
             let p = s.last
             var km: Double?
             if let home, let lat = s.latitude, let lon = s.longitude {
-                km = (GeoMath.distanceKm(lat1: home[0], lon1: home[1], lat2: lat, lon2: lon) * 10).rounded() / 10
+                let distance = (GeoMath.distanceKm(lat1: home[0], lon1: home[1], lat2: lat, lon2: lon) * 10).rounded() / 10
+                km = distance.isFinite ? distance : nil
             }
             return .init(id: s.id, source: p.source, symbol: MapSymbol(sfSymbol: p.systemImage).rawValue, kind: p.kind.title,
                          lat: s.latitude, lon: s.longitude, km: km,
-                         course: p.courseDegrees.map { Int($0.rounded()) },
-                         speedKmh: p.speedKnots.map { Int(($0 * 1.852).rounded()) },
-                         altitude: p.altitudeMeters.map { Int($0.rounded()) },
+                         course: finiteInt(p.courseDegrees),
+                         speedKmh: finiteInt(p.speedKnots.map { $0 * 1.852 }),
+                         altitude: finiteInt(p.altitudeMeters),
                          text: text(of: p), path: p.path, packets: s.packets,
                          t: (s.lastHeard.timeIntervalSince1970 * 1000).rounded(), object: p.objectName != nil,
                          raw: String(p.raw.prefix(300)),
                          trail: s.id == selected && s.trail.count > 1 ? s.trail.suffix(500).map { [$0.lat, $0.lon] } : nil)
         }
+    }
+
+    /// Ganzzahl nur aus endlichen, nicht riesigen Werten – `Int(.nan)` bzw. `Int(.infinity)`
+    /// beendet die App. Ein Funkpaket mit Kurs „inf“ tat genau das (Review 01.11.2026);
+    /// der Decoder nimmt solche Zahlen nicht mehr an, das hier ist die zweite Sicherung
+    /// (wie `RemoteSondes.int`).
+    nonisolated static func finiteInt(_ value: Double?) -> Int? {
+        value.flatMap { $0.isFinite && abs($0) < 1e7 ? Int($0.rounded()) : nil }
     }
 
     private static func text(of p: APRSPacket) -> String? {

@@ -223,7 +223,8 @@ enum WMBus {
         let id = ident(data[4...7])
         let version = data[8], type = data[9]
         let m = manufacturer(mCode)
-        let typeName = deviceType(type)
+        // Techem meldet seine Heizkostenverteiler mit dem herstellereigenen Typ 0x80.
+        let typeName = m == "TCH" && type == 0x80 ? String(localized: "Heizkostenverteiler") : deviceType(type)
         var frame = SmartHomeFrame(radio: .wmbus, mode: mode, address: "\(m) \(id)",
                                    deviceType: "\(manufacturerNames[m] ?? m) · \(typeName)",
                                    kind: controlName(c), summary: "", checksumOK: true, bytes: data)
@@ -248,6 +249,11 @@ enum WMBus {
         /// A-Feld: Ident (4), Version, Gerätetyp.
         var address: [UInt8]
         var id: String
+        /// Aus der Authentifizierungsschicht (CI 0x90): Nachrichtenzähler
+        /// (4 Byte, niedrigstes zuerst), MCL und MAC – für Sicherheitsmodus 7.
+        var aflCounter: [UInt8]?
+        var aflControl: UInt8 = 0
+        var aflMAC: [UInt8] = []
     }
 
     static func ciName(_ ci: UInt8) -> String {
@@ -257,6 +263,7 @@ enum WMBus {
         case 0x78: String(localized: "Anwendungsdaten ohne Kopf")
         case 0x79: String(localized: "Kompaktrahmen")
         case 0x8C...0x8F: String(localized: "Erweiterte Sicherungsschicht")
+        case 0x90: String(localized: "Authentifizierungsschicht (AFL)")
         case 0x70: String(localized: "Anwendungsfehler")
         case 0x71: String(localized: "Alarm")
         case 0xA0...0xB7: String(localized: "herstellerspezifisch")
@@ -297,6 +304,37 @@ enum WMBus {
             }
             frame.fields.append(.init(name: String(localized: "Entschlüsselt"), value: String(localized: "ja (ELL, AES-CTR, ACC \(Int(acc)))")))
             application(Array(plain[2...]), context: &context, keys: keys, frame: &frame, depth: depth + 1)
+        case 0x90 where a.count >= 4:
+            // AFL (EN 13757-7): AFLL, FCL (2), dann je nach FCL-Bits MCL, KI (2),
+            // Zähler (4), MAC (Länge aus dem Authentifizierungstyp in MCL), ML (2).
+            let length = Int(a[1])
+            guard a.count >= 2 + length else { return }
+            let fcl = UInt16(a[3]) << 8 | UInt16(a[2])
+            var i = 4
+            if fcl & 0x2000 != 0, i < a.count { context.aflControl = a[i]; i += 1 }
+            if fcl & 0x0200 != 0 { i += 2 }
+            if fcl & 0x0800 != 0, i + 4 <= a.count {
+                context.aflCounter = Array(a[i..<i + 4])
+                let counter = UInt32(a[i]) | UInt32(a[i + 1]) << 8 | UInt32(a[i + 2]) << 16 | UInt32(a[i + 3]) << 24
+                frame.fields.append(.init(name: String(localized: "Nachrichtenzähler"), value: "\(counter)"))
+                i += 4
+            }
+            if fcl & 0x0400 != 0 {
+                // Authentifizierungstyp: 3–7 = AES-CMAC auf 2/4/8/12/16 Byte gekürzt, 8 = GMAC 12.
+                let macLength: Int = switch context.aflControl & 0x0F {
+                case 3: 2
+                case 4: 4
+                case 5: 8
+                case 6, 8: 12
+                case 7: 16
+                default: 0
+                }
+                guard i + macLength <= a.count else { return }
+                context.aflMAC = Array(a[i..<i + macLength])
+                frame.fields.append(.init(name: "MAC", value: SmartHomeHex.string(context.aflMAC)))
+                i += macLength
+            }
+            application(Array(a[(2 + length)...]), context: &context, keys: keys, frame: &frame, depth: depth + 1)
         case 0x72, 0x7A:
             var index = 1
             if ci == 0x72 {
@@ -342,6 +380,46 @@ enum WMBus {
                 }
                 payload = plain + payload[length...]
                 frame.fields.append(.init(name: String(localized: "Entschlüsselt"), value: String(localized: "ja (AES-128-CBC)")))
+            case 7:
+                // Modus 7 (OMS-Sicherheitsprofil B): nach dem Konfigurationswort ein
+                // Erweiterungsbyte (Bits 4–5 = Schlüsselableitung), dann AES-128-CBC
+                // ohne IV mit einem je Nachricht abgeleiteten Schlüssel:
+                // Kenc = CMAC(K, 00 · Zähler · Ident · 7 × 07), Kmac mit 01 statt 00.
+                // Zähler und MAC stammen aus der AFL (CI 0x90) davor; der MAC läuft
+                // über MCL · Zähler · TPL (ab CI 0x7A/0x72 bis zum Ende).
+                guard a.count > index else { return }
+                let kdf = (a[index] >> 4) & 0x03
+                index += 1
+                payload = Array(a[index...])
+                let blocks = Int(config >> 4) & 0x0F
+                let length = min(blocks * 16, payload.count - payload.count % 16)
+                guard let key = keys[context.id] else {
+                    frame.encrypted = true
+                    frame.summary = String(localized: "verschlüsselt (Modus 7) – Schlüssel fehlt")
+                    return
+                }
+                guard let counter = context.aflCounter, kdf == 1 || kdf == 0 else {
+                    frame.encrypted = true
+                    frame.summary = String(localized: "verschlüsselt (Modus 7) – ohne Nachrichtenzähler")
+                    return
+                }
+                let base = counter + Array(context.address.prefix(4)) + [UInt8](repeating: 0x07, count: 7)
+                let encryptionKey = kdf == 1 ? LoRaWANCrypto.cmac(key: key, [0x00] + base) : key
+                let plain = aesCBCDecrypt(key: encryptionKey, iv: [UInt8](repeating: 0, count: 16), Array(payload[0..<length]))
+                guard plain.count >= 2, plain[0] == 0x2F, plain[1] == 0x2F else {
+                    frame.encrypted = true
+                    frame.summary = String(localized: "verschlüsselt (Modus 7) – Schlüssel passt nicht")
+                    return
+                }
+                var macText = ""
+                if !context.aflMAC.isEmpty {
+                    let macKey = kdf == 1 ? LoRaWANCrypto.cmac(key: key, [0x01] + base) : key
+                    let mac = LoRaWANCrypto.cmac(key: macKey, [context.aflControl] + counter + a)
+                    macText = Array(mac.prefix(context.aflMAC.count)) == context.aflMAC
+                        ? String(localized: ", MAC geprüft") : String(localized: ", MAC falsch")
+                }
+                payload = plain + payload[length...]
+                frame.fields.append(.init(name: String(localized: "Entschlüsselt"), value: String(localized: "ja (Modus 7, AES-128-CBC\(macText))")))
             default:
                 frame.encrypted = true
                 frame.summary = String(localized: "verschlüsselt (Modus \(securityMode), nicht unterstützt)")
@@ -350,9 +428,59 @@ enum WMBus {
             records(payload, into: &frame)
         case 0x78:
             records(Array(a[1...]), into: &frame)
+        case 0xA0, 0xA2:
+            if context.manufacturer == [0x68, 0x50], context.address.last == 0x80,
+               techemHeatCostAllocator(Array(a[1...]), into: &frame) { return }
+            frame.summary = ciName(ci) + " – " + SmartHomeHex.string(Array(a.dropFirst().prefix(16)))
         default:
             frame.summary = ciName(ci) + " – " + SmartHomeHex.string(Array(a.dropFirst().prefix(16)))
         }
+    }
+
+    /// Techem-Heizkostenverteiler (FHKV data II/III, Typ 0x80, Version 0x69/0x94):
+    /// unverschlüsselt, aber herstellerspezifisch hinter CI 0xA0/0xA2. Aufbau wie
+    /// wmbusmeters `fhkvdataiii`: Kennbyte 0x01/0x11/0x0F, Datum und Einheiten
+    /// der Vorperiode, Datum und Einheiten der laufenden Periode (bei 0x0F ein
+    /// Byte dazwischen), Raum- und Heizkörpertemperatur in 1/100 °C.
+    /// Gibt `false` zurück, wenn der Inhalt nicht zu diesem Aufbau passt.
+    static func techemHeatCostAllocator(_ p: [UInt8], into frame: inout SmartHomeFrame) -> Bool {
+        guard let marker = p.first, [0x01, 0x11, 0x0F].contains(marker) else { return false }
+        let gap = marker == 0x0F ? 1 : 0
+        guard p.count >= 13 + gap else { return false }
+        func word(_ i: Int) -> Int { Int(p[i + 1]) << 8 | Int(p[i]) }
+        let previousUnits = word(3), currentUnits = word(7)
+        let room = Double(word(9 + gap)) / 100, radiator = Double(word(11 + gap)) / 100
+        guard room > -40, room < 100, radiator > -40, radiator < 150 else { return false }
+        // Ende der Vorperiode: Tag (5 Bit), Monat (4 Bit), Jahr ab 2000 (7 Bit).
+        let previousRaw = word(1)
+        let previousDay = previousRaw & 0x1F, previousMonth = (previousRaw >> 5) & 0x0F, previousYear = 2000 + (previousRaw >> 9)
+        // Stand der laufenden Periode ohne Jahr: Tag ab Bit 4, Monat ab Bit 9; das
+        // Jahr folgt aus der Vorperiode – eins weiter, sobald Monat/Tag nicht nach
+        // deren Ende liegen.
+        let currentRaw = word(5)
+        var currentDay = (currentRaw >> 4) & 0x1F, currentMonth = (currentRaw >> 9) & 0x0F
+        if currentDay == 0 { currentDay = 1 }
+        if currentMonth == 0 { currentMonth = 12 }
+        let currentYear = previousYear + ((currentMonth, currentDay) <= (previousMonth, previousDay) ? 1 : 0)
+        func date(_ year: Int, _ month: Int, _ day: Int) -> String {
+            guard (1...12).contains(month), (1...31).contains(day),
+                  let d = DateComponents(calendar: .current, year: year, month: month, day: day).date else {
+                return String(format: "%02d.%02d.%04d", day, month, year)
+            }
+            return d.formatted(.dateTime.day().month().year())
+        }
+        let units = SmartHomeValue(name: "Heizkosten-Einheiten", unit: "", value: Double(currentUnits))
+        let roomValue = SmartHomeValue(name: "Raumtemperatur", unit: "°C", value: room)
+        let radiatorValue = SmartHomeValue(name: "Heizkörpertemperatur", unit: "°C", value: radiator)
+        frame.fields.append(.init(name: String(localized: "Verbrauch laufende Periode"), value: units.formatted))
+        frame.fields.append(.init(name: String(localized: "Stand vom"), value: date(currentYear, currentMonth, currentDay)))
+        frame.fields.append(.init(name: String(localized: "Verbrauch Vorperiode"), value: "\(previousUnits)"))
+        frame.fields.append(.init(name: String(localized: "Vorperiode bis"), value: date(previousYear, previousMonth, previousDay)))
+        frame.fields.append(.init(name: roomValue.label, value: roomValue.formatted))
+        frame.fields.append(.init(name: radiatorValue.label, value: radiatorValue.formatted))
+        frame.values = [units, roomValue, radiatorValue]
+        frame.summary = String(localized: "\(units.formatted) Einheiten seit \(date(previousYear, previousMonth, previousDay)), Raum \(roomValue.formatted), Heizkörper \(radiatorValue.formatted)")
+        return true
     }
 
     static func statusText(_ s: UInt8) -> String {

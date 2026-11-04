@@ -86,7 +86,9 @@ enum ArchiveMaintenance {
     static func expiringCount(database: ArchiveDatabase = .shared, retentionDays: Int, now: Date = Date()) -> Int {
         guard retentionDays > 0 else { return 0 }
         let cutoff = now.addingTimeInterval(-Double(retentionDays) * 86_400)
-        return (try? database.sync { try $0.countExpiring(before: cutoff) }) ?? 0
+        // Über die Lese-Verbindung: Die Rückfrage kommt vom Main Actor und soll
+        // nicht hinter einer laufenden Sicherung oder Übernahme warten.
+        return (try? database.readNow { try $0.countExpiring(before: cutoff) }) ?? 0
     }
 
     /// Löscht Einträge älter als `retentionDays` (0 = nie) samt der Mitschnitte
@@ -96,13 +98,19 @@ enum ArchiveMaintenance {
         guard retentionDays > 0 else { return Result() }
         let cutoff = now.addingTimeInterval(-Double(retentionDays) * 86_400)
         do {
-            let deleted = try database.sync { db -> Int in
-                if let recordings {
-                    for name in try db.transmissionRecordings(before: cutoff) {
-                        try? FileManager.default.removeItem(at: recordings.appendingPathComponent(name))
-                    }
+            // Namen und Löschen in einer Transaktion, die Dateien erst nach dem
+            // Commit: Scheiterte das Löschen der Zeilen (Platte voll, gesperrt), waren
+            // die Mitschnitte vorher schon weg, die Einträge aber noch da (Review 01.11.2026).
+            let (deleted, names) = try database.sync { db -> (Int, [String]) in
+                try db.transaction {
+                    let names = recordings == nil ? [] : try db.transmissionRecordings(before: cutoff)
+                    return (try db.deleteExpiring(before: cutoff), names)
                 }
-                return try db.deleteExpiring(before: cutoff)
+            }
+            if let recordings {
+                for name in names {
+                    try? FileManager.default.removeItem(at: recordings.appendingPathComponent(name))
+                }
             }
             if deleted > 0 { database.vacuumIncrementally() }
             return Result(deleted: deleted)

@@ -176,6 +176,7 @@ struct SondeView: View {
             .overlay(alignment: .bottomLeading) {
                 if !mapController.following, !positioned.isEmpty {
                     Button("Alle Sonden zeigen", systemImage: "scope") { mapController.showAll() }
+                        .buttonStyle(.mapOverlay)
                         .padding(10)
                 }
             }
@@ -184,7 +185,7 @@ struct SondeView: View {
     // MARK: - Tabelle
 
     private var table: some View {
-        Table(model.sondes.sorted(by: order), selection: $selection, sortOrder: $order) {
+        Table(model.sondes.sorted(by: order, current: [byDistance]), selection: $selection, sortOrder: $order) {
             TableColumn("Seriennr.", sortUsing: ColumnSort("serie", text: { $0.serial })) { Text($0.serial).font(.body.monospaced()) }.width(90)
             TableColumn("Typ", sortUsing: ColumnSort("typ", text: { $0.latest.model })) { Text($0.latest.model) }.width(75)
             TableColumn("Frequenz", sortUsing: ColumnSort("frequenz") { $0.latest.frequency }) { Text(verbatim: "\(($0.latest.frequency / 1e6).formatted(.number.precision(.fractionLength(3)))) MHz").monospacedDigit() }.width(90)
@@ -196,7 +197,7 @@ struct SondeView: View {
             }.width(75)
             TableColumn("Drift", sortUsing: ColumnSort("drift") { $0.latest.groundSpeed }) { sonde in Text(drift(sonde.latest)) }.width(95)
             TableColumn("Temp./Feuchte", sortUsing: ColumnSort("temperatur") { $0.latest.temperature }) { sonde in Text(weather(sonde.latest)) }.width(105)
-            TableColumn("Entfernung", sortUsing: ColumnSort("entfernung") { distanceKm($0.latitude, $0.longitude) }) { sonde in Text(distance(sonde)) }.width(95)
+            TableColumn("Entfernung", sortUsing: byDistance) { sonde in Text(distance(sonde)) }.width(95)
             TableColumn("Rahmen", sortUsing: ColumnSort("rahmen") { $0.frames }) { Text("\($0.frames)").monospacedDigit() }.width(55)
             TableColumn("Letzter Kontakt", sortUsing: ColumnSort("zuletzt") { $0.lastSeen }) { Text($0.lastSeen, style: .relative).foregroundStyle(.secondary) }.width(100)
         }
@@ -323,6 +324,11 @@ struct SondeView: View {
         guard let speed = report.groundSpeed else { return "–" }
         let direction = report.heading.map { " \(GeoMath.compass($0))" } ?? ""
         return "\((speed * 3.6).formatted(.number.precision(.fractionLength(0)))) km/h" + direction
+    }
+
+    /// Entfernung zum Standort – frisch je Neuzeichnen (siehe `sorted(by:current:)`).
+    private var byDistance: ColumnSort<Sonde> {
+        ColumnSort("entfernung") { distanceKm($0.latitude, $0.longitude) }
     }
 
     private func distanceKm(_ lat: Double?, _ lon: Double?) -> Double? {

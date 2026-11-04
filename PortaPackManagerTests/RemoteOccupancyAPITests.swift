@@ -161,4 +161,27 @@ struct RemoteOccupancyAPITests {
                                              now: now.addingTimeInterval(2 * 86_400)) == nil)
         #expect(RemoteOccupancyAPI.slices(rec, hours: 0.5, now: now).count == 30)
     }
+
+    @Test("/occupancy.png: Breite und Seitenverhältnis auf Stufen gerundet")
+    func steppedImageSize() {
+        func stepped(_ w: Int, _ h: Int) -> [Int] {
+            let s = RemoteOccupancyAPI.steppedSize(width: w, height: h)
+            return [s.width, s.height]
+        }
+        #expect(stepped(700, 420) == [800, 480])
+        #expect(stepped(701, 421) == [800, 480])
+        #expect(stepped(32, 1600) == [320, 640])
+        #expect(stepped(1600, 32) == [1600, 320])
+        #expect(stepped(1599, 1600) == [1600, 1600])
+        // Viele verschiedene Anfragen landen auf wenigen Größen.
+        var sizes = Set<String>()
+        for w in stride(from: 32, through: 1600, by: 7) {
+            for h in stride(from: 32, through: 1600, by: 53) {
+                let s = RemoteOccupancyAPI.steppedSize(width: w, height: h)
+                #expect(s.width <= RemoteOccupancyAPI.maxSide && s.height <= RemoteOccupancyAPI.maxSide)
+                sizes.insert("\(s.width)x\(s.height)")
+            }
+        }
+        #expect(sizes.count <= RemoteOccupancyAPI.widthSteps.count * 19)
+    }
 }

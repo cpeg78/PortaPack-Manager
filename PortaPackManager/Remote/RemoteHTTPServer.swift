@@ -17,11 +17,24 @@ final class RemoteHTTPServer: @unchecked Sendable {
         var body = Data()
 
         /// Felder eines `application/x-www-form-urlencoded`-Körpers.
-        var form: [String: String] {
-            var components = URLComponents()
-            components.percentEncodedQuery = String(decoding: body, as: UTF8.self).replacingOccurrences(of: "+", with: "%20")
+        var form: [String: String] { Self.formFields(body) }
+
+        /// Zerlegt den Körper selbst: an `&` und dem ersten `=` trennen, `+` als
+        /// Leerzeichen, dann `removingPercentEncoding` (gibt bei kaputten Folgen
+        /// `nil`, das Feld entfällt). Vorher `URLComponents.percentEncodedQuery` –
+        /// das löst bei Leerzeichen, `%zz`, `ä` oder `<` einen `fatalError` aus, und
+        /// `POST /login` ist ohne Anmeldung erreichbar (Review 01.11.2026).
+        static func formFields(_ body: Data) -> [String: String] {
             var fields: [String: String] = [:]
-            for item in components.queryItems ?? [] { fields[item.name] = item.value ?? "" }
+            for pair in String(decoding: body, as: UTF8.self).split(separator: "&") {
+                let parts = pair.split(separator: "=", maxSplits: 1, omittingEmptySubsequences: false)
+                func decode(_ text: Substring) -> String? {
+                    text.replacingOccurrences(of: "+", with: " ").removingPercentEncoding
+                }
+                guard let name = decode(parts[0]), !name.isEmpty,
+                      let value = parts.count > 1 ? decode(parts[1]) : "" else { continue }
+                fields[name] = value
+            }
             return fields
         }
     }
@@ -30,8 +43,9 @@ final class RemoteHTTPServer: @unchecked Sendable {
         case data(status: Int, contentType: String, body: Data)
         /// Offener Strom (Audio), Daten kommen über `broadcast`.
         case stream(contentType: String)
-        /// Antwort mit zusätzlichen Kopfzeilen (z. B. `Set-Cookie`).
-        indirect case withHeaders([String: String], Response)
+        /// Antwort mit zusätzlichen Kopfzeilen (z. B. `Set-Cookie`) – als Liste, damit
+        /// ein Name mehrfach vorkommen darf (mehrere Cookies), ohne eingeschobenes `\r\n`.
+        indirect case withHeaders([(String, String)], Response)
 
         static func json(_ data: Data) -> Response { .data(status: 200, contentType: "application/json; charset=utf-8", body: data) }
         static func text(_ status: Int, _ text: String) -> Response {
@@ -43,7 +57,13 @@ final class RemoteHTTPServer: @unchecked Sendable {
 
     private let queue = DispatchQueue(label: "de.christiangolz.portapackmanager.remote-http")
     private var listener: NWListener?
+    /// Nur auf `queue` lesen und schreiben (auch `start` setzt ihn dort): vorher
+    /// schrieb der Main Actor ihn, während `queue` ihn las – ein Datenrennen
+    /// hinter `@unchecked Sendable` beim Server-Neustart (Review 01.11.2026).
     private var handler: Handler?
+    /// Audioströme, deren Kopf gerade gesendet wird – zählen zur Obergrenze, sonst
+    /// kamen mehrere gleichzeitige Abrufe an `maximumStreams` vorbei.
+    private var startingStreams = 0
     /// Offene Audio-Verbindungen mit Zahl noch nicht bestätigter Sendungen.
     private var streams: [ObjectIdentifier: (connection: NWConnection, pending: Int)] = [:]
     /// Gewöhnliche Anfragen bis zur Antwort, mit „Kopf vollständig“. Ohne
@@ -69,12 +89,29 @@ final class RemoteHTTPServer: @unchecked Sendable {
     /// Nur Gegenstellen aus Heimnetz und VPN annehmen (`RemoteAccessPolicy.isHomeOrVPN`).
     private var localOnly = true
     private static let log = Logger(subsystem: "de.christiangolz.portapackmanager", category: "Fernzugriff")
+    /// Rückrufe; gespeichert und gelesen nur auf `queue` (siehe `handler`).
+    private struct Callbacks {
+        var onListenerCount: (@Sendable (Int) -> Void)?
+        var onState: (@Sendable (String?) -> Void)?
+        var onRejected: (@Sendable (String) -> Void)?
+    }
+    private var callbacks = Callbacks()
     /// Meldet die Zahl der Hörer (auf `queue`) – gezählt werden Geräte, nicht
     /// Verbindungen: iOS öffnet für ein `<audio>` gern eine zweite Verbindung.
-    var onListenerCount: (@Sendable (Int) -> Void)?
-    var onState: (@Sendable (String?) -> Void)?
+    /// Nicht von `queue` aus setzen (`queue.sync`).
+    var onListenerCount: (@Sendable (Int) -> Void)? {
+        get { queue.sync { callbacks.onListenerCount } }
+        set { queue.sync { callbacks.onListenerCount = newValue } }
+    }
+    var onState: (@Sendable (String?) -> Void)? {
+        get { queue.sync { callbacks.onState } }
+        set { queue.sync { callbacks.onState = newValue } }
+    }
     /// Meldet eine abgewiesene Gegenstelle (außerhalb von Heimnetz und VPN).
-    var onRejected: (@Sendable (String) -> Void)?
+    var onRejected: (@Sendable (String) -> Void)? {
+        get { queue.sync { callbacks.onRejected } }
+        set { queue.sync { callbacks.onRejected = newValue } }
+    }
 
     /// „Nur Heimnetz und VPN“ – gilt für jede neue Verbindung.
     func setLocalOnly(_ on: Bool) {
@@ -87,12 +124,12 @@ final class RemoteHTTPServer: @unchecked Sendable {
         let parameters = NWParameters.tcp
         parameters.allowLocalEndpointReuse = true
         let listener = try NWListener(using: parameters, on: nwPort)
-        self.handler = handler
+        queue.sync { self.handler = handler }
         listener.newConnectionHandler = { [weak self] connection in self?.accept(connection) }
         listener.stateUpdateHandler = { [weak self] state in
             switch state {
-            case .failed(let error): self?.onState?(error.localizedDescription)
-            case .ready: self?.onState?(nil)
+            case .failed(let error): self?.callbacks.onState?(error.localizedDescription)
+            case .ready: self?.callbacks.onState?(nil)
             default: break
             }
         }
@@ -108,8 +145,9 @@ final class RemoteHTTPServer: @unchecked Sendable {
             streams.removeAll()
             for entry in open.values { entry.connection.cancel() }
             open.removeAll()
+            handler = nil
+            callbacks.onListenerCount?(0)
         }
-        onListenerCount?(0)
     }
 
     /// Schickt Audiodaten an alle offenen Audio-Verbindungen. Wer 256 Sendungen
@@ -144,7 +182,7 @@ final class RemoteHTTPServer: @unchecked Sendable {
             // Sofort trennen, noch bevor ein Byte gelesen wird.
             Self.log.notice("Abgewiesen (nicht Heimnetz/VPN): \(host ?? "?", privacy: .public)")
             connection.cancel()
-            onRejected?(host ?? "?")
+            callbacks.onRejected?(host ?? "?")
             return
         }
         let peer = host.map(RemoteAccessPolicy.peerKey)
@@ -255,16 +293,29 @@ final class RemoteHTTPServer: @unchecked Sendable {
         }
     }
 
-    /// Sicherheitsköpfe jeder Antwort plus eigene (`withHeaders`), als Kopfzeilen.
-    static func extraHeaderLines(_ extra: [String: String]) -> String {
-        (RemoteAccessPolicy.securityHeaders + extra.sorted { $0.key < $1.key }.map { ($0.key, $0.value) })
-            .map { "\($0.0): \($0.1)\r\n" }.joined()
+    /// Sicherheitsköpfe jeder Antwort plus eigene (`withHeaders`), als Kopfzeilen in
+    /// der übergebenen Reihenfolge. Eine Kopfzeile, deren Name oder Wert CR, LF oder
+    /// NUL enthält, fällt weg – sonst ließe sich über einen Wert eine weitere
+    /// Kopfzeile oder gar ein Körper einschmuggeln (Header-Injection, Review 01.11.2026).
+    static func extraHeaderLines(_ extra: [(String, String)]) -> String {
+        (RemoteAccessPolicy.securityHeaders + extra).compactMap { name, value in
+            guard isSafeHeader(name), isSafeHeader(value), !name.isEmpty, !name.contains(":") else {
+                log.error("Kopfzeile mit Steuerzeichen verworfen: \(name, privacy: .public)")
+                return nil
+            }
+            return "\(name): \(value)\r\n"
+        }.joined()
     }
 
-    private func send(_ response: Response, on connection: NWConnection, head: Bool, extra: [String: String] = [:]) {
+    /// Kein CR, LF oder NUL im Text.
+    static func isSafeHeader(_ text: String) -> Bool {
+        !text.unicodeScalars.contains { $0 == "\r" || $0 == "\n" || $0 == "\0" }
+    }
+
+    private func send(_ response: Response, on connection: NWConnection, head: Bool, extra: [(String, String)] = []) {
         switch response {
         case let .withHeaders(headers, inner):
-            send(inner, on: connection, head: head, extra: extra.merging(headers) { $1 })
+            send(inner, on: connection, head: head, extra: extra + headers)
         case let .data(status, contentType, body):
             var header = "HTTP/1.1 \(status) \(Self.reason(status))\r\n"
             header += "Content-Type: \(contentType)\r\nContent-Length: \(body.count)\r\n"
@@ -279,22 +330,36 @@ final class RemoteHTTPServer: @unchecked Sendable {
         case let .stream(contentType):
             // Obergrenze der Ströme; `Access-Control-Allow-Origin: *` ist weg – die
             // eigene Seite braucht es nicht, fremde Seiten sollen den Ton nicht lesen.
-            guard streams.count < Self.maximumStreams else {
+            // `HEAD` öffnet keinen Strom: nur die Kopfzeilen, dann schließen.
+            if head {
+                send(.data(status: 200, contentType: contentType, body: Data()), on: connection, head: true, extra: extra)
+                return
+            }
+            // Prüfen und Belegen in einem Schritt: Bis der Kopf gesendet ist, steht der
+            // Strom noch nicht in `streams` – `startingStreams` zählt ihn so lange mit.
+            guard Self.admitsStream(open: streams.count, starting: startingStreams) else {
                 send(.text(503, String(localized: "Zu viele Hörer")), on: connection, head: head)
                 return
             }
+            startingStreams += 1
             let header = "HTTP/1.1 200 OK\r\nContent-Type: \(contentType)\r\nCache-Control: no-store\r\n"
                 + Self.extraHeaderLines(extra) + "Connection: close\r\n\r\n"
             let key = ObjectIdentifier(connection)
             connection.send(content: Data(header.utf8), completion: .contentProcessed { [weak self] error in
                 guard let self else { return }
+                self.startingStreams -= 1
                 self.open.removeValue(forKey: key)
                 if error != nil { connection.cancel(); return }
                 self.streams[key] = (connection, 0)
-                self.onListenerCount?(self.listenerCount)
+                self.callbacks.onListenerCount?(self.listenerCount)
                 self.watchClose(connection, key: key)
             })
         }
+    }
+
+    /// Ist noch Platz für einen Audiostrom? Laufende und gerade startende zählen.
+    static func admitsStream(open: Int, starting: Int, limit: Int = maximumStreams) -> Bool {
+        open + starting < limit
     }
 
     /// Erkennt das Schließen einer Audio-Verbindung (Browser stoppt).
@@ -308,7 +373,7 @@ final class RemoteHTTPServer: @unchecked Sendable {
     private func dropStream(_ key: ObjectIdentifier) {
         guard let entry = streams.removeValue(forKey: key) else { return }
         entry.connection.cancel()
-        onListenerCount?(listenerCount)
+        callbacks.onListenerCount?(listenerCount)
     }
 
     /// Zahl verschiedener Gegenstellen (IP-Adressen) mit offenem Audiostrom.

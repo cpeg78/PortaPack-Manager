@@ -204,6 +204,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             QuitGuard.finishRecordings()
             // Home Assistant sofort „offline“ melden statt erst nach dem Keep-Alive-Ablauf.
             MQTTBridge.shared.shutdown()
+            guard !testHost else { return }
+            // Ohne das gingen bis zu 60 s Sichtungen verloren (`save` läuft sonst
+            // nur minütlich), dazu alles, was noch in der Schreibwarteschlange
+            // stand (Review 01.11.2026). Höchstens 5 s – das Beenden darf nicht hängen.
+            TrafficArchive.adsb.save()
+            TrafficArchive.ais.save()
+            if !ArchiveDatabase.shared.waitForPendingWrites(timeout: 5) {
+                Log.session.error("Beenden: Archiv-Warteschlange nach 5 s nicht leer")
+            }
         }
     }
 }

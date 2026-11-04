@@ -59,14 +59,25 @@ final class AudioRingBuffer: @unchecked Sendable {
 }
 
 /// Spielt einen Ringpuffer (48 kHz, stereo) über die Standardausgabe ab.
+///
+/// Wechselt das Ausgabegerät (Bluetooth-Kopfhörer, Monitor mit Lautsprechern),
+/// hält `AVAudioEngine` an und meldet `AVAudioEngineConfigurationChange` –
+/// dann wird neu verbunden und gestartet, sonst blieb der Ton stumm
+/// (Review 01.11.2026). `start`/`stop` laufen auf dem Main Actor, der
+/// Neustart deshalb auch.
 final class AudioOutput: @unchecked Sendable {
     let buffer = AudioRingBuffer(capacity: 48_000)   // 1 s
     private let engine = AVAudioEngine()
     private var source: AVAudioSourceNode?
+    private let format = AVAudioFormat(standardFormatWithSampleRate: RadioDemodulator.audioRate, channels: 2)!
+    private var configurationObserver: NSObjectProtocol?
+
+    deinit {
+        if let configurationObserver { NotificationCenter.default.removeObserver(configurationObserver) }
+    }
 
     func start() throws {
         guard source == nil else { return }
-        let format = AVAudioFormat(standardFormatWithSampleRate: RadioDemodulator.audioRate, channels: 2)!
         let buffer = buffer
         let node = AVAudioSourceNode(format: format) { _, _, frameCount, audioBufferList -> OSStatus in
             // Standardformat: ein Puffer je Kanal (nicht verschränkt).
@@ -78,11 +89,34 @@ final class AudioOutput: @unchecked Sendable {
         }
         engine.attach(node)
         engine.connect(node, to: engine.mainMixerNode, format: format)
-        try engine.start()
+        do {
+            try engine.start()
+        } catch {
+            // Sonst hinge der nächste Start einen zweiten Knoten an.
+            engine.detach(node)
+            throw error
+        }
         source = node
+        if configurationObserver == nil {
+            configurationObserver = NotificationCenter.default.addObserver(
+                forName: .AVAudioEngineConfigurationChange, object: engine, queue: .main) { [weak self] _ in
+                self?.restartAfterConfigurationChange()
+            }
+        }
+    }
+
+    /// Ausgabegerät gewechselt: Die Engine steht – neu verbinden und starten.
+    private func restartAfterConfigurationChange() {
+        guard let source, !engine.isRunning else { return }
+        engine.connect(source, to: engine.mainMixerNode, format: format)
+        try? engine.start()
     }
 
     func stop() {
+        if let configurationObserver {
+            NotificationCenter.default.removeObserver(configurationObserver)
+            self.configurationObserver = nil
+        }
         engine.stop()
         if let source {
             engine.detach(source)

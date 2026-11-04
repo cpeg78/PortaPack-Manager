@@ -738,32 +738,39 @@ final class RemoteHub {
 
     /// Schalter „Externer Vorverstärker“: die Seiten werden neu aufgebaut,
     /// diese drei Empfänger aber leben weiter – Vorgaben hier neu setzen.
+    ///
+    /// Ein Model verstellt das Gerät nur, solange es den Strom besitzt
+    /// (`isReceiving(for:)`); `running` allein genügt nicht, es bleibt nach einer
+    /// Übernahme `true` (Review 01.11.2026). Ohne Besitz gelten die Werte beim
+    /// nächsten Start.
     func applyGainPresets() {
+        let device = session?.hackRF
+        func owns(_ model: AnyObject) -> Bool { device?.isReceiving(for: model) ?? false }
         let a = GainProfile.preset(.adsb), s = GainProfile.preset(.ais), d = GainProfile.preset(.dab)
         adsb.lnaGain = a.lna; adsb.vgaGain = a.vga; adsb.amplifier = a.amplifier
         ais.lnaGain = s.lna; ais.vgaGain = s.vga; ais.amplifier = s.amplifier
         dab.lnaGain = d.lna; dab.vgaGain = d.vga; dab.amplifier = d.amplifier
         let p = GainProfile.preset(.spectrum)
         spectrum.lnaGain = p.lna; spectrum.vgaGain = p.vga; spectrum.amplifier = p.amplifier
-        if spectrum.running { spectrum.applyQuietly(to: session?.hackRF) }
+        if spectrum.running, owns(spectrum) { spectrum.applyQuietly(to: device) }
         let c = GainProfile.preset(.acars)
         acars.lnaGain = c.lna; acars.vgaGain = c.vga; acars.amplifier = c.amplifier
-        if acars.running { acars.applyGainsQuietly() }
+        if acars.running, owns(acars) { acars.applyGainsQuietly() }
         if let zigbee = zigbeeStorage {
             let z = GainProfile.preset(.zigbee)
             zigbee.lnaGain = z.lna; zigbee.vgaGain = z.vga; zigbee.amplifier = z.amplifier
             // Nur den eigenen Strom verstellen (Gerätebesitz).
-            if zigbee.running, let device = session?.hackRF, device.isReceiving(for: zigbee) { try? zigbee.applyGains(to: device) }
+            if zigbee.running, let device, owns(zigbee) { try? zigbee.applyGains(to: device) }
         }
         airbandStorage?.reloadStoredGains()
-        if adsb.running { try? adsb.applyGains(to: session?.hackRF) }
-        if ais.running { try? ais.applyGains(to: session?.hackRF) }
-        if dab.running { dab.applyGainsQuietly() }
+        if adsb.running, owns(adsb) { try? adsb.applyGains(to: device) }
+        if ais.running, owns(ais) { try? ais.applyGains(to: device) }
+        if dab.running, owns(dab) { dab.applyGainsQuietly() }
         // Auch die Modelle des Empfangsplans leben weiter: METEOR behielt sonst
         // den internen Vorverstärker, die Sonde ihre Werte der anderen Einstellung.
         let planner = ReceptionPlanner.shared, m = GainProfile.preset(.meteor)
         planner.meteor.lnaGain = m.lna; planner.meteor.vgaGain = m.vga; planner.meteor.amplifier = m.amplifier
-        if let device = session?.hackRF, device.isReceiving(for: planner.meteor) { try? planner.meteor.applyGains(to: device) }
+        if let device, owns(planner.meteor) { try? planner.meteor.applyGains(to: device) }
         planner.sonde.reloadGains()
     }
 
@@ -835,10 +842,8 @@ final class RemoteHub {
 
     /// 303 zur Startseite (nach dem Formular, damit „Neu laden“ nicht erneut sendet).
     private static func redirectHome(cookies: [String]) -> RemoteHTTPServer.Response {
-        var headers = ["Location": "/"]
-        // `extraHeaderLines` kennt je Name nur einen Wert – mehrere Cookies als eigene
-        // `Set-Cookie`-Zeilen über eine eingefügte Zeilengrenze.
-        if !cookies.isEmpty { headers["Set-Cookie"] = cookies.joined(separator: "\r\nSet-Cookie: ") }
+        // Je Cookie eine eigene `Set-Cookie`-Zeile (Kopfzeilen als Liste).
+        let headers = [("Location", "/")] + cookies.map { ("Set-Cookie", $0) }
         return .withHeaders(headers, .data(status: 303, contentType: "text/plain; charset=utf-8", body: Data()))
     }
 
@@ -853,13 +858,19 @@ final class RemoteHub {
         if let wait = loginThrottle.blocked(peer) {
             return Self.loginPage(status: 429, message: String(localized: "Zu viele Fehlversuche – versuch es in \(wait) s erneut."), name: name)
         }
+        // Höchstens zwei Passwortprüfungen gleichzeitig (PBKDF2 kostet je Lauf spürbar Rechenzeit).
+        guard loginThrottle.beginCheck() else {
+            return Self.loginPage(status: 429, message: String(localized: "Gerade laufen zu viele Anmeldungen – versuch es gleich noch einmal."), name: name)
+        }
+        // Vor dem `await` belegen: parallele Anfragen sehen den Versuch schon.
+        loginThrottle.reserve(peer)
         let candidates = accounts.accounts
         let account = await Task.detached(priority: .userInitiated) {
             RemoteAccountBook.verify(name: name, password: password, in: candidates)
         }.value
+        loginThrottle.endCheck()
         // Während der Prüfung gelöscht oder Passwort geändert: gilt nicht mehr.
         guard let account, accounts.account(named: account.name)?.hash == account.hash else {
-            loginThrottle.fail(peer)
             Self.log.notice("Anmeldung fehlgeschlagen von \(peer, privacy: .public)")
             return Self.loginPage(status: 401, message: String(localized: "Benutzername oder Passwort stimmt nicht."), name: name)
         }
@@ -929,7 +940,7 @@ final class RemoteHub {
             let page = RemotePage.page(user: account.name, role: account.role)
             return .data(status: 200, contentType: "text/html; charset=utf-8", body: Data(page.utf8))
         case "/api/state":
-            return .json(snapshotJSON(selected: request.query["sel"]))
+            return .json(snapshotJSON(selected: request.query["sel"], tab: request.query["tab"]))
         case "/api/mode":
             // Nur ein leerer Wert gibt frei; ein unbekannter stoppte früher still alles.
             let raw = request.query["m"] ?? ""
@@ -1013,7 +1024,7 @@ final class RemoteHub {
         case "/api/plan":
             return .json(RemoteWeather.plan(request.query))
         case "/img":
-            return RemoteWeather.image(name: request.query["n"], width: request.query["w"].flatMap { Int($0) })
+            return await RemoteWeather.image(name: request.query["n"], width: request.query["w"].flatMap { Int($0) })
         default:
             return .text(404, String(localized: "Nicht gefunden"))
         }
@@ -1269,6 +1280,8 @@ final class RemoteHub {
             var climbMs: Double?
             var age: Int
             var messages: Int
+            /// `AircraftClass` – Kartensymbol auf dem Handy.
+            var kind: AircraftClass = .medium
             var registration: String?
             var type: String?
             var operatorName: String?
@@ -1331,14 +1344,20 @@ final class RemoteHub {
         }
     }
 
-    private func snapshotJSON(selected: String?) -> Data {
+    private func snapshotJSON(selected: String?, tab: String? = nil) -> Data {
         let encoder = JSONEncoder()
-        return (try? encoder.encode(snapshot(selected: selected))) ?? Data("{}".utf8)
+        return (try? encoder.encode(snapshot(selected: selected, tab: tab))) ?? Data("{}".utf8)
     }
 
     /// `selected` = „adsb:3C6444“ bzw. „ais:211234560“: dafür werden Foto
     /// (und Spur) mitgeliefert, die Fotosuche startet beim ersten Abruf.
-    func snapshot(selected: String?) -> Snapshot {
+    ///
+    /// `tab` = offener Reiter der Seite (`/api/state?tab=`): Die teuren Listen –
+    /// Flugzeuge samt Datenbank- und Streckenabfrage, Schiffe, DAB-Senderliste –
+    /// kommen nur für ihren Reiter mit, sonst leer (Zähler, Modus, Pegel und der
+    /// laufende DAB-Sender bleiben). Ohne `tab` alles wie bisher (Review 01.11.2026).
+    func snapshot(selected: String?, tab: String? = nil) -> Snapshot {
+        func wants(_ mode: Mode) -> Bool { tab.map { $0 == mode.rawValue } ?? true }
         let now = Date()
         let parts = selected?.split(separator: ":").map(String.init) ?? []
         let selectedPlane = parts.count == 2 && parts[0] == "adsb" ? UInt32(parts[1], radix: 16) : nil
@@ -1346,7 +1365,7 @@ final class RemoteHub {
         let homeLat = UserDefaults.standard.double(forKey: "homeLat")
         let homeLon = UserDefaults.standard.double(forKey: "homeLon")
 
-        let planes = adsb.aircraft.filter { now.timeIntervalSince($0.lastSeen) < MapAircraft.holdSeconds }.map { plane in
+        let planes: [Snapshot.Plane] = !wants(.adsb) ? [] : adsb.aircraft.filter { now.timeIntervalSince($0.lastSeen) < MapAircraft.holdSeconds }.map { plane in
             let info = AircraftDatabase.shared.info(for: plane.icao)
             let route = FlightRouteLookup.shared.route(for: plane.callsign)
             let isSelected = plane.icao == selectedPlane
@@ -1357,6 +1376,7 @@ final class RemoteHub {
                 speedKmh: plane.groundSpeed.map { Int(($0 * 1.852).rounded()) },
                 track: plane.track, climbMs: plane.verticalRate.map { Double($0) * 0.00508 },
                 age: Int(now.timeIntervalSince(plane.lastSeen)), messages: plane.messages,
+                kind: AircraftClass.of(emitter: plane.emitter, info: info),
                 registration: info?.registration.nilIfEmpty, type: info?.typeText.nilIfEmpty,
                 operatorName: info?.operatorText.nilIfEmpty,
                 from: route?.origin.shortText, to: route?.destination.shortText, airline: route?.airline.nilIfEmpty,
@@ -1365,7 +1385,7 @@ final class RemoteHub {
                 trail: isSelected ? plane.trail.map { [$0.lat, $0.lon] } : nil)
         }
 
-        let vessels = ais.vessels.map { vessel in
+        let vessels: [Snapshot.Vessel] = !wants(.ais) ? [] : ais.vessels.map { vessel in
             let isSelected = vessel.mmsi == selectedVessel
             let photo = isSelected && UserDefaults.standard.object(forKey: ShipPhotoLookup.enabledKey) as? Bool ?? true
                 ? ShipPhotoLookup.shared.photo(imo: vessel.imo) : nil
@@ -1383,7 +1403,7 @@ final class RemoteHub {
                 trail: isSelected ? vessel.trail.map { [$0.lat, $0.lon] } : nil)
         }
 
-        let ensembles = dab.stationList.map { entry in
+        let ensembles: [Snapshot.Ensemble] = !wants(.dab) ? [] : dab.stationList.map { entry in
             Snapshot.Ensemble(channel: entry.ensemble.channel, label: entry.ensemble.label,
                               services: entry.services.map { .init(id: $0.id, label: $0.label, bitrate: $0.bitrate) })
         }

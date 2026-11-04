@@ -319,8 +319,17 @@ final class DeviceSession {
         installProgress = progress
     }
 
-    /// Führt einen Vorgang aus, während die Geräteerkennung pausiert.
-    func performExclusive<T: Sendable>(_ reason: String, _ work: () async throws -> T) async rethrows -> T {
+    /// Führt einen Vorgang aus, während die Geräteerkennung pausiert. Läuft schon
+    /// einer, wird der zweite abgewiesen (`nil`) – vorher verhinderte das nur das
+    /// Sperren der Knöpfe, und der zweite überschrieb `busy`/`busyReason`; endete
+    /// er zuerst, galt die Sitzung mitten im ersten Vorgang als frei (Review 01.11.2026).
+    @discardableResult
+    func performExclusive<T: Sendable>(_ reason: String, _ work: () async throws -> T) async rethrows -> T? {
+        guard !busy else {
+            Log.session.error("Abgewiesen: \(reason, privacy: .public) – es läuft schon: \(self.busyReason, privacy: .public)")
+            note(String(localized: "Nicht gestartet: \(reason) – es läuft schon: \(busyReason)"))
+            return nil
+        }
         busy = true
         busyReason = reason
         Log.session.notice("Beginne: \(reason, privacy: .public)")

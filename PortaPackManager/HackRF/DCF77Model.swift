@@ -111,5 +111,9 @@ final class DCF77Model {
         try device.setLNAGain(Int(lnaGain)); try device.setVGAGain(Int(vgaGain))
         try device.setAmplifier(amplifier); try device.setAntennaPower(antennaPower)
     }
-    func applyGainsQuietly() { do { try applyGains() } catch { self.error = error.localizedDescription } }
+    /// Nur am eigenen, laufenden Strom (Gerätebesitz); sonst gelten die Werte beim nächsten Start.
+    func applyGainsQuietly() {
+        guard running, device?.isReceiving(for: self) == true else { return }
+        do { try applyGains() } catch { self.error = error.localizedDescription }
+    }
 }

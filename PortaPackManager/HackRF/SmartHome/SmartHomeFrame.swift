@@ -211,6 +211,8 @@ enum SmartHomeNames {
         case "Regen": String(localized: "Regen")
         case "Richtung": String(localized: "Richtung")
         case "Rücklauftemperatur": String(localized: "Rücklauftemperatur")
+        case "Raumtemperatur": String(localized: "Raumtemperatur")
+        case "Heizkörpertemperatur": String(localized: "Heizkörpertemperatur")
         case "Schaltzustand": String(localized: "Schaltzustand")
         case "Scheinenergie": String(localized: "Scheinenergie")
         case "Sensorwert": String(localized: "Sensorwert")

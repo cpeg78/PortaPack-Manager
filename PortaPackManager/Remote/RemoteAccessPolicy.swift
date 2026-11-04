@@ -227,7 +227,7 @@ enum RemoteAccessPolicy {
     /// Alles andere (Umschalten, Abstimmen, Plan, Löschen, Suchlauf) verlangt
     /// „Bedienen“. Eine neue Route ist damit von selbst gesperrt, bis sie hier steht.
     static let readOnlyParameters: [String: Set<String>] = [
-        "/api/state": ["sel"],
+        "/api/state": ["sel", "tab"],
         "/api/archive": ["kind", "day", "id"],
         "/api/acars": ["since"],
         "/api/spectrum": [],

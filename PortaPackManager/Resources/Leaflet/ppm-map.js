@@ -2,7 +2,9 @@
  * Karte der Mac-App (PortaPack Manager) auf Leaflet – siehe Docs/Erfahrungen/Karten.md.
  *
  * Swift schickt Nachrichten als JSON-Text an PPM.receive(text):
- *   { options?, remove?: [id], upsert?: [feature], append?: [{id, points}], commands?: [command] }
+ *   { options?, reset?, remove?: [id], upsert?: [feature], append?: [{id, points, drop?}], commands?: [command] }
+ * reset: vorher alles verwerfen (Swift kennt den Stand der Seite nicht mehr).
+ * append: vorne `drop` Punkte weg, hinten `points` dazu (gekappte Spuren).
  * Die Seite meldet über window.webkit.messageHandlers.map:
  *   ready · view (Ausschnitt) · follow (Nutzer hat bewegt) · select (Ziel angeklickt) · tap (Hintergrund) · error
  *
@@ -31,6 +33,11 @@
   }
   var SYMBOLS = {
     plane: '<path d="M12 1.5c.9 0 1.5.9 1.5 2V9l8 4.6v2.2l-8-2.4v5l2.6 2v1.7L12 21.2l-4.1.9v-1.7l2.6-2v-5l-8 2.4v-2.2l8-4.6V3.5c0-1.1.6-2 1.5-2z" stroke="#1d1d1f" stroke-opacity=".7" stroke-width="1.4" stroke-linejoin="round"/>',
+    // Hubschrauber (Rotor über der Kabine), Kleinflugzeug (gerade Flügel),
+    // Segelflugzeug (lange schmale Flügel) – Wunsch 03.11.2026.
+    helicopter: '<ellipse cx="12" cy="9.5" rx="3.4" ry="4.6"' + EDGE + '/><path d="M11.1 13.5h1.8v5.6h2.6v1.6h-2.6v1.3h-1.8v-1.3H8.5v-1.6h2.6z"' + EDGE + '/><path d="M4.6.9L20.6 16.9L19.4 18.1L3.4 2.1zM20.6 2.1L4.6 18.1L3.4 16.9L19.4.9z"' + EDGE + '/>',
+    planeLight: '<path d="M11 3.2c0-.8.4-1.2 1-1.2s1 .4 1 1.2V7.5h9.5v2.6H13l-.3 7.9h3.3v2.2h-3.4l-.6 1.6-.6-1.6H8v-2.2h3.3L11 10.1H1.5V7.5H11z"' + EDGE + '/>',
+    glider: '<path d="M11.4 4c0-.7.3-1 .6-1s.6.3.6 1l.1 5.5h10.3v1.5H12.7l-.2 7.7h2.9v1.5h-2.9l-.5 1.3-.5-1.3H8.6v-1.5h2.9l-.2-7.7H1v-1.5h10.3z"' + EDGE + '/>',
     arrow: '<path d="M12 2l7 19-7-4-7 4z"/>',
     arrowHead: '<path d="M12 4l8 16H4z"/>',
     dot: '<circle cx="12" cy="12" r="7"/>',
@@ -111,7 +118,7 @@
     L.control.zoom({ position: 'bottomright', zoomInTitle: options.zoomInTitle || '+', zoomOutTitle: options.zoomOutTitle || '−' }).addTo(map);
 
     // Bewegt der Nutzer die Karte, folgt sie nicht mehr dem Inhalt.
-    map.on('dragstart', userMoved);
+    map.on('dragstart', function () { pinned = false; userMoved(); post({ type: 'pan' }); });
     var box = map.getContainer();
     box.addEventListener('wheel', userMoved, { passive: true });
     box.addEventListener('dblclick', userMoved);
@@ -127,7 +134,7 @@
       if (pendingFit || follow) fitAll(false);
       queueDeclutter();
     });
-    map.on('click', function (e) { post({ type: 'tap', lat: e.latlng.lat, lon: e.latlng.lng }); });
+    map.on('click', function (e) { pinned = false; post({ type: 'tap', lat: e.latlng.lat, lon: e.latlng.lng }); });
     sendView(false);
   }
 
@@ -139,6 +146,13 @@
   // Ruhe gilt die Bewegung als beendet (Muster: Leaflet.SmoothWheelZoom, MIT).
   // Nutzt interne Leaflet-1.9-Methoden (_move, _moveStart, _moveEnd, _stop) –
   // Leaflet liegt fest im Bundle.
+  // Bis wann ein Rad-Zoom läuft: Zentrierbefehle der Seite (Nachführen der
+  // Auswahl) kommen jede Sekunde und würden ihn sonst abbrechen (01.11.2026).
+  var wheelUntil = 0;
+  // Die Seite führt einem Ziel nach (`center` mit `pin`): Rad-Zoom um die
+  // Kartenmitte, sonst wandert das Ziel beim Herauszoomen weg und springt nach
+  // jeder Radpause zurück (Nutzer 01.11.2026: „rauszoomen geht nicht flüssig“).
+  var pinned = false;
   function smoothWheelZoom(m) {
     var goal = 0, anchor = null, mouse = null, frame = 0, timer = 0, moved = false;
     var lastCenter = null, lastZoom = 0;
@@ -156,19 +170,21 @@
     function end() {
       cancelAnimationFrame(frame); frame = 0;
       if (moved) { moved = false; m._moveEnd(true); }
+      wheelUntil = Date.now() + 400;
     }
     m.getContainer().addEventListener('wheel', function (e) {
       e.preventDefault();
+      wheelUntil = Infinity;
       if (!frame) {
         m._stop();
         if (m._panAnim) m._panAnim.stop();
         goal = m.getZoom();
-        mouse = m.mouseEventToContainerPoint(e);
+        mouse = pinned ? m.getSize().divideBy(2) : m.mouseEventToContainerPoint(e);
         anchor = m.containerPointToLatLng(mouse);
         lastCenter = m.getCenter(); lastZoom = m.getZoom();
         frame = requestAnimationFrame(step);
       }
-      var p = m.mouseEventToContainerPoint(e);
+      var p = pinned ? m.getSize().divideBy(2) : m.mouseEventToContainerPoint(e);
       if (!p.equals(mouse)) { mouse = p; anchor = m.containerPointToLatLng(p); }
       // Zusammenziehen auf dem Trackpad (ctrlKey) liefert kleine Werte – stärker gewichten.
       var delta = L.DomEvent.getWheelDelta(e) * (e.ctrlKey ? 0.02 : 0.004);
@@ -411,7 +427,9 @@
   function append(a) {
     var item = items.get(a.id);
     if (!item || item.f.kind !== 'line') return;
-    item.f = Object.assign({}, item.f, { points: item.f.points.concat(a.points) });
+    // Gekappte Spur: vorne fällt weg, was Swift als `drop` meldet (Review 01.11.2026).
+    var kept = a.drop ? item.f.points.slice(a.drop) : item.f.points;
+    item.f = Object.assign({}, item.f, { points: kept.concat(a.points) });
     item.layer.setLatLngs(latLngs(item.f.points));
     if (item.f.arrows) placeArrows(item);
   }
@@ -475,15 +493,19 @@
     switch (c.cmd) {
       case 'follow':
         follow = true;
+        pinned = false;
         fitKey = null;
         fitAll(c.animate !== false);
         break;
       case 'center':
         follow = false;
+        pinned = !!c.pin;
+        if (Date.now() < wheelUntil) break;   // Rad-Zoom läuft – nicht dazwischenfahren
         map.setView([c.lat, c.lon], c.zoom == null ? map.getZoom() : c.zoom, { animate: c.animate !== false });
         break;
       case 'fit':
         follow = false;
+        pinned = false;
         if (!hasSize()) { map.setView([(c.south + c.north) / 2, (c.west + c.east) / 2], c.maxZoom || options.fitMaxZoom); break; }
         map.fitBounds([[c.south, c.west], [c.north, c.east]], { padding: [20, 20], maxZoom: c.maxZoom || 18, animate: c.animate !== false });
         break;
@@ -498,7 +520,12 @@
     requestAnimationFrame(function () { declutterQueued = false; declutter(); });
   }
 
-  /** Blendet Beschriftungen aus, die eine wichtigere überdecken würden (Auswahl immer sichtbar). */
+  /**
+   * Blendet Beschriftungen aus, die eine wichtigere überdecken würden (Auswahl immer sichtbar).
+   * Erst alle Maße lesen, dann schreiben: abwechselnd Stil setzen und Maß lesen
+   * erzwang je Beschriftung ein neues Layout (Review 01.11.2026). `visibility`
+   * ändert die Maße nicht – gelesen wird also auch an ausgeblendeten.
+   */
   function declutter() {
     var list = [];
     var order = 0;
@@ -508,17 +535,19 @@
       list.push({ item: item, rank: rank, order: order++ });
     });
     list.sort(function (a, b) { return b.rank - a.rank || a.order - b.order; });
+    list.forEach(function (entry) { entry.rect = entry.item.parts.label.getBoundingClientRect(); });
     var placed = [];
     list.forEach(function (entry) {
-      var label = entry.item.parts.label;
-      label.style.visibility = '';
-      var r = label.getBoundingClientRect();
-      if (r.width === 0) return;
-      var hit = !entry.item.f.emphasis && placed.some(function (p) {
-        return r.left < p.right && r.right > p.left && r.top < p.bottom && r.bottom > p.top;
-      });
-      if (hit) label.style.visibility = 'hidden';
-      else placed.push(r);
+      var r = entry.rect;
+      var hidden = false;
+      if (r.width !== 0) {
+        hidden = !entry.item.f.emphasis && placed.some(function (p) {
+          return r.left < p.right && r.right > p.left && r.top < p.bottom && r.bottom > p.top;
+        });
+        if (!hidden) placed.push(r);
+      }
+      var value = hidden ? 'hidden' : '';
+      if (entry.item.parts.label.style.visibility !== value) entry.item.parts.label.style.visibility = value;
     });
   }
 
@@ -526,11 +555,12 @@
     var m = JSON.parse(text);
     if (m.options) init(m.options);
     if (!map) return;
+    if (m.reset) Array.from(items.keys()).forEach(remove);
     (m.remove || []).forEach(remove);
     (m.upsert || []).forEach(upsert);
     (m.append || []).forEach(append);
     (m.commands || []).forEach(command);
-    if (m.remove || m.upsert || m.append) {
+    if (m.reset || m.remove || m.upsert || m.append) {
       if (!(m.commands && m.commands.length)) followContent();
       queueDeclutter();
     }
@@ -545,6 +575,7 @@
     following: function () { return follow; },
     arrowMarks: arrowMarks,
     arrowCount: function (id) { var i = items.get(id); return i && i.arrows ? i.arrows.length : 0; },
+    points: function (id) { var i = items.get(id); return i ? JSON.stringify(i.f.points) : null; },
     map: function () { return map; }
   };
   post({ type: 'ready' });

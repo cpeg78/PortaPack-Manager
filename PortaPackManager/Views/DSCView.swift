@@ -94,6 +94,7 @@ struct DSCView: View {
             .overlay(alignment: .bottomLeading) {
                 if !mapController.following, !(positioned.isEmpty && areas.isEmpty) {
                     Button("Alle Rufe zeigen", systemImage: "scope") { mapController.showAll() }
+                        .buttonStyle(.mapOverlay)
                         .padding(10)
                 }
             }

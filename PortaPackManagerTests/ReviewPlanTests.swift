@@ -209,3 +209,64 @@ struct ReviewPlanTests {
         #expect(!ReceptionPlanner.pauseSondeProbe(heard: nil, listenStart: nil, now: late, probeMinutes: 5, canReturn: true))
     }
 }
+
+/// Review 01.11.2026: Ausleihen, Plan-Models, exklusive Vorgänge der Sitzung.
+@Suite("Review 01.11.: Ausleihe, Plan-Models, Sitzung", .serialized)
+@MainActor
+struct ReviewAppFixTests {
+    @Test("Zwei gleichzeitige Ausleihen: der Plan bleibt pausiert, bis beide fertig sind")
+    func overlappingBorrows() async throws {
+        let planner = ReceptionPlanner.shared
+        #expect(!planner.paused)
+        let short = Task { @MainActor in
+            await DeviceArbiter.borrow { () async -> (result: Void, takenOver: Bool) in
+                try? await Task.sleep(for: .milliseconds(100))
+                return ((), true)
+            }
+        }
+        let long = Task { @MainActor in
+            await DeviceArbiter.borrow { () async -> (result: Void, takenOver: Bool) in
+                try? await Task.sleep(for: .milliseconds(800))
+                return ((), true)
+            }
+        }
+        await short.value
+        // Vorher setzte die erste Ausleihe `paused` hier schon auf false.
+        #expect(planner.paused)
+        await long.value
+        #expect(!planner.paused)
+        // Zähler fällt nie unter null.
+        planner.endBorrow()
+        #expect(planner.borrowCount == 0)
+    }
+
+    @Test("Von Hand gestartete Plan-Models lassen sich nach einem fremden Termin fortsetzen")
+    func planModelsRestartable() {
+        let store = ReceiverStore.shared
+        let planModels: [AnyObject] = [store.sonde, store.meteor, store.amateur]
+        for model in planModels {
+            #expect(model is ReceiverRestarting, "\(type(of: model)) fehlt ReceiverRestarting")
+        }
+    }
+
+    @Test("Zweiter exklusiver Vorgang der Sitzung wird abgewiesen, der erste behält Grund und Sperre")
+    func exclusiveRejectsSecond() async throws {
+        let session = DeviceSession()
+        let first = Task { @MainActor in
+            await session.performExclusive("Erster Vorgang") {
+                try? await Task.sleep(for: .milliseconds(300))
+                return 1
+            }
+        }
+        try await Task.sleep(for: .milliseconds(50))
+        #expect(session.busy)
+        var ran = false
+        let second = await session.performExclusive("Zweiter Vorgang") { ran = true; return 2 }
+        #expect(second == nil)
+        #expect(!ran)
+        #expect(session.busyReason == "Erster Vorgang")
+        #expect(await first.value == 1)
+        #expect(!session.busy)
+        #expect(await session.performExclusive("Danach") { 3 } == 3)
+    }
+}

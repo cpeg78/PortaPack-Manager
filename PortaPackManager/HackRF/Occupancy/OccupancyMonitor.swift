@@ -117,6 +117,7 @@ final class OccupancyMonitor {
             let rec = try store.load(url)
             recording = rec
             recordingURL = url
+            fileBehind = false
             defaults.set(url.path, forKey: "occupancyRecording")
             error = nil
             recomputeAnalysis()
@@ -169,6 +170,7 @@ final class OccupancyMonitor {
             recording = OccupancyRecording(name: name, plan: plan, sliceSeconds: sliceSeconds, thresholdDB: Float(thresholdDB))
             let url = store.newURL()
             recordingURL = url
+            fileBehind = false
             defaults.set(url.path, forKey: "occupancyRecording")
             summary = nil
             active = []
@@ -274,13 +276,21 @@ final class OccupancyMonitor {
         }
     }
 
+    /// Ein Schreibfehler ist passiert: Die Datei kennt nicht alle Scheiben im
+    /// Speicher und wird beim nächsten Speichern vollständig neu geschrieben.
+    private var fileBehind = false
+
     private func persist(_ slice: OccupancySlice) {
         guard var rec = recording, let url = recordingURL, slice.mean.count == rec.plan.binCount else { return }
         do {
-            let removed = try store.append(slice, to: &rec, url: url, maxBytes: Int(maxMB * 1_000_000))
+            // `append` trägt die Scheibe auch bei einem Fehler genau einmal in `rec`
+            // ein; die Datei wird dann beim nächsten Mal ganz neu geschrieben.
+            let removed = try store.append(slice, to: &rec, url: url, maxBytes: Int(maxMB * 1_000_000),
+                                           rewrite: fileBehind)
+            fileBehind = false
             if removed > 0 { Self.log.notice("Größengrenze: \(removed) alte Scheiben entfernt") }
         } catch {
-            rec.slices.append(slice)
+            fileBehind = true
             self.error = String(localized: "Speichern fehlgeschlagen: \(error.localizedDescription)")
         }
         recording = rec

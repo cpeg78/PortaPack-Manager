@@ -44,12 +44,138 @@ struct MapTests {
         #expect(grown.diff.upsert.isEmpty)
         #expect(grown.diff.append == [MapDiff.Append(id: "t", points: Array(long.points.suffix(2)))])
 
-        // Anderer Stil oder vorn gekürzt: ganz neu setzen.
+        // Anderer Stil: ganz neu setzen. Vorn gekürzt: nur `drop` (siehe gekappte Spur).
         var restyled = long
         restyled.width = 3
         #expect(MapDiff.make(old: state, new: [restyled]).diff.upsert.count == 1)
-        let trimmed = MapFeature.line("t", Array(points.dropFirst()), color: "#ff0000")
-        #expect(MapDiff.make(old: state, new: [trimmed]).diff.upsert.count == 1)
+        let trimmed = MapFeature.line("t", Array(points.prefix(3).dropFirst()), color: "#ff0000")
+        #expect(MapDiff.make(old: state, new: [trimmed]).diff.append == [MapDiff.Append(id: "t", points: [], drop: 1)])
+    }
+
+    /// Wendet einen Unterschied an wie `ppm-map.js` (`append`: vorne `drop` weg, hinten dazu).
+    static func apply(_ diff: MapDiff, to page: inout [String: [MapPoint]]) {
+        for id in diff.remove { page[id] = nil }
+        for f in diff.upsert { page[f.id] = f.points }
+        for a in diff.append {
+            guard let points = page[a.id] else { continue }
+            page[a.id] = Array(points.dropFirst(a.drop ?? 0)) + a.points
+        }
+    }
+
+    @Test("Gekappte Spur: vorne weg, hinten neu – nur die neuen Punkte gehen hinüber")
+    func diffGekappteSpur() throws {
+        func track(_ range: Range<Int>) -> MapFeature {
+            .line("t", range.map { Self.coordinate(50 + Double($0) * 0.001, 10 + Double($0) * 0.0005) }, color: "#ff0000")
+        }
+        let start = MapDiff.make(old: [:], new: [track(0..<1000)])
+        // Ein Punkt dazu, einer vorne weg (Kappung bei 1000 Punkten).
+        let one = MapDiff.make(old: start.state, new: [track(1..<1001)])
+        #expect(one.diff.upsert.isEmpty)
+        #expect(one.diff.append == [MapDiff.Append(id: "t", points: Array(track(1000..<1001).points), drop: 1)])
+        // Mehrere auf einmal; nur vorne gekürzt; nur hinten gewachsen ohne `drop`.
+        #expect(MapDiff.make(old: start.state, new: [track(3..<1003)]).diff.append.first?.drop == 3)
+        let trimmed = MapDiff.make(old: start.state, new: [track(10..<1000)]).diff
+        #expect(trimmed.append == [MapDiff.Append(id: "t", points: [], drop: 10)])
+        #expect(MapDiff.make(old: start.state, new: [track(0..<1002)]).diff.append.first?.drop == nil)
+        // Anderer Stil, ganz andere Punkte oder vorne geändert: ganz neu.
+        var restyled = track(1..<1001)
+        restyled.width = 3
+        #expect(MapDiff.make(old: start.state, new: [restyled]).diff.upsert.count == 1)
+        #expect(MapDiff.make(old: start.state, new: [track(2000..<2010)]).diff.upsert.count == 1)
+        var changed = track(1..<1001)
+        changed.points[5] = MapPoint(0, 0)
+        #expect(MapDiff.make(old: start.state, new: [changed]).diff.upsert.count == 1)
+        // `drop` steht im JSON nur, wenn vorne etwas wegfällt.
+        let json = try #require(MapMessage(diff: one.diff).json())
+        #expect(json.contains("\"drop\":1"))
+        let grownJSON = try #require(MapMessage(diff: MapDiff.make(old: start.state, new: [track(0..<1001)]).diff).json())
+        #expect(!grownJSON.contains("drop"))
+    }
+
+    @Test("Lange Spur im Dauerbetrieb: je Takt nur die neuen Punkte, die Seite bleibt gleich")
+    func diffLangeSpurDauerbetrieb() {
+        // Wie der ADS-B-Dekoder: anhängen, vorne auf 1000 kappen, je Takt 0–3 neue Punkte.
+        var trail: [MapPoint] = []
+        var sent: [String: MapFeature] = [:]
+        var page: [String: [MapPoint]] = [:]
+        var next = 0
+        var largest = 0
+        for tick in 0..<400 {
+            let count = [0, 1, 3, 2][tick % 4] + (tick == 0 ? 1200 : 0)
+            for _ in 0..<count {
+                trail.append(MapPoint(50 + Double(next) * 1e-4, 10 + Double(next % 7) * 1e-4))
+                next += 1
+            }
+            if trail.count > 1000 { trail.removeFirst(trail.count - 1000) }
+            var line = MapFeature.line("pl:1/trail", [], color: "#007aff", width: 1.5, opacity: 0.5)
+            line.points = trail
+            let (diff, state) = MapDiff.make(old: sent, new: [line])
+            sent = state
+            Self.apply(diff, to: &page)
+            #expect(page["pl:1/trail"] == trail)
+            if tick > 0 {
+                #expect(diff.upsert.isEmpty)
+                largest = max(largest, diff.append.map(\.points.count).max() ?? 0)
+            }
+        }
+        #expect(largest == 3)
+    }
+
+    @Test("Stehendes Ziel: gleiche Punkte mehrfach verwirren den Abgleich nicht")
+    func diffGleichePunkte() {
+        let same = Array(repeating: Self.coordinate(53, 10), count: 6)
+        let old = MapFeature.line("t", same + [Self.coordinate(53.1, 10)], color: "#000000")
+        let new = MapFeature.line("t", Array(same.dropFirst(2)) + [Self.coordinate(53.1, 10), Self.coordinate(53.2, 10)], color: "#000000")
+        var page: [String: [MapPoint]] = [:]
+        let first = MapDiff.make(old: [:], new: [old])
+        Self.apply(first.diff, to: &page)
+        let second = MapDiff.make(old: first.state, new: [new])
+        Self.apply(second.diff, to: &page)
+        #expect(page["t"] == new.points)
+        #expect(second.diff.upsert.isEmpty)
+    }
+
+    @Test("Nicht endliche Werte: Ziel ohne gültigen Punkt fällt weg, die Nachricht bleibt kodierbar")
+    func diffNichtEndlich() throws {
+        let good = MapFeature.marker("ok", at: Self.coordinate(53, 10), symbol: .plane, color: "#000000")
+        let lost = MapFeature.marker("nan", at: Self.coordinate(.nan, 10), symbol: .plane, color: "#000000")
+        var turned = MapFeature.marker("rot", at: Self.coordinate(53, 11), symbol: .plane, color: "#000000", rotation: .infinity)
+        turned.opacity = .nan
+        let trail = MapFeature.line("line", [Self.coordinate(53, 10), Self.coordinate(.nan, 10), Self.coordinate(53.2, .infinity),
+                                             Self.coordinate(53.3, 10)], color: "#000000")
+        let circle = MapFeature.circle("c", center: Self.coordinate(53, 10), radius: .nan, color: "#000000")
+        let result = MapDiff.make(old: [:], new: [good, lost, turned, trail, circle])
+        #expect(result.diff.upsert.map(\.id) == ["ok", "rot", "line", "c"])
+        #expect(result.state["nan"] == nil)
+        #expect(result.state["rot"]?.rotation == nil && result.state["rot"]?.opacity == nil)
+        #expect(result.state["line"]?.points == [MapPoint(53, 10), MapPoint(53.3, 10)])
+        #expect(result.state["c"]?.radius == nil)
+        #expect(MapMessage(diff: result.diff).json() != nil)
+        // Derselbe Stand noch einmal: kein Unterschied (gesendeter Stand ist der bereinigte).
+        #expect(MapDiff.make(old: result.state, new: [good, lost, turned, trail, circle]).diff.isEmpty)
+        // Befehle mit NaN erkennt `isFinite` (die Brücke lässt sie weg).
+        #expect(!MapCommand.center(Self.coordinate(.nan, 10)).isFinite)
+        #expect(MapCommand.center(Self.coordinate(53, 10)).isFinite)
+        // Ohne Bereinigung scheitert die Kodierung – deshalb darf `sent` dann nicht übernommen werden.
+        #expect(MapMessage(diff: MapDiff(upsert: [lost])).json() == nil)
+    }
+
+    @Test("Controller: eine abgebaute alte Karte trennt die neue nicht")
+    @MainActor
+    func controllerBesitz() {
+        let controller = MapController()
+        let old = LeafletCoordinator(), new = LeafletCoordinator()
+        var toOld = 0, toNew = 0
+        controller.attach(old) { _ in toOld += 1 }
+        controller.attach(new) { _ in toNew += 1 }
+        controller.detach(from: old)   // die alte Karte wird nach dem Aufbau der neuen abgebaut
+        controller.showAll()
+        #expect(toOld == 0 && toNew == 1)
+        controller.detach(from: new)
+        controller.showAll()           // ohne Karte: vorgemerkt, beim nächsten Anhängen zugestellt
+        #expect(toNew == 1)
+        controller.attach(new) { _ in toNew += 1 }
+        #expect(toNew == 2)
     }
 
     @Test("Doppelte Kennung: die letzte gilt")
@@ -80,7 +206,7 @@ struct MapTests {
         let evil = "</script><img src=x onerror=\"alert(1)\">'\\\u{2028}ÆØÅ"
         var f = MapFeature.marker("s", at: Self.coordinate(53.5, 9.9), symbol: .arrow, color: "#007aff", label: evil)
         f.tooltip = evil
-        let json = MapMessage(diff: MapDiff.make(old: [:], new: [f]).diff).json()
+        let json = try #require(MapMessage(diff: MapDiff.make(old: [:], new: [f]).diff).json())
         #expect(!json.contains("</"))
         #expect(json.contains("onerror=\\\"alert"))   // Anführungszeichen maskiert
         let object = try #require(try JSONSerialization.jsonObject(with: Data(json.utf8)) as? [String: Any])
@@ -194,7 +320,8 @@ struct MapTests {
     func befehle() throws {
         let message = MapMessage(options: MapOptions(fitMaxZoom: 10),
                                  commands: [.follow(), .center(Self.coordinate(53, 10), zoom: 9)])
-        let object = try #require(try JSONSerialization.jsonObject(with: Data(message.json().utf8)) as? [String: Any])
+        let json = try #require(message.json())
+        let object = try #require(try JSONSerialization.jsonObject(with: Data(json.utf8)) as? [String: Any])
         let options = try #require(object["options"] as? [String: Any])
         #expect(options["fitMaxZoom"] as? Double == 10)
         let commands = try #require(object["commands"] as? [[String: Any]])
@@ -271,6 +398,20 @@ struct MapTests {
         }
         #expect(points == longer.count)
 
+        // Gekappte Spur: vorne zwei weg, hinten einer dazu – die Seite hat danach genau diese Punkte.
+        let capped = Array(longer.dropFirst(2)) + [Self.coordinate(53.75, 10.1)]
+        features[1] = .line("sh:1/trail", capped, color: MapColor.blue, width: 2, arrows: true)
+        coordinator.update(features)
+        let expected = try #require(String(data: JSONEncoder().encode(features[1].points), encoding: .utf8))
+        var shown = ""
+        for _ in 0..<30 {
+            shown = await eval("return PPM.points('sh:1/trail')") as? String ?? ""
+            if shown == expected { break }
+            try await Task.sleep(for: .milliseconds(100))
+        }
+        #expect(shown == expected)
+
+
         // Richtungspfeile: reine Funktion in Pixeln, Abstand ≥ 60 Pt, Richtung im Bild.
         let north = await eval("return JSON.stringify(PPM.arrowMarks([[0,0],[0,-600]], 60))") as? String ?? ""
         let marks = try JSONSerialization.jsonObject(with: Data(north.utf8)) as? [[String: Double]] ?? []
@@ -294,6 +435,14 @@ struct MapTests {
         let view = try #require(controller.settledViewport)
         #expect(view.width == 640 && view.height == 420)
         #expect(view.south < view.north && view.zoom == 12)
+
+        // Abgleich nach gescheiterter Zustellung: `reset` verwirft alles, `upsert` bringt den Stand zurück.
+        func receive(_ message: MapMessage) async throws -> Int? {
+            let json = try #require(message.json())
+            return try? await webView.callAsyncJavaScript("return PPM.receive(m)", arguments: ["m": json], in: nil, contentWorld: .page) as? Int
+        }
+        #expect(try await receive(MapMessage(diff: MapDiff(upsert: [features[0]]), reset: true)) == 1)
+        #expect(try await receive(MapMessage(diff: MapDiff.make(old: [:], new: features).diff)) == features.count)
 
         if let path = ProcessInfo.processInfo.environment["PPM_MAP_SNAPSHOT"] {
             try await Task.sleep(for: .seconds(3))   // Kacheln

@@ -175,4 +175,36 @@ struct DeviceOwnershipReviewTests {
         let audible = receiver.lock.withLock { receiver.audible }
         #expect(audible == nil || audible == 500)
     }
+
+    // MARK: Review 01.11.2026 – Variante A: ohne Besitz nur merken
+
+    @Test("Radio ohne eigenen Empfang: Abstimmen, Verstärkung und Quarzkorrektur merken nur")
+    @MainActor
+    func radioWithoutDeviceOnlyRemembers() {
+        let model = RadioModel()
+        #expect(!model.ownsDevice)
+        model.tune(to: 101.3)
+        #expect(model.frequencyMHz == 101.3)
+        model.step(1)
+        #expect(abs(model.frequencyMHz - 101.4) < 1e-9)
+        model.lnaGain = 24
+        model.applyGainsQuietly()
+        #expect(model.error == nil)
+        let saved = HackRFDevice.frequencyCorrectionPPM
+        defer { HackRFDevice.frequencyCorrectionPPM = saved }
+        model.setCorrection(1.5)
+        #expect(model.correctionPPM == 1.5 && model.error == nil)
+    }
+
+    @Test("Spektrum ohne eigenen Empfang: Mitte und Bandbreite gelten erst beim nächsten Start")
+    @MainActor
+    func spectrumWithoutDeviceOnlyRemembers() {
+        let model = SpectrumModel()
+        #expect(!model.ownsDevice(nil))
+        model.tune(to: 433.92, device: nil)
+        #expect(model.centerMHz == 433.92)
+        model.sampleRateMHz = 2
+        model.applyQuietly(to: nil)
+        #expect(model.error == nil && model.sampleRateMHz == 2)
+    }
 }

@@ -395,6 +395,22 @@ struct SerialSafetyTests {
         #expect(SerialDeviceFinder.isMayhemConsole(devices).map(\.path) == ["/dev/cu.a"])
     }
 
+    @Test("Tastatur: langer Text wird in Zeilen bis 63 Zeichen geteilt, nichts geht verloren")
+    func keyboardChunks() {
+        let text = String(repeating: "Hallo Welt ", count: 10) + "äß!"   // Nicht-ASCII fällt weg
+        let commands = MayhemDevice.keyboardCommands(text)
+        #expect(commands.allSatisfy { $0.count <= MayhemDevice.maximumLineLength && $0.hasPrefix("keyboard ") })
+        let hex = commands.map { $0.dropFirst("keyboard ".count) }.joined()
+        let bytes = stride(from: 0, to: hex.count, by: 2).map { offset -> UInt8 in
+            let start = hex.index(hex.startIndex, offsetBy: offset)
+            return UInt8(hex[start..<hex.index(start, offsetBy: 2)], radix: 16)!
+        }
+        #expect(String(decoding: bytes, as: UTF8.self) == String(repeating: "Hallo Welt ", count: 10) + "!")
+        #expect(commands.count == 5)          // 111 Zeichen à höchstens 27 je Zeile
+        #expect(MayhemDevice.keyboardCommands("").isEmpty)
+        #expect(MayhemDevice.keyboardCommands("ok") == ["keyboard 6F6B"])
+    }
+
     /// Pty-Paar: SerialPort auf der Nebenseite, der Test spielt das Gerät.
     private func makePty() throws -> (master: Int32, port: SerialPort) {
         let master = posix_openpt(O_RDWR | O_NOCTTY)

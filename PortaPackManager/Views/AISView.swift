@@ -11,6 +11,8 @@ struct AISView: View {
     @AppStorage("homeLat") private var homeLat = 0.0
     @AppStorage("homeLon") private var homeLon = 0.0
     @State private var showTrails = true
+    /// Infokarte zugeklappt – das Schiff bleibt ausgewählt (Spur, Mitte).
+    @State private var cardHidden = false
     @AppStorage(ShipPhotoLookup.enabledKey) private var onlinePhotos = true
 
     private var home: CLLocationCoordinate2D? {
@@ -43,10 +45,12 @@ struct AISView: View {
 
     private var map: some View {
         AISMapView(ships: positioned.map { MapShip($0, now: Date()) }, home: home,
-                   showTrails: showTrails, running: model.running, selected: selection, selection: $selection)
+                   showTrails: showTrails, running: model.running, selected: selection, selection: $selection,
+                   onPick: { cardHidden = false })
             .equatable()
+            .onChange(of: selection) { _, _ in cardHidden = false }
             .overlay(alignment: .topTrailing) {
-                if let vessel = model.vessels.first(where: { $0.id == selection }) {
+                if !cardHidden, let vessel = model.vessels.first(where: { $0.id == selection }) {
                     infoCard(vessel)
                         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 10))
                         .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(.orange.opacity(0.6)))
@@ -56,7 +60,7 @@ struct AISView: View {
     }
 
     private var table: some View {
-        Table(model.vessels.sorted(by: order), selection: $selection, sortOrder: $order) {
+        Table(model.vessels.sorted(by: order, current: [byDistance]), selection: $selection, sortOrder: $order) {
             TableColumn("MMSI", sortUsing: ColumnSort("mmsi") { $0.mmsi }) { Text(String($0.mmsi)).font(.body.monospaced()) }.width(90)
             TableColumn("Name", sortUsing: ColumnSort("name", text: { $0.name })) { Text($0.name ?? "–") }.width(min: 90, ideal: 140)
             TableColumn("Rufz.", sortUsing: ColumnSort("rufzeichen", text: { $0.callsign })) { Text($0.callsign ?? "–").font(.body.monospaced()) }.width(60)
@@ -69,7 +73,7 @@ struct AISView: View {
             }.width(min: 60, ideal: 90)
             TableColumn("Status", sortUsing: ColumnSort("status", text: { AISMessage.statusText($0.status) })) { Text(AISMessage.statusText($0.status) ?? "–").foregroundStyle(.secondary) }.width(min: 70, ideal: 100)
             TableColumn("Ziel", sortUsing: ColumnSort("ziel", text: { $0.destination })) { Text($0.destination ?? "–") }.width(min: 60, ideal: 100)
-            TableColumn("Entfernung", sortUsing: ColumnSort("entfernung") { distanceKm($0.latitude, $0.longitude) }) { Text(distanceString($0)) }.width(90)
+            TableColumn("Entfernung", sortUsing: byDistance) { Text(distanceString($0)) }.width(90)
             TableColumn("Nachr.", sortUsing: ColumnSort("msg") { $0.messages }) { Text("\($0.messages)").monospacedDigit() }.width(40)
             TableColumn("Zuletzt", sortUsing: ColumnSort("zuletzt") { $0.lastSeen }) { Text($0.lastSeen, style: .relative).foregroundStyle(.secondary) }.width(90)
         }
@@ -191,7 +195,12 @@ struct AISView: View {
             linkTitle: String(localized: "Auf MarineTraffic öffnen"),
             linkURL: URL(string: "https://www.marinetraffic.com/en/ais/details/ships/mmsi:\(vessel.mmsi)"),
             width: 250,
-            onClose: { selection = nil })
+            onClose: { cardHidden = true })
+    }
+
+    /// Entfernung zum Standort – frisch je Neuzeichnen (siehe `sorted(by:current:)`).
+    private var byDistance: ColumnSort<AISVessel> {
+        ColumnSort("entfernung") { distanceKm($0.latitude, $0.longitude) }
     }
 
     private func distanceKm(_ lat: Double?, _ lon: Double?) -> Double? {
@@ -259,8 +268,13 @@ struct AISMapView: View, Equatable {
     /// Wert der Auswahl für den Vergleich – die Bindung allein löst kein Neuzeichnen aus.
     let selected: AISVessel.ID?
     @Binding var selection: AISVessel.ID?
+    /// Klick auf ein Schiff – öffnet die zugeklappte Infokarte wieder.
+    var onPick: () -> Void = {}
 
     @State private var map = MapController()
+    /// Die Karte führt dem ausgewählten Schiff nach, bis der Nutzer sie
+    /// verschiebt oder „Alle Schiffe zeigen“ wählt.
+    @State private var tracking = false
 
     nonisolated static func == (a: AISMapView, b: AISMapView) -> Bool {
         a.ships == b.ships && a.showTrails == b.showTrails && a.running == b.running
@@ -270,8 +284,19 @@ struct AISMapView: View, Equatable {
     var body: some View {
         LeafletMap(features: features, controller: map,
                    options: MapOptions(fitMaxZoom: 13, center: home.map(MapPoint.init) ?? MapPoint(54, 9), zoom: home == nil ? 5 : 9),
-                   onSelect: { key in selection = key.flatMap { $0.hasPrefix("sh:") ? Int($0.dropFirst(3)) : nil } })
-            .onChange(of: selection) { _, id in center(on: id) }
+                   onSelect: { key in
+                       let id = key.flatMap { $0.hasPrefix("sh:") ? Int($0.dropFirst(3)) : nil }
+                       if id != nil, id == selection { tracking = true; center(on: id) }   // erneuter Klick
+                       selection = id
+                       if selection != nil { onPick() }
+                   })
+            .onChange(of: selection) { _, id in
+                tracking = id != nil
+                center(on: id)
+            }
+            .onChange(of: selectedCoordinateKey) { _, _ in if tracking { center(on: selection) } }
+            .onChange(of: map.userPans) { _, _ in tracking = false }
+            .onChange(of: map.following) { _, following in if following { tracking = false } }
             .overlay(alignment: .topLeading) {
                 if ships.isEmpty {
                     Text(running ? "Noch keine Position empfangen" : "Empfang starten")
@@ -283,6 +308,7 @@ struct AISMapView: View, Equatable {
             .overlay(alignment: .bottomLeading) {
                 if !map.following, !ships.isEmpty {
                     Button("Alle Schiffe zeigen", systemImage: "scope") { map.showAll() }
+                        .buttonStyle(.mapOverlay)
                         .padding(10)
                 }
             }
@@ -295,10 +321,15 @@ struct AISMapView: View, Equatable {
         return list
     }
 
+    private var selectedCoordinateKey: String {
+        guard let selection, let ship = ships.first(where: { $0.id == selection }) else { return "" }
+        return "\(ship.coordinate.latitude),\(ship.coordinate.longitude)"
+    }
+
     /// Zentriert auf das ausgewählte Schiff (behält den Zoom).
     private func center(on id: Int?) {
         guard let id, let ship = ships.first(where: { $0.id == id }) else { return }
-        map.center(on: ship.coordinate)
+        map.center(on: ship.coordinate, pin: tracking)
     }
 }
 

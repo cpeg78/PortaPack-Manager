@@ -285,12 +285,17 @@ Free-to-air terrestrial TV (DVB-T2 HD) with picture and sound.
 Aircraft within radio range on the map – with registration, type, airline,
 route and photo.
 
-- **Start**, then click an aircraft to open its info card.
+- **Start**, then click an aircraft to open its info card. The ✕ only
+  closes the card – the aircraft stays selected (track, centre); click an
+  empty spot on the map to deselect it. The map keeps the selected aircraft
+  in the centre until you drag it; click the aircraft again to resume.
 - **Aircraft database** (load it under “Data & Export” with **Refresh**,
   ≈ 95 MB): registration and type even without internet. If you like, the app
   looks up unknown aircraft, routes and photos online – turn this on under
   **Settings ▸ Online Services**.
-- Under **Display**: metric units, flight tracks and **Show airports**.
+- Under **Display**: metric units, flight tracks, **Show airports** and
+  **List shows** – how long an aircraft without messages stays in the table
+  (15 min, 30 min, 1 h or 3 h; the archive always keeps it).
 - **Airports** on the map: large airports as filled circles, small airfields
   as rings, heliports (“H”) only when zoomed in closely. Click one for its
   name, town and elevation. Load the list (OurAirports, 12 MB) once under
@@ -303,6 +308,13 @@ route and photo.
 
 Range: indoors often just a few kilometers, with an outdoor antenna 100 km and
 more.
+
+The symbol shows the kind: helicopter, light aircraft (straight wings),
+glider, airliner; wide-body aircraft are drawn larger.
+
+Some aircraft – often helicopters, police and military – send no position,
+only their identity and altitude. They appear in the list and the archive,
+but not on the map.
 
 <a id="acars"></a>
 ## Aircraft Datalink (ACARS & VDL2)
@@ -577,7 +589,12 @@ at once:
 You get your meter's key from your utility, landlord or manufacturer. Enter it
 under “Data & Export” in **Meter Keys**: meter number (8 digits, printed on the
 meter) and key (32 characters 0–9/A–F). It's stored only in your Mac's
-keychain.
+keychain. The app uses it to decrypt security modes 5 and 7 (for mode 7 it
+also verifies the signature).
+
+**Techem heat cost allocators** send without a key but in their own format.
+The app reads the consumption units of the current and the previous period
+(with dates) as well as room and radiator temperature.
 
 ### EnOcean Sensors
 

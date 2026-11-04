@@ -151,6 +151,62 @@ struct ADSBDecoderTests {
         #expect(BeastFormat.signalByte(amplitude: message.signal) == 128)
     }
 
+    @Test("Obergrenze: höchstens 2000 Flugzeuge, die zuletzt gehörten bleiben")
+    func aircraftLimit() {
+        var tracker = AircraftTracker()
+        let start = Date(timeIntervalSince1970: 2_000_000_000)
+        for k in 0..<2500 {
+            tracker.ingest(ADSBMessage(icao: UInt32(k), downlinkFormat: 17, typeCode: 1,
+                                       content: .identification(callsign: "T\(k)", category: 0),
+                                       raw: [], date: start.addingTimeInterval(Double(k) * 0.01)))
+        }
+        #expect(tracker.aircraft.count <= AircraftTracker.maximumAircraft)
+        #expect(tracker.aircraft[2499] != nil)
+        #expect(tracker.aircraft[0] == nil)
+    }
+
+    @Test("Flugspur hält bis zu 1000 Punkte")
+    func trailLimit() {
+        var tracker = AircraftTracker()
+        tracker.receiver = (52.0, 4.0)
+        let start = Date(timeIntervalSince1970: 2_000_000_000)
+        // Lehrbuchbeispiel (gerade Meldung), Breite je Meldung um gut 100 m weiter.
+        for k in 0..<1200 {
+            tracker.ingest(ADSBMessage(icao: 0x40621D, downlinkFormat: 17, typeCode: 11,
+                                       content: .airbornePosition(altitude: 38000, oddFormat: false,
+                                                                  latCPR: 93000 + k * 20, lonCPR: 51372),
+                                       raw: [], date: start.addingTimeInterval(Double(k))))
+        }
+        let trail = tracker.aircraft[0x40621D]?.trail.count ?? 0
+        #expect(trail == AircraftTracker.trailLimit)
+    }
+
+    @Test("Obergrenze: gemerkte Adressen für die Ein-Bit-Korrektur wachsen nicht unbegrenzt")
+    func knownAddressLimit() {
+        // 4500 gültige DF17-Rahmen mit lauter verschiedenen Kennungen in einem Block.
+        var iq = Data()
+        for k in 0..<4500 {
+            let icao = UInt32(0x100000 + k)
+            var raw: [UInt8] = [0x8D, UInt8(icao >> 16), UInt8((icao >> 8) & 0xFF), UInt8(icao & 0xFF),
+                                0x20, 0x2C, 0xC3, 0x71, 0xC3, 0x2C, 0xE0, 0, 0, 0]
+            let crc = ADSBDemodulator.crc24(raw)
+            raw[11] = UInt8(crc >> 16); raw[12] = UInt8((crc >> 8) & 0xFF); raw[13] = UInt8(crc & 0xFF)
+            var half = [Bool](repeating: false, count: 16)
+            for p in [0, 2, 7, 9] { half[p] = true }
+            for i in 0..<112 {
+                let bit = raw[i / 8] & (0x80 >> UInt8(i % 8)) != 0
+                half += bit ? [true, false] : [false, true]
+            }
+            iq += Data(repeating: 0, count: 2 * 40)
+            for high in half { iq += [high ? UInt8(64) : 0, 0] }
+        }
+        iq += Data(repeating: 0, count: 2 * 400)
+        let demodulator = ADSBDemodulator()
+        let messages = demodulator.process(iq)
+        #expect(messages.count > ADSBDemodulator.maximumKnownAddresses)
+        #expect(demodulator.knownAddressCount <= ADSBDemodulator.maximumKnownAddresses)
+    }
+
     @Test("Beast: Stationskennung wie readsb (1A E4 + 36 Zeichen)")
     func beastUUID() {
         let bytes = BeastFormat.uuidMessage("0F1E2D3C-4B5A-6978-8796-A5B4C3D2E1F0")

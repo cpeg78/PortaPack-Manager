@@ -1,3 +1,4 @@
+import Accelerate
 import Foundation
 import Testing
 @testable import PortaPackManager
@@ -53,5 +54,36 @@ struct BandScannerTests {
         #expect(old[1].mode == .am && old[1].kind == "Flugfunk")
         let saved = [RadioFavorite(mhz: 446.00625, mode: .nfm, stepKHz: 6.25, kind: "PMR446")]
         #expect(RadioFavorite.decode(RadioFavorite.encode(saved)) == saved)
+    }
+
+    @Test("Gemeinsame FFT-Stufe rechnet bitgleich wie die frühere Schleife (Fenster je Wert, FFT, Betragsquadrat)")
+    func sharedPowerStageIsIdentical() {
+        let n = 1024
+        let fft = HannPowerFFT(size: n)
+        var state: UInt64 = 3
+        func next() -> Float {
+            state = state &* 6_364_136_223_846_793_005 &+ 1_442_695_040_888_963_407
+            return (Float(Int8(truncatingIfNeeded: state >> 56)) - 0.37) / 128
+        }
+        let inRe = (0..<n).map { _ in next() }, inIm = (0..<n).map { _ in next() }
+        // Früherer Weg (Spektrum/Suchlauf): Fenster in der Einleseschleife.
+        var window = [Float](repeating: 0, count: n)
+        vDSP_hann_window(&window, vDSP_Length(n), Int32(vDSP_HANN_NORM))
+        var oldRe = (0..<n).map { inRe[$0] * window[$0] }, oldIm = (0..<n).map { inIm[$0] * window[$0] }
+        var oldPower = [Float](repeating: 0, count: n)
+        let log2n = vDSP_Length(10)
+        let setup = vDSP_create_fftsetup(log2n, FFTRadix(kFFTRadix2))!
+        defer { vDSP_destroy_fftsetup(setup) }
+        oldRe.withUnsafeMutableBufferPointer { r in
+            oldIm.withUnsafeMutableBufferPointer { i in
+                var split = DSPSplitComplex(realp: r.baseAddress!, imagp: i.baseAddress!)
+                vDSP_fft_zip(setup, &split, 1, log2n, FFTDirection(kFFTDirection_Forward))
+                vDSP_zvmags(&split, 1, &oldPower, 1, vDSP_Length(n))
+            }
+        }
+        var re = inRe, im = inIm, power = [Float](repeating: 0, count: n)
+        fft.power(&re, &im, into: &power)
+        #expect(power == oldPower)
+        #expect(fft.window == window)
     }
 }

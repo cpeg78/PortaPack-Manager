@@ -119,6 +119,83 @@ struct ADSBSpeedTests {
         #expect(demod.framesCorrected == 1)
     }
 
+    // MARK: Mode S ohne ADS-B
+
+    /// Kurzer (7 Byte) oder langer Mode-S-Rahmen, dessen Prüfrest `overlay` ist
+    /// (DF11: Interrogator-Kennung, DF4/5/20/21: die Adresse).
+    private static func modeS(df: UInt8, payload: [UInt8], overlay: UInt32) -> [UInt8] {
+        var b = [df << 3 | (payload.first ?? 0) & 7] + payload.dropFirst() + [0, 0, 0]
+        let crc = ADSBDemodulator.crc24(b) ^ overlay
+        let n = b.count
+        b[n - 3] = UInt8(crc >> 16 & 0xFF); b[n - 2] = UInt8(crc >> 8 & 0xFF); b[n - 1] = UInt8(crc & 0xFF)
+        return b
+    }
+
+    private static func signal(_ frames: [[UInt8]], noise: Double = 0) -> Data {
+        var envelope = [Double](repeating: 0, count: 400 + frames.count * 400)
+        for (k, f) in frames.enumerated() { place(f, in: &envelope, at: 100 + 400 * k, phase: 0, amplitude: 60) }
+        var rng = Random(state: 1)
+        return iq(envelope, noise: noise, rng: &rng)
+    }
+
+    @Test("Mode S: DF11-Squitter zählt erst beim zweiten Mal, dann auch DF4 mit Höhe")
+    func squitterConfirmation() throws {
+        let icao: UInt32 = 0x3C4DD2
+        let squitter = Self.modeS(df: 11, payload: [5, 0x3C, 0x4D, 0xD2], overlay: 0)
+        // DF4 mit AC-Feld 0x14B4 (Q = 1) = 32 300 ft, Adresse im Prüfteil.
+        let surveillance = Self.modeS(df: 4, payload: [0, 0, 0x14, 0xB4], overlay: icao)
+        let t0 = Date(timeIntervalSince1970: 1000)
+
+        // Unbekannte Adresse: DF4 allein zählt nie, ein DF11 allein noch nicht.
+        let demod = ADSBDemodulator()
+        #expect(demod.process(Self.signal([surveillance]), now: t0).isEmpty)
+        #expect(demod.process(Self.signal([squitter]), now: t0).isEmpty)
+        // Zweiter Squitter binnen 60 s: bestätigt; danach zählt auch DF4.
+        let second = demod.process(Self.signal([squitter, surveillance]), now: t0.addingTimeInterval(1))
+        #expect(second.map(\.downlinkFormat) == [11, 4])
+        #expect(second.allSatisfy { $0.icao == icao })
+        guard case let .surveillance(altitude) = try #require(second.last).content else { Issue.record("falscher Typ"); return }
+        #expect(altitude == 32300)
+        #expect(demod.framesModeS == 2)
+
+        // Zweiter Squitter erst nach 60 s: wieder nur vorgemerkt.
+        let late = ADSBDemodulator()
+        #expect(late.process(Self.signal([squitter]), now: t0).isEmpty)
+        #expect(late.process(Self.signal([squitter]), now: t0.addingTimeInterval(61)).isEmpty)
+
+        // Ein per ADS-B bekanntes Flugzeug: Antworten zählen sofort.
+        let known = ADSBDemodulator()
+        let adsb = Self.frame(icao: 0x4840D6, me: [0x20, 0x2C, 0xC3, 0x71, 0xC3, 0x2C, 0xE0])
+        let reply = Self.modeS(df: 20, payload: [0, 0, 0x14, 0xB4, 0, 0, 0, 0, 0, 0, 0], overlay: 0x4840D6)
+        #expect(known.process(Self.signal([adsb, reply]), now: t0).map(\.downlinkFormat) == [17, 20])
+    }
+
+    @Test("Mode S: Höhe aus dem 13-Bit-Feld (pyModeS-Beispiel, Gillham, Meter)")
+    func altitude13() {
+        let message = ADSBDemodulator.decodeModeS(Self.bytes("A02014B400000000000000F9D514"), icao: 0)
+        guard case let .surveillance(altitude)? = message?.content else { Issue.record("falscher Typ"); return }
+        #expect(altitude == 32300)
+        for feet in stride(from: -1200, through: 50_000, by: 700) {
+            let ac12 = Self.gillhamAC12(feet: feet)
+            let ac13 = (ac12 & 0xFC0) << 1 | (ac12 & 0x3F)    // M = 0 einfügen
+            #expect(ADSBDemodulator.altitude13(ac13) == feet, "\(feet) ft")
+        }
+        #expect(ADSBDemodulator.altitude13(0x14B4 | 0x40) == nil)   // M = 1 (Meter)
+    }
+
+    @Test("Mode S: aus reinem Rauschen entsteht nichts")
+    func modeSNoPhantoms() {
+        var rng = Random(state: 21)
+        let envelope = [Double](repeating: 0, count: 4_000_000)
+        let demod = ADSBDemodulator()
+        var messages: [ADSBMessage] = []
+        for block in Self.blocks(Self.iq(envelope, noise: 12, rng: &rng)) {
+            messages += demod.process(block, now: Date(timeIntervalSince1970: 0))
+        }
+        print("Mode-S-Rauschprobe: \(demod.framesSeen) Präambel-Treffer, \(messages.count) Rahmen")
+        #expect(messages.isEmpty)
+    }
+
     // MARK: Höhe
 
     /// Unabhängiger Gillham-Kodierer: 500-ft-Stufe als Gray-Code auf D2 D4 A1 A2 A4

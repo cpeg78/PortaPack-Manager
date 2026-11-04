@@ -233,9 +233,17 @@ final class ReceiverStore {
     /// Kalibrierung). Früher stoppte das die Seite beim Verlassen; jetzt liefen
     /// sie sonst ewig als „an“ weiter. Nur bei einem *anderen* Besitzer –
     /// Wechselschleifen und Stoß-Empfänger geben das Gerät zwischendurch kurz frei.
+    ///
+    /// Dazu die Models des Plans (Sonde, METEOR, Amateurfunk), solange sie nicht
+    /// den laufenden Termin aufnehmen: Von Hand gestartet und vom Termin eines
+    /// *anderen* Plan-Models verdrängt, standen sie sonst als „läuft“ ohne Daten
+    /// (Review 01.11.2026). Normalerweise hält `suspendLocal` sie schon vorher an.
     private func stopOrphans(_ device: HackRFDevice, ticks: inout [ObjectIdentifier: Int]) {
         let occupant = Self.occupant(of: device)
-        for model in storage.values {
+        let planner = ReceptionPlanner.shared
+        let activePlan = planner.active.map(Self.planModel(of:))
+        let planModels: [AnyObject] = [planner.sonde, planner.meteor, planner.amateur].filter { $0 !== activePlan }
+        for model in Array(storage.values) + planModels {
             let id = ObjectIdentifier(model)
             guard let receiver = model as? ReceiverStopping, receiver.receiverRunning,
                   let occupant, occupant !== model else { ticks[id] = 0; continue }
@@ -301,20 +309,22 @@ final class ReceiverStore {
         RemoteHub.Mode.allCases.contains { RemoteHub.shared.existingOwner(for: $0) === model }
     }
 
-    /// Empfänger des Empfangsplans (Sonde, METEOR, Amateurfunk).
-    private func isPlanModel(_ model: AnyObject) -> Bool {
-        let planner = ReceptionPlanner.shared
-        return model === planner.sonde || model === planner.meteor || model === planner.amateur
-    }
-
     /// Vor einem Plan-Termin oder einer Ausleihe (`DeviceArbiter.borrow`): den
     /// Mac-Empfänger, der das Gerät gerade belegt (TV, BLE, GPS, Wasserstofflinie …),
     /// sauber beenden. Liefert ihn, wenn er sich danach neu starten lässt
-    /// (`ReceiverRestarting`). Empfänger von `RemoteHub` und des Plans regeln die selbst.
+    /// (`ReceiverRestarting`). Empfänger von `RemoteHub` regeln das selbst.
     /// Vorher verlor er nur das Gerät, `stopOrphans` stoppte ihn, und nach dem
     /// Termin blieb er aus (Nutzerwunsch 29.10.2026: er soll zurückkommen).
-    func suspendLocal(on device: HackRFDevice) -> AnyObject? {
-        guard let occupant = Self.occupant(of: device), !isHubModel(occupant), !isPlanModel(occupant),
+    ///
+    /// Seit 02.11.2026 auch ein von Hand gestartetes Plan-Model (Sonde, METEOR,
+    /// Amateurfunk), wenn der Termin ein *anderes* braucht – vorher blieb es als
+    /// „läuft“ ohne Daten stehen. Nicht angefasst werden `keeping` (das Model des
+    /// beginnenden Termins, der Plan startet es selbst neu) und das Model des
+    /// laufenden Termins.
+    func suspendLocal(on device: HackRFDevice, keeping kept: AnyObject? = nil) -> AnyObject? {
+        let activePlan = ReceptionPlanner.shared.active.map(Self.planModel(of:))
+        guard let occupant = Self.occupant(of: device), !isHubModel(occupant),
+              occupant !== kept, occupant !== activePlan,
               let receiver = occupant as? ReceiverStopping, receiver.receiverRunning else { return nil }
         Self.log.notice("\(DeviceArbiter.title(of: occupant), privacy: .public) angehalten – kommt danach zurück")
         receiver.stopReceiver(on: device)
@@ -629,7 +639,8 @@ struct SwitchPrompt: Equatable {
 /// Ein Mac-Empfänger, den Empfangsplan und `DeviceArbiter.borrow` nach ihrem Ende
 /// wieder starten – mit dem, was er zuletzt eingestellt hatte. Nicht dabei: Aufnahme
 /// und Antennen-Check (einmalige Vorgänge) sowie die Empfänger von `RemoteHub`
-/// und des Plans (eigene Wege).
+/// (eigener Weg). Die Plan-Models kommen nur zurück, wenn sie von Hand liefen
+/// und ein Termin eines anderen Plan-Models sie verdrängt hat.
 @MainActor
 protocol ReceiverRestarting: ReceiverStopping {
     func restartReceiver(on device: HackRFDevice)
@@ -648,6 +659,11 @@ extension DCF77Model: ReceiverRestarting { func restartReceiver(on device: HackR
 extension GPSModel: ReceiverRestarting { func restartReceiver(on device: HackRFDevice) { start(on: device) } }
 extension VORModel: ReceiverRestarting { func restartReceiver(on device: HackRFDevice) { start(on: device) } }
 extension CellModel: ReceiverRestarting { func restartReceiver(on device: HackRFDevice) { start(on: device) } }
+/// Plan-Models, von Hand gestartet und von einem Termin eines *anderen* Plan-Models
+/// angehalten (`suspendLocal`, 02.11.2026): danach mit den Einstellungen der Seite weiter.
+extension SondeModel: ReceiverRestarting { func restartReceiver(on device: HackRFDevice) { start(on: device) } }
+extension MeteorModel: ReceiverRestarting { func restartReceiver(on device: HackRFDevice) { start(on: device) } }
+extension AmateurSatModel: ReceiverRestarting { func restartReceiver(on device: HackRFDevice) { start(on: device) } }
 /// Funkruf: Frequenz wie auf der Seite (`@AppStorage("pagerFrequencyMHz")`).
 extension PagerModel: ReceiverRestarting {
     func restartReceiver(on device: HackRFDevice) {

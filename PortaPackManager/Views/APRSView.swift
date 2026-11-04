@@ -84,18 +84,19 @@ struct APRSView: View {
             .overlay(alignment: .bottomLeading) {
                 if !mapController.following, !positioned.isEmpty {
                     Button("Alle Stationen zeigen", systemImage: "scope") { mapController.showAll() }
+                        .buttonStyle(.mapOverlay)
                         .padding(10)
                 }
             }
     }
 
     private var table: some View {
-        Table(model.stations.sorted(by: order), selection: $selection, sortOrder: $order) {
+        Table(model.stations.sorted(by: order, current: [byDistance]), selection: $selection, sortOrder: $order) {
             TableColumn("Rufzeichen", sortUsing: ColumnSort("rufzeichen", text: { $0.id })) { Text($0.id).font(.body.monospaced()) }.width(min: 80, ideal: 100)
             TableColumn("Typ", sortUsing: ColumnSort("typ", text: { $0.last.kind.title })) { station in
                 Label(station.last.kind.title, systemImage: station.last.systemImage)
             }.width(min: 80, ideal: 110)
-            TableColumn("Entfernung", sortUsing: ColumnSort("entfernung") { distanceKm($0.latitude, $0.longitude) }) { Text(distanceString($0)) }.width(90)
+            TableColumn("Entfernung", sortUsing: byDistance) { Text(distanceString($0)) }.width(90)
             TableColumn("Tempo", sortUsing: ColumnSort("tempo") { $0.last.speedKnots }) { station in
                 Text(station.last.speedKnots.map { String(format: "%.0f km/h", $0 * 1.852) } ?? "–")
             }.width(70)
@@ -191,6 +192,11 @@ struct APRSView: View {
         if !packet.comment.isEmpty { parts.append(packet.comment) }
         if packet.objectName != nil { parts.append(String(localized: "von \(packet.source)")) }
         return parts.joined(separator: " · ")
+    }
+
+    /// Entfernung zum Standort – frisch je Neuzeichnen (siehe `sorted(by:current:)`).
+    private var byDistance: ColumnSort<APRSStation> {
+        ColumnSort("entfernung") { distanceKm($0.latitude, $0.longitude) }
     }
 
     private func distanceKm(_ lat: Double?, _ lon: Double?) -> Double? {

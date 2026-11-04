@@ -135,6 +135,7 @@ struct MeshtasticView: View {
             .overlay(alignment: .bottomLeading) {
                 if !mapController.following, !positioned.isEmpty {
                     Button("Alle Knoten zeigen", systemImage: "scope") { mapController.showAll() }
+                        .buttonStyle(.mapOverlay)
                         .padding(10)
                 }
             }

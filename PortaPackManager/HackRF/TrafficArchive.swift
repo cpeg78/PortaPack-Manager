@@ -127,7 +127,10 @@ final class TrafficArchive {
             if open[update.key] == nil, previous == nil, let begin = sessionStart,
                update.lastSeen.timeIntervalSince(begin) <= Self.gap {
                 let kind = kind, key = update.key, after = update.lastSeen.addingTimeInterval(-Self.gap)
-                if let resumed = try? database.sync({ try $0.latestSighting(kind: kind, key: key, after: after) }) {
+                // Lese-Verbindung: wartet nicht hinter Übernahme oder Sicherung
+                // (Review 01.11.2026). Gesucht wird eine Sichtung vor dem Neustart –
+                // die ist längst festgeschrieben.
+                if let resumed = try? database.readNow({ try $0.latestSighting(kind: kind, key: key, after: after) }) {
                     open[update.key] = resumed
                 }
             }

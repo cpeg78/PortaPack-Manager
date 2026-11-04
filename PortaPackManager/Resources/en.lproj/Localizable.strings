@@ -38,6 +38,7 @@
 "%@ (nicht geprüft)" = "%@ (not verified)";
 "%@ / %@" = "%@ / %@";
 "%@ Bilder/s" = "%@ frames/s";
+"%@ Einheiten seit %@, Raum %@, Heizkörper %@" = "%1$@ units since %2$@, room %3$@, radiator %4$@";
 "%@ Es wurde nichts geschrieben." = "%@ Nothing was written.";
 "%@ Flugzeuge" = "%@ aircraft";
 "%@ Hol den Abgleich danach nach." = "%@ Do the calibration later.";
@@ -85,6 +86,7 @@
 "%@ wurde auf 8 Bit umgerechnet (Faktor %.3g, Spitze ≈ 100 von 127)." = "%@ was converted to 8 bits (factor %.3g, peak ≈ 100 of 127).";
 "%@ °C" = "%@ °C";
 "%@ °C, Soll %@ °C" = "%@ °C, target %@ °C";
+"%@ °C, Soll %@, Ventil %lld %%" = "%1$@ °C, target %2$@, valve %3$lld %%";
 "%@ · %@" = "%@ · %@";
 "%@ · %@ · %@" = "%@ · %@ · %@";
 "%@ · %@ · %@ · %lld km · %lld m" = "%@ · %@ · %@ · %lld km · %lld m";
@@ -261,6 +263,8 @@
 "+%@" = "+%@";
 ", Batterie schwach" = ", battery low";
 ", I/Q getauscht" = ", I/Q swapped";
+", MAC falsch" = ", MAC wrong";
+", MAC geprüft" = ", MAC verified";
 "--:--" = "--:--";
 "." = ".";
 "0 (100 ms)" = "0 (100 ms)";
@@ -617,7 +621,9 @@
 "Auswahl aufheben" = "Deselect";
 "Auswerfen & zurück zu Mayhem" = "Eject & Return to Mayhem";
 "Auswertung" = "Analysis";
+"Authentifizierungsschicht (AFL)" = "Authentication layer (AFL)";
 "Authentisierung" = "Authentication";
+"Automatik" = "Automatic";
 "Automatik: %@" = "Automatic: %@";
 "Automatisch" = "Automatic";
 "Automatisch abgleichen" = "Calibrate Automatically";
@@ -822,6 +828,7 @@
 "Bodenhindernis" = "Ground obstacle";
 "Bodenhöhe" = "Ground elevation";
 "Bodenstation" = "Ground station";
+"Boost" = "Boost";
 "Breite" = "Latitude";
 "Breite des Empfangsfilters. Schmaler dämpft Nachbarn und Rauschen, breiter klingt voller." = "Width of the receive filter. Narrower rejects neighbours and noise, wider sounds fuller.";
 "Breiter Ausschnitt (16 MHz)" = "Wide span (16 MHz)";
@@ -1017,6 +1024,7 @@
 "Der HackRF liefert keine Daten (Zeitüberschreitung)." = "The HackRF isn’t delivering data (timeout).";
 "Der HackRF liest Beacons (DSSS 1/2 Mbit/s, OFDM 6–54 Mbit/s) und Probe-Anfragen; 802.11n/ac-Daten dekodiert er nicht." = "The HackRF reads beacons (DSSS 1/2 Mbit/s, OFDM 6–54 Mbit/s) and probe requests; it doesn’t decode 802.11n/ac data.";
 "Der HackRF ließ sich nicht öffnen (Fehler %@). Zieh das USB-Kabel kurz ab und steck es wieder an." = "The HackRF couldn’t be opened (error %@). Briefly unplug the USB cable and plug it back in.";
+"Der HackRF reagiert nicht mehr. Zieh das USB-Kabel kurz ab und steck es wieder an." = "The HackRF no longer responds. Briefly unplug the USB cable and plug it back in.";
 "Der HackRF-Modus wurde nicht erreicht – hol den Abgleich später in den Einstellungen (Antenne & Gerät) nach." = "HackRF mode couldn’t be reached – do the calibration later in Settings (Antenna & Device).";
 "Der Mac hört alle drei Bluetooth-Werbekanäle zugleich und ist empfindlicher als der HackRF; Bluetooth 5 Long Range empfängt er nicht." = "The Mac listens on all three Bluetooth advertising channels at once and is more sensitive than the HackRF; it can’t receive Bluetooth 5 Long Range.";
 "Der Mac ist stumm – der Ton läuft im Browser (Fernzugriff)." = "The Mac is muted – audio plays in the browser (Remote Access).";
@@ -1073,6 +1081,7 @@
 "Die App „SD over USB“ (APPS/sdusb.ppma) fehlt oder startet nicht. Aktualisiere zuerst die Firmware." = "The “SD over USB” app (APPS/sdusb.ppma) is missing or doesn't start. Update the firmware first.";
 "Die Apps aus %@ werden aufs Gerät kopiert. Vorhandene Apps gleichen Namens werden ersetzt." = "The apps from %@ will be copied to the device. Existing apps with the same name will be replaced.";
 "Die Archiv-Datenbank war beschädigt und wurde neu angelegt. Die alte Datei liegt als „%@“ daneben." = "The archive database was damaged and has been recreated. The old file is kept next to it as “%@”.";
+"Die Archivdatei der Sicherung ist beschädigt und lässt sich nicht einspielen. Dein Archiv bleibt unverändert." = "The archive file in the backup is damaged and cannot be restored. Your archive stays unchanged.";
 "Die Aufnahme hat %lld Kanäle – nur einkanalige Aufnahmen lassen sich auswerten." = "The recording has %lld channels – only single-channel recordings can be analysed.";
 "Die Aufnahme passt nicht zu „%@“ (%@) – die Ergebnisse sind unbrauchbar." = "The recording doesn't match “%@” (%@) – the results are unusable.";
 "Die Aufnahme speichert alles, was ankommt – auch Rauschen." = "The recording saves everything that comes in – including noise.";
@@ -1420,6 +1429,7 @@
 "Farbton %.0f°, Sättigung %.0f %%" = "Hue %.0f°, saturation %.0f %%";
 "Favoriten" = "Favorites";
 "Fax/Daten" = "Fax/Data";
+"Fehler" = "Error";
 "Fehler %lld" = "Error %lld";
 "Fehler: %@ – neuer Versuch gleich · %@" = "Error: %@ – retrying shortly · %@";
 "Fehlerbehebung" = "Troubleshooting";
@@ -1510,6 +1520,7 @@
 "Flugzeuge hörbar: Signale bis %@ über dem Rauschen, rund %lld pro Sekunde." = "Aircraft audible: signals up to %@ above noise, about %lld per second.";
 "Flugzeuge hört man am besten mit freier Sicht zum Himmel – drinnen reicht es oft nur wenige Kilometer." = "Aircraft are heard best with a clear view of the sky – indoors the range is often only a few kilometers.";
 "Flugzeuge live auf der Karte, mit Typ, Strecke und Foto" = "Live aircraft on the map, with type, route and photo";
+"Flugzeuge ohne Meldung seit dieser Zeit verschwinden aus der Tabelle. Im Archiv bleiben sie; auf der Karte stehen sie höchstens 15 Minuten." = "Aircraft not heard for this long disappear from the table. They stay in the archive; the map shows them for at most 15 minutes.";
 "Flugzeuge …" = "Aircraft …";
 "Flächenflugzeug" = "Fixed-wing aircraft";
 "Folgenummer" = "Sequence number";
@@ -1634,8 +1645,10 @@
 "Gerade" = "Linear";
 "Gerade empfängt die App für %@." = "The app is currently receiving for %@.";
 "Gerade fliegt keine Sonde in Hörweite – Sonden steigen meist zweimal am Tag (siehe Empfangsplan). Keine Aussage über die Antenne." = "No sonde is in range right now – sondes usually launch twice a day (see Reception Schedule). No verdict on the antenna.";
+"Gerade laufen zu viele Anmeldungen – versuch es gleich noch einmal." = "Too many sign-ins are running right now – please try again in a moment.";
 "Gerade läuft %@. Beenden und %@ starten?" = "%1$@ is running. Stop it and start %2$@?";
 "Gerade läuft eine geplante Aufnahme – der Check würde sie unterbrechen." = "A scheduled recording is running – the check would interrupt it.";
+"Gerade läuft eine Übertragung mit der SD-Karte („%@“)." = "A transfer with the SD card is in progress (“%@”).";
 "Gerade läuft: %@. Warte, bis das fertig ist – ein Abbruch mitten im Schreiben kann das Gerät unbrauchbar machen." = "Currently running: %@. Wait until it has finished – interrupting it mid-write can leave the device unusable.";
 "Gerade sendet keine Sonde." = "No sonde is transmitting right now.";
 "Gerät" = "Device";
@@ -1759,6 +1772,8 @@
 "Heizen/Kühlen" = "Heat/cool";
 "Heizkosten-Einheiten" = "Heat cost units";
 "Heizkostenverteiler" = "Heat cost allocator";
+"Heizkörpertemperatur" = "Radiator temperature";
+"Heizkörperthermostat" = "Radiator thermostat";
 "Heizungsventil" = "Radiator valve";
 "Heller/dunkler regeln" = "Move brightness";
 "Helligkeit" = "Illuminance";
@@ -1880,6 +1895,7 @@
 "In der Luft" = "Airborne";
 "In der Messzeit hat niemand hörbar gefunkt – für eine Aussage länger lauschen (Seite „Flugfunk“, „Aktive Kanäle finden“)." = "Nobody transmitted audibly during the measurement – listen longer for a verdict (“Airband” page, “Find Active Channels”).";
 "In dieser Firmware-Version fehlt das Paket für die SD-Karte (%@)." = "This firmware version is missing the package for the SD card (%@).";
+"Infokarte schließen" = "Close info card";
 "Information" = "Information";
 "Inhalt" = "Contents";
 "Inhalt AES-verschlüsselt" = "Content AES-encrypted";
@@ -2083,6 +2099,7 @@
 "Kombigerät" = "Combined interface";
 "Kommen einmal täglich von CelesTrak. Über dich geht dabei nichts hinaus." = "Fetched once a day from CelesTrak. Nothing about you is sent.";
 "Kommentar" = "Comment";
+"Kommunikationsfehler" = "Communication error";
 "Kommunikationsgerät" = "Communication device";
 "Kompaktrahmen" = "Compact frame";
 "Konfiguration" = "Configuration";
@@ -2196,6 +2213,7 @@
 "Link-Key hinzufügen" = "Add Link Key";
 "Links" = "Left";
 "Liste als CSV sichern …" = "Save list as CSV …";
+"Liste zeigt" = "List shows";
 "Live" = "Live";
 "LoRaWAN" = "LoRaWAN";
 "LoRaWAN EU-Kanäle" = "LoRaWAN EU channels";
@@ -2419,6 +2437,7 @@
 "Nachricht wählen, um den vollständigen Text zu sehen." = "Select a message to see the full text.";
 "Nachrichten" = "Messages";
 "Nachrichten/s" = "Messages/s";
+"Nachrichtenzähler" = "Message counter";
 "Nacht – nur Infrarot" = "Night – infrared only";
 "Nachverstärkung (VGA, 0–62 dB): bringt das Signal auf die richtige Höhe für den Wandler. Erst die Eingangsverstärkung einstellen, dann diese." = "Baseband gain (VGA, 0–62 dB): brings the signal to the right level for the converter. Set the input gain first, then this one.";
 "Name" = "Name";
@@ -2475,6 +2494,7 @@
 "Neutrale Schiffe und Luftfahrzeuge (bewaffneter Konflikt)" = "Neutral ships and aircraft (armed conflict)";
 "Nicht entschlüsselt" = "Not decrypted";
 "Nicht gefunden" = "Not found";
+"Nicht gestartet: %@ – es läuft schon: %@" = "Not started: %@ – already running: %@";
 "Nicht im Ausschnitt: %@. Die Mitte richtet sich nach der Liste; Kanäle mit Stern haben Vorrang." = "Not in span: %@. The center follows the list; starred channels take priority.";
 "Nicht korrigierbar" = "Uncorrectable";
 "Nicht mehr festhalten" = "Unlock";
@@ -2621,6 +2641,7 @@
 "Ohne TLS gehen Benutzer und Passwort unverschlüsselt durchs Netz. Im eigenen Heimnetz meist vertretbar – sonst TLS einschalten (Port 8883)." = "Without TLS, user name and password travel unencrypted over the network. Usually acceptable within your own home network – otherwise turn on TLS (port 8883).";
 "Ohne Text" = "Without text";
 "Ohne den Schlüssel in der Adresse zeigt die Seite nichts. Ein neuer Schlüssel sperrt alle bisher geöffneten Seiten aus." = "Without the key in the address, the page shows nothing. A new key locks out all previously opened pages.";
+"Ohne https geht das Thema unverschlüsselt durchs Netz – wer mitliest, kann deine Meldungen abonnieren. Im eigenen Heimnetz meist vertretbar, sonst https verwenden." = "Without https the topic travels unencrypted over the network – anyone listening in can subscribe to your notifications. Usually acceptable on your own home network, otherwise use https.";
 "Ohne sie fehlen Kennzeichen, Typ und Betreiber." = "Without it, registration, type and operator are missing.";
 "Oldies" = "Oldies";
 "Online gefunden" = "Found online";
@@ -2650,6 +2671,7 @@
 "Pakete" = "Packets";
 "Parametersatz" = "Parameter set";
 "Part-ID" = "Part ID";
+"Party" = "Party";
 "Passagierschiff" = "Passenger";
 "Passwort" = "Password";
 "Passwort wiederholen" = "Repeat password";
@@ -2798,6 +2820,7 @@
 "Rauch erkannt" = "Smoke detected";
 "Rauchmelder" = "Smoke detector";
 "Raumsensor" = "Room sensor";
+"Raumtemperatur" = "Room temperature";
 "Rauschabstand" = "SNR";
 "Rauschboden %lld dBFS" = "Noise floor %lld dBFS";
 "Rauschen" = "Noise";
@@ -3171,6 +3194,7 @@
 "Squitter der Bodenstation" = "Ground station squitter";
 "Stabil" = "Stable";
 "Stand" = "As of";
+"Stand vom" = "As of";
 "Standardantwort" = "Default response";
 "Standardschlüssel „AQ==“. Direktnachrichten und fremde Kanäle erscheinen nur mit ihrem Kopf (Absender, Ziel)." = "Default key “AQ==”. Direct messages and other channels only show their header (sender, recipient).";
 "Standort" = "Location";
@@ -3215,6 +3239,8 @@
 "Steig-/Sinkrate" = "Climb/descent rate";
 "Steigen" = "Climb";
 "Steigen %@ m/s" = "Climb %@ m/s";
+"Stellbereich zu groß" = "Adjustment range too large";
+"Stellbereich zu klein" = "Adjustment range too small";
 "Stelle die SD-Karte bereit" = "Mounting the SD card";
 "Stellt LNA, VGA und den eingebauten Verstärker so ein, dass der Wandler gut ausgesteuert ist und nicht übersteuert (wenige Sekunden)." = "Sets LNA, VGA and the built-in amplifier so the converter is well driven without overloading (a few seconds).";
 "Stereo" = "Stereo";
@@ -3469,6 +3495,8 @@
 "VOR/ILS-Navigation" = "VOR/ILS navigation";
 "Ventil" = "Valve";
 "Ventil %lld %%" = "Valve %lld %%";
+"Ventil schwergängig" = "Valve stiff";
+"Ventilfehler" = "Valve error";
 "Verbinde …" = "Connecting …";
 "Verbinde … · %@" = "Connecting … · %@";
 "Verbindung" = "Connection";
@@ -3484,6 +3512,8 @@
 "Verbindungsintervall" = "Connection interval";
 "Verbindungsstatus" = "Link status";
 "Verbindungstest" = "Link test";
+"Verbrauch Vorperiode" = "Consumption, previous period";
+"Verbrauch laufende Periode" = "Consumption, current period";
 "Verbrauchsanzeige" = "Consumption display";
 "Verbunden" = "Connected";
 "Verbunden seit %@" = "Connected since %@";
@@ -3542,6 +3572,7 @@
 "Vorlage" = "Template";
 "Vorlagen" = "Presets";
 "Vorlauftemperatur" = "Flow temperature";
+"Vorperiode bis" = "Previous period until";
 "Vorrang aus" = "Priority off";
 "Vorrang ein" = "Priority on";
 "Vorrang: unterbricht jeden anderen Kanal" = "Priority: interrupts any other channel";
@@ -3911,6 +3942,7 @@
 "ja" = "yes";
 "ja (AES-128-CBC)" = "yes (AES-128-CBC)";
 "ja (ELL, AES-CTR, ACC %lld)" = "yes (ELL, AES-CTR, ACC %lld)";
+"ja (Modus 7, AES-128-CBC%@)" = "yes (mode 7, AES-128-CBC%@)";
 "jetzt!" = "now!";
 "kein Bild (%lld gültige Rahmen, Pegel %lld dBFS)" = "no image (%lld valid frames, level %lld dBFS)";
 "kein Eintrag" = "no entry";
@@ -3943,6 +3975,7 @@
 "m" = "m";
 "m/s" = "m/s";
 "macOS findet die App nicht als Anmeldeobjekt – liegt sie im Ordner „Programme“?" = "macOS cannot find the app as a login item – is it in the Applications folder?";
+"manuell" = "manual";
 "manövrierbehindert" = "restricted maneuverability";
 "manövrierunfähig" = "not under command";
 "mäßig" = "fair";
@@ -4021,6 +4054,9 @@
 "verschlüsselt (Modus %lld, nicht unterstützt)" = "encrypted (mode %lld, not supported)";
 "verschlüsselt (Modus 5) – Schlüssel fehlt" = "encrypted (mode 5) – key missing";
 "verschlüsselt (Modus 5) – Schlüssel passt nicht" = "encrypted (mode 5) – key doesn’t match";
+"verschlüsselt (Modus 7) – Schlüssel fehlt" = "encrypted (mode 7) – key missing";
+"verschlüsselt (Modus 7) – Schlüssel passt nicht" = "encrypted (mode 7) – key doesn't match";
+"verschlüsselt (Modus 7) – ohne Nachrichtenzähler" = "encrypted (mode 7) – no message counter";
 "volle Netzdaten" = "full network data";
 "vollwertig (FTD)" = "full (FTD)";
 "vom Flugzeug" = "from aircraft";

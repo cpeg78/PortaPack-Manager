@@ -265,12 +265,20 @@ actor MayhemDevice {
     }
 
     func type(_ text: String) throws {
-        let hex = text.unicodeScalars.compactMap { scalar -> String? in
-            guard scalar.isASCII else { return nil }
-            return String(format: "%02X", scalar.value)
-        }.joined()
-        guard !hex.isEmpty else { return }
-        try expectOK("keyboard \(hex)")
+        for command in Self.keyboardCommands(text) { try expectOK(command) }
+    }
+
+    /// `keyboard <hex>`-Zeilen für einen Text (nur ASCII). Die Shell schneidet
+    /// Zeilen nach 63 Zeichen still ab – bei einem langen Text kamen nur die
+    /// ersten 27 Zeichen an, und `expectOK` meldete trotzdem Erfolg (Review
+    /// 01.11.2026). Deshalb in Stücke zu höchstens 27 Zeichen.
+    nonisolated static func keyboardCommands(_ text: String) -> [String] {
+        let prefix = "keyboard "
+        let perLine = (maximumLineLength - prefix.count) / 2
+        let bytes = text.unicodeScalars.filter(\.isASCII).map { UInt8($0.value) }
+        return stride(from: 0, to: bytes.count, by: perLine).map { start in
+            prefix + bytes[start..<min(start + perLine, bytes.count)].map { String(format: "%02X", $0) }.joined()
+        }
     }
 
     func appList() throws -> [(id: String, name: String)] {
@@ -374,6 +382,7 @@ actor MayhemDevice {
     }
 
     /// Lädt eine Datei auf die SD-Karte. `chunkSize` Bytes je `fwb`-Aufruf.
+    /// `data` darf ein Ausschnitt sein (Index beginnt nicht bei 0).
     func upload(_ data: Data, to path: String, chunkSize: Int = 4096,
                 progress: @Sendable (Int, Int) -> Void) throws {
         let open = try pathCommand("fopen", path)
@@ -385,7 +394,7 @@ actor MayhemDevice {
             while offset < data.count {
                 try Task.checkCancellation()
                 let end = min(offset + chunkSize, data.count)
-                try shell.writeBinaryChunk(data[offset..<end])
+                try shell.writeBinaryChunk(data[(data.startIndex + offset)..<(data.startIndex + end)])
                 offset = end
                 progress(offset, data.count)
             }
@@ -393,6 +402,18 @@ actor MayhemDevice {
         } catch {
             _ = try? shell.run("fclose", timeout: 3)
             throw error
+        }
+    }
+
+    /// Prüft eine hochgeladene Datei: CRC-32 des Geräts und Größe müssen zu
+    /// `data` passen – sonst ist die Übertragung unvollständig oder verfälscht.
+    func verifyUpload(_ data: Data, at path: String) throws {
+        let expected = MayhemCRC32.checksum(data)
+        let actual = try crc32(path)
+        guard expected == actual else { throw MayhemError.checksumMismatch(expected: expected, actual: actual) }
+        let remoteSize = try fileSize(path)
+        guard remoteSize == data.count else {
+            throw MayhemError.unexpectedResponse(String(localized: "Auf dem Gerät liegen \(remoteSize) statt \(data.count) Bytes – die Übertragung ist unvollständig."))
         }
     }
 

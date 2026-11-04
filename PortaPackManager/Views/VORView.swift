@@ -114,6 +114,7 @@ struct VORView: View {
         .overlay(alignment: .bottomLeading) {
             if !mapController.following, !nearby.isEmpty {
                 Button("Alle Funkfeuer zeigen", systemImage: "scope") { mapController.showAll() }
+                    .buttonStyle(.mapOverlay)
                     .padding(10)
             }
         }

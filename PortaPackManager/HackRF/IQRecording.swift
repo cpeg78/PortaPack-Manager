@@ -111,6 +111,10 @@ final class IQRecorder: @unchecked Sendable {
     }
 
     func write(_ block: Data) {
+        // Spitze vor dem Lock und verzweigungsfrei (vektorisiert wie
+        // `HackRFDevice.blockStatistics`) – vorher byteweise mit generischem
+        // `clamped` unter dem Lock, bei 20 MS/s 40 MB/s (Review 01.11.2026).
+        let blockPeak = Self.peak(of: block)
         lock.withLock {
             guard let handle else { return }
             guard written + block.count <= limit else {
@@ -124,12 +128,20 @@ final class IQRecorder: @unchecked Sendable {
                 return
             }
             written += block.count
-            block.withUnsafeBytes { (raw: UnsafeRawBufferPointer) in
-                for v in raw.bindMemory(to: Int8.self) {
-                    let a = Int8(abs(Int(v)).clamped(to: 0...127))
-                    if a > peak { peak = a }
-                }
+            if blockPeak > peak { peak = blockPeak }
+        }
+    }
+
+    /// Größter Betrag eines Blocks vorzeichenbehafteter 8-Bit-Werte (−128 zählt als 127).
+    static func peak(of block: Data) -> Int8 {
+        block.withUnsafeBytes { (raw: UnsafeRawBufferPointer) -> Int8 in
+            var top: Int32 = 0
+            for v in raw.bindMemory(to: Int8.self) {
+                let x = Int32(v)
+                let a = x < 0 ? -x : x
+                top = a > top ? a : top
             }
+            return Int8(min(top, 127))
         }
     }
 
@@ -156,8 +168,4 @@ final class IQRecorder: @unchecked Sendable {
             return written
         }
     }
-}
-
-private extension Comparable {
-    func clamped(to range: ClosedRange<Self>) -> Self { min(max(self, range.lowerBound), range.upperBound) }
 }

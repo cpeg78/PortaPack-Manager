@@ -283,7 +283,9 @@ final class ACARSModel {
         try device.setAntennaPower(antennaPower)
     }
 
+    /// Nur am eigenen, laufenden Strom (Gerätebesitz); sonst gelten die Werte beim nächsten Start.
     func applyGainsQuietly() {
+        guard running, device?.isReceiving(for: self) == true else { return }
         do { try applyGains() } catch { self.error = error.localizedDescription }
     }
 

@@ -68,9 +68,10 @@ final class ADSBModel {
                     try? await Task.sleep(for: .milliseconds(500))
                     guard let self else { return }
                     let (planes, recent, valid) = self.shared.lock.withLock {
-                        // Nach einer Stunde ohne Meldung verfällt ein Flugzeug (im Archiv bleibt es).
+                        // Nach 3 h ohne Meldung verfällt ein Flugzeug (im Archiv bleibt es) –
+                        // so lange kann die Tabelle sie zeigen („Liste zeigt“).
                         if self.shared.tracker.aircraft.count > 300 {
-                            self.shared.tracker.prune(before: Date().addingTimeInterval(-3600))
+                            self.shared.tracker.prune(before: Date().addingTimeInterval(-AircraftTracker.keepSeconds))
                         }
                         // Im Lock nur kopieren – der Empfangsthread wartet sonst aufs Sortieren.
                         return (Array(self.shared.tracker.aircraft.values), self.shared.recent, self.shared.validCount)
@@ -184,9 +185,12 @@ struct MapAircraft: MapTarget, Sendable {
     let heading: Double?
     let stale: Bool
     let trail: [CLLocationCoordinate2D]
-    var symbol: MapSymbol { .plane }
-    var symbolSize: Double { 22 }   // mit dunkler Kontur; 18 ging auf der Karte unter (30.10.2026)
+    /// Hubschrauber, Klein-, Segel-, Verkehrs- oder Großraumflugzeug.
+    let kind: AircraftClass
+    var symbol: MapSymbol { kind.symbol }
+    var symbolSize: Double { kind.symbolSize }   // mit dunkler Kontur; 18 ging bei Verkehrsflugzeugen unter (30.10.2026)
 
+    @MainActor
     init?(_ plane: Aircraft, now: Date) {
         guard let lat = plane.latitude, let lon = plane.longitude else { return nil }
         let age = now.timeIntervalSince(plane.lastSeen)
@@ -197,12 +201,13 @@ struct MapAircraft: MapTarget, Sendable {
         heading = plane.track ?? 90
         stale = age > Self.staleSeconds
         trail = plane.trail.map { CLLocationCoordinate2D(latitude: $0.lat, longitude: $0.lon) }
+        kind = AircraftClass.of(emitter: plane.emitter, info: AircraftDatabase.shared.info(for: plane.icao))
     }
 
     /// Die Spur wächst nur am Ende (oder wird geleert) – Länge und letzter
     /// Punkt genügen zum Vergleich.
     static func == (a: MapAircraft, b: MapAircraft) -> Bool {
-        a.id == b.id && a.label == b.label && a.heading == b.heading && a.stale == b.stale
+        a.id == b.id && a.label == b.label && a.heading == b.heading && a.stale == b.stale && a.kind == b.kind
             && a.coordinate.latitude == b.coordinate.latitude
             && a.coordinate.longitude == b.coordinate.longitude
             && a.trail.count == b.trail.count

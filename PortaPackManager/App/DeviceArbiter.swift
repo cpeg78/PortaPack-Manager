@@ -20,6 +20,7 @@ enum DeviceArbiter {
     /// Fernbetrieb oder ein laufender Empfänger – als ganzer Satz für die
     /// Rückfrage „Läuft gerade: … – trotzdem?“; `nil` = nichts läuft.
     static func activeUse(session: DeviceSession?) -> String? {
+        if let transfer = SDTransfer.activeUse { return transfer }
         if let job = ReceptionPlanner.shared.active {
             return String(localized: "Der Empfangsplan nimmt gerade auf: \(job.title) bis \(job.end.formatted(date: .omitted, time: .shortened)).")
         }
@@ -87,8 +88,8 @@ enum DeviceArbiter {
     /// verloren – dann nichts zurückholen, der Neue hat Vorrang.
     static func borrow<T>(_ work: () async -> (result: T, takenOver: Bool)) async -> T {
         let planner = ReceptionPlanner.shared
-        planner.paused = true
-        defer { planner.paused = false }
+        planner.beginBorrow()
+        defer { planner.endBorrow() }
         // Auch ein reiner Mac-Empfänger (TV, BLE, GPS …) kommt danach zurück –
         // wie nach einem Plan-Termin (Nutzerwunsch 29.10.2026).
         let hub = RemoteHub.shared

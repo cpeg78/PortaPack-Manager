@@ -234,7 +234,8 @@ final class MeshtasticModel {
         if !region.presets.contains(preset) { preset = .longFast }
         if !manualFrequency { frequencyMHz = automaticFrequencyMHz }
         keysChanged()
-        guard running else { return }
+        // Nur den eigenen Strom umstimmen (Gerätebesitz); sonst gilt es beim nächsten Start.
+        guard running, device?.isReceiving(for: self) == true else { return }
         do { try tune() } catch { self.error = error.localizedDescription }
     }
 
@@ -267,7 +268,9 @@ final class MeshtasticModel {
         try device.setAntennaPower(antennaPower)
     }
 
+    /// Nur am eigenen, laufenden Strom (Gerätebesitz); sonst gelten die Werte beim nächsten Start.
     func applyGainsQuietly() {
+        guard running, device?.isReceiving(for: self) == true else { return }
         do { try applyGains() } catch { self.error = error.localizedDescription }
     }
 

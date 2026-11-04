@@ -84,4 +84,19 @@ struct GPSTrackingTests {
         #expect(abs(sol.gpsTime - (t0 + status.elapsed)) < 1e-6)
         #expect(firstFix != nil && firstFix! < 22)
     }
+
+    @Test("Nach reset() übernimmt der Empfänger kein Ergebnis einer alten Akquisition")
+    func resetDropsStaleAcquisition() {
+        let receiver = GPSReceiver(options: GPSReceiver.Options())   // nebenläufige Akquisition
+        var state: UInt64 = 1
+        var block = Data(count: 409_600)                             // 50 ms Rauschen bei 4,096 MS/s
+        for i in block.indices {
+            state = state &* 6_364_136_223_846_793_005 &+ 1_442_695_040_888_963_407
+            block[i] = UInt8(truncatingIfNeeded: state >> 56) & 0x0F
+        }
+        receiver.process(block)      // startet die Grobsuche im Hintergrund
+        receiver.reset()
+        receiver.waitForAcquisitionJobs()
+        #expect(!receiver.hasPendingAcquisition)
+    }
 }

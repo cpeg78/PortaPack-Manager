@@ -78,6 +78,31 @@ struct PassPredictionTests {
         #expect(!m24[1].daylight)
     }
 
+    @Test("Neuberechnung ab einem anderen Sekundenbruchteil liefert dieselben Termin-Kennungen")
+    func kennungenStabil() throws {
+        let tles = TLE.parse(SatelliteTests.tleText)
+        let station = GroundStation(latitude: 53.55, longitude: 9.99, altitudeKm: 0.05)
+        let t = Date(timeIntervalSince1970: 1_793_016_960.123)
+        for (index, satellite) in WeatherSatellite.all.enumerated() {
+            let base = PassPredictor.passes(satellite, tle: tles[index], station: station, from: t, hours: 48, minElevation: 10)
+            #expect(base.count >= 4)
+            for offset in [0.37, 17.37, 1800.0] {
+                let again = PassPredictor.passes(satellite, tle: tles[index], station: station,
+                                                 from: t.addingTimeInterval(offset), hours: 48, minElevation: 10)
+                // Ein Überflug, der gerade aufgeht, kann vorne wegfallen – verglichen wird die Schnittmenge.
+                let common = Set(base.map(\.id)).intersection(again.map(\.id))
+                #expect(common.count >= base.count - 1, "Versatz \(offset) s: \(base.map(\.id)) / \(again.map(\.id))")
+                for pass in again where !common.contains(pass.id) {
+                    #expect(!base.contains { abs($0.culmination.timeIntervalSince(pass.culmination)) < 600 },
+                            "Versatz \(offset) s: \(pass.id) hat eine andere Kennung bekommen")
+                }
+            }
+        }
+        // Die Kennung trägt die auf 60 s gerundete Kulmination (1_792_999_980 ist ein Minutenwechsel).
+        #expect(SatellitePass.minuteStamp(Date(timeIntervalSince1970: 1_793_000_009)) == 1_792_999_980)
+        #expect(SatellitePass.minuteStamp(Date(timeIntervalSince1970: 1_793_000_011)) == 1_793_000_040)
+    }
+
     @Test func sonnenhoeheGrob() {
         let station = GroundStation(latitude: 53.55, longitude: 9.99)
         var utc = Calendar(identifier: .gregorian)
@@ -106,6 +131,38 @@ struct PlannerJobTests {
         #expect(!first.same(as: ReceptionPlanner.Job(kind: .pass(pass(6000)))))
         #expect(!first.same(as: ReceptionPlanner.Job(kind: .pass(pass(0, satellite: WeatherSatellite.all[0])))))
         #expect(!first.same(as: nil))
+    }
+
+    @Test("Übersprungen gilt auch, wenn die neu gerechnete Kulmination in die Nachbarminute kippt")
+    func uebersprungenMitNachbarminute() {
+        // Kulmination 1_793_000_009 bzw. …011: beiderseits der Rundungsgrenze (…010).
+        let before = pass(9), after = pass(11)
+        #expect(before.id != after.id)
+        let skipped: Set<String> = [ReceptionPlanner.jobID(pass: before)]
+        let now = after.start.addingTimeInterval(120)
+        let jobs = ReceptionPlanner.schedule(meteor: [after], minElevation: 25, amateur: [], amateurMinElevation: 25, sonde: [], now: now)
+        #expect(ReceptionPlanner.due(jobs, now: now, skipped: skipped) == nil)
+        #expect(ReceptionPlanner.due(jobs, now: now, skipped: []) != nil)
+        // Ein anderer Überflug (eine Umlaufzeit später) bleibt geplant.
+        let next = pass(6000 + 11)
+        let nextJobs = ReceptionPlanner.schedule(meteor: [next], minElevation: 25, amateur: [], amateurMinElevation: 25, sonde: [],
+                                                 now: next.start.addingTimeInterval(120))
+        #expect(ReceptionPlanner.due(nextJobs, now: next.start.addingTimeInterval(120), skipped: skipped) != nil)
+        // Sondenfenster haben keine Nachbarn, Amateurfunk schon.
+        #expect(ReceptionPlanner.neighbourIDs(of: "sonde-1793000000").isEmpty)
+        #expect(ReceptionPlanner.neighbourIDs(of: "amsat-25544-1793000040") == ["amsat-25544-1792999980", "amsat-25544-1793000100"])
+    }
+
+    @Test("Meldung „Satellit kommt“ nur für geplante, nicht übersprungene Überflüge")
+    func meldungNurFuerGeplanteUeberfluege() {
+        let soon = pass(0), later = pass(3600)
+        let now = soon.start.addingTimeInterval(-300)
+        // Automatik aus: der Plan liefert keine Termine – also keine Meldung.
+        let off = ReceptionPlanner.schedule(meteor: [], minElevation: 25, amateur: [], amateurMinElevation: 25, sonde: [], now: now)
+        #expect(Notifier.passesToAnnounce(off, now: now, isSkipped: { _ in false }).isEmpty)
+        let on = ReceptionPlanner.schedule(meteor: [soon, later], minElevation: 25, amateur: [], amateurMinElevation: 25, sonde: [], now: now)
+        #expect(Notifier.passesToAnnounce(on, now: now, isSkipped: { _ in false }).map(\.pass.start) == [soon.start])
+        #expect(Notifier.passesToAnnounce(on, now: now, isSkipped: { $0 == "pass-" + soon.id }).isEmpty)
     }
 }
 

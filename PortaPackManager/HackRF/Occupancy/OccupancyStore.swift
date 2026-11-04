@@ -199,25 +199,35 @@ final class OccupancyStore: Sendable {
     /// Hängt eine Scheibe an. Wird die Datei größer als `maxBytes`, fliegen die
     /// ältesten Scheiben heraus (Datei wird mit 75 % der Grenze neu geschrieben).
     /// Liefert, wie viele Scheiben vorn entfernt wurden.
+    ///
+    /// `recording` trägt die Scheibe danach **genau einmal** – auch wenn das
+    /// Schreiben wirft (inout wird beim `throw` zurückgeschrieben). Der Aufrufer
+    /// hängt sie im `catch` also nicht erneut an, sondern ruft beim nächsten
+    /// Mal mit `rewrite: true` auf: Die Datei hinkt dann dem Speicher hinterher
+    /// und wird vollständig neu geschrieben, statt am falschen Ende anzuhängen
+    /// (Review 01.11.2026 – vorher stand die Scheibe doppelt im Speicher, und
+    /// nach dem Neustart zeigte die Datei eine andere Zeitreihe).
     @discardableResult
-    func append(_ slice: OccupancySlice, to recording: inout OccupancyRecording, url: URL, maxBytes: Int) throws -> Int {
-        recording.slices.append(slice)
-        let total = OccupancyRecording.headerSize + recording.slices.count * recording.recordSize
+    func append(_ slice: OccupancySlice, to recording: inout OccupancyRecording, url: URL, maxBytes: Int,
+                rewrite: Bool = false) throws -> Int {
+        var updated = recording
+        updated.slices.append(slice)
+        var removed = 0
+        let total = OccupancyRecording.headerSize + updated.slices.count * updated.recordSize
         if total > maxBytes {
-            let keep = recording.slicesFitting(maxBytes: maxBytes * 3 / 4)
-            let removed = max(0, recording.slices.count - keep)
-            recording.slices.removeFirst(removed)
-            try write(recording, to: url)
-            return removed
+            let keep = updated.slicesFitting(maxBytes: maxBytes * 3 / 4)
+            removed = max(0, updated.slices.count - keep)
+            updated.slices.removeFirst(removed)
         }
-        if !FileManager.default.fileExists(atPath: url.path) {
-            try write(recording, to: url)
-            return 0
+        recording = updated
+        if removed > 0 || rewrite || !FileManager.default.fileExists(atPath: url.path) {
+            try write(updated, to: url)
+            return removed
         }
         let handle = try FileHandle(forWritingTo: url)
         defer { try? handle.close() }
         // Unvollständige Scheibe am Ende (Absturz beim Schreiben) abschneiden.
-        let expected = UInt64(OccupancyRecording.headerSize + (recording.slices.count - 1) * recording.recordSize)
+        let expected = UInt64(OccupancyRecording.headerSize + (updated.slices.count - 1) * updated.recordSize)
         try handle.truncate(atOffset: expected)
         try handle.seekToEnd()
         try handle.write(contentsOf: OccupancyRecording.recordData(slice))

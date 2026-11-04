@@ -1,4 +1,5 @@
 import Foundation
+import os
 
 /// Fehler im HackRF-Modus.
 enum HackRFError: Error, LocalizedError, Sendable {
@@ -9,6 +10,9 @@ enum HackRFError: Error, LocalizedError, Sendable {
     case imageTooLarge(Int)
     /// Eine andere Seite, der Fernzugriff oder der Empfangsplan hat das Gerät übernommen.
     case takenOver
+    /// Der Empfang ließ sich nicht beenden (USB-Transfers kamen nie zurück) –
+    /// das Gerät nimmt keine Befehle mehr an, bis es neu verbunden ist.
+    case unresponsive
 
     var errorDescription: String? {
         switch self {
@@ -20,6 +24,7 @@ enum HackRFError: Error, LocalizedError, Sendable {
         case let .invalidParameter(text): text
         case let .imageTooLarge(size): String(localized: "Die Firmware-Datei ist mit \(size) Bytes zu groß für den Speicher des HackRF.")
         case .takenOver: String(localized: "Ein anderer Empfänger hat den HackRF übernommen – zum Weitermachen neu starten.")
+        case .unresponsive: String(localized: "Der HackRF reagiert nicht mehr. Zieh das USB-Kabel kurz ab und steck es wieder an.")
         }
     }
 
@@ -122,11 +127,35 @@ final class HackRFDevice: @unchecked Sendable {
     /// Anzeige in der Menüleiste.
     private var _tunedHz: UInt64?
 
+    /// Handle freigegeben (`close()`). Unter `stateLock` (geschrieben zusätzlich
+    /// unter `lock`), damit Befehle das prüfen, ohne auf einen laufenden
+    /// USB-Transfer zu warten – beim Löschen des Chips bis zu 30 s (Review 01.11.2026).
+    private var _closed = false
+    /// Der Strom ließ sich nicht beenden (`hrf_usb_stream_stop` gab auf): Ab
+    /// jetzt nur noch Schließen; Befehle werfen `.unresponsive`.
+    private var _unusable = false
+
     private var streaming: Bool { stateLock.withLock { _streaming } }
     private var antennaPowerWanted: Bool { stateLock.withLock { _antennaPowerWanted } }
     private var stream: ReceiveStream? { stateLock.withLock { _stream } }
     /// Ob gerade der SPI-Flash beschrieben oder gelesen wird.
     var isFlashing: Bool { stateLock.withLock { _flashing.blocksReceiving } }
+    /// Das Gerät reagiert nicht mehr und muss neu verbunden werden.
+    var isUnusable: Bool { stateLock.withLock { _unusable } }
+
+    /// Warum ein Befehl gar nicht erst ans Gerät geht – geprüft vor dem
+    /// USB-`lock`, ohne Warten. Während des Flashens weist das Gerät fremde
+    /// Befehle sofort mit `.takenOver` ab; nur die Installation selbst
+    /// (`flashAccess`) kommt durch. Vorher wartete jedes `setFrequency` eines
+    /// `@MainActor`-Models bis zu 30 s auf das Löschen (Review 01.11.2026).
+    private func rejection(_ request: HackRFRequest, flashAccess: Bool) -> HackRFError? {
+        stateLock.withLock {
+            if _closed { return HackRFError.transferFailed(request: "\(request)", code: -1) }
+            if _unusable { return HackRFError.unresponsive }
+            if !flashAccess, _flashing.blocksReceiving { return HackRFError.takenOver }
+            return nil
+        }
+    }
 
     private init(handle: OpaquePointer) {
         self.handle = handle
@@ -170,40 +199,47 @@ final class HackRFDevice: @unchecked Sendable {
         try controlOut(.uiEnable, value: enabled ? 1 : 0)
     }
 
-    private var closed = false
     func close() {
         lifecycle.lock()
         defer { lifecycle.unlock() }
         stopReceiving()
         lock.lock()
         defer { lock.unlock() }
-        guard !closed else { return }
-        closed = true
+        guard !stateLock.withLock({ _closed }) else { return }
+        stateLock.withLock { _closed = true }
         hrf_usb_close(handle)
     }
 
     // MARK: - Control-Transfers
 
-    private func controlIn(_ request: HackRFRequest, value: UInt16 = 0, index: UInt16 = 0, length: Int, timeout: UInt32 = 1000) throws -> Data {
+    private func controlIn(_ request: HackRFRequest, value: UInt16 = 0, index: UInt16 = 0, length: Int, timeout: UInt32 = 1000,
+                           flashAccess: Bool = false) throws -> Data {
+        if let rejection = rejection(request, flashAccess: flashAccess) { throw rejection }
         var buffer = Data(count: length)
         // Nach `close()` ist der Handle freigegeben – ein noch laufender Task
-        // (Optimierer, WLAN-Suchlauf) hielte sonst auf freiem Speicher.
+        // (Optimierer, WLAN-Suchlauf) hielte sonst auf freiem Speicher. Unter
+        // `lock` erneut prüfen: `close()` kann seit der Prüfung oben gelaufen sein.
         let result = buffer.withUnsafeMutableBytes { raw in
-            lock.withLock { closed ? -1 : hrf_usb_control_in(handle, request.rawValue, value, index, raw.baseAddress, UInt16(length), timeout) }
+            lock.withLock { isClosedUnderLock ? -1 : hrf_usb_control_in(handle, request.rawValue, value, index, raw.baseAddress, UInt16(length), timeout) }
         }
         guard result >= 0 else { throw HackRFError.transferFailed(request: "\(request)", code: result) }
         buffer.count = Int(result)
         return buffer
     }
 
-    private func controlOut(_ request: HackRFRequest, value: UInt16 = 0, index: UInt16 = 0, data: Data = Data(), timeout: UInt32 = 1000) throws {
+    private func controlOut(_ request: HackRFRequest, value: UInt16 = 0, index: UInt16 = 0, data: Data = Data(), timeout: UInt32 = 1000,
+                            flashAccess: Bool = false) throws {
+        if let rejection = rejection(request, flashAccess: flashAccess) { throw rejection }
         let result = data.withUnsafeBytes { raw in
-            lock.withLock { closed ? -1 : hrf_usb_control_out(handle, request.rawValue, value, index, raw.baseAddress, UInt16(data.count), timeout) }
+            lock.withLock { isClosedUnderLock ? -1 : hrf_usb_control_out(handle, request.rawValue, value, index, raw.baseAddress, UInt16(data.count), timeout) }
         }
         guard result >= 0, Int(result) >= data.count else {
             throw HackRFError.transferFailed(request: "\(request)", code: result)
         }
     }
+
+    /// Nur unter `lock` aufrufen (`close()` setzt das Flag unter `lock`).
+    private var isClosedUnderLock: Bool { stateLock.withLock { _closed } }
 
     // MARK: - Information
 
@@ -317,8 +353,9 @@ final class HackRFDevice: @unchecked Sendable {
     }
 
     /// Startet das Gerät neu. Ein PortaPack kehrt dabei in die Mayhem-Firmware zurück.
-    func reset() throws {
-        try controlOut(.reset)
+    /// `afterFlashing`: Neustart der Installation selbst, noch unter der Flash-Sperre.
+    func reset(afterFlashing: Bool = false) throws {
+        try controlOut(.reset, flashAccess: afterFlashing)
     }
 
     static let basebandFilters: [UInt32] = [
@@ -340,11 +377,13 @@ final class HackRFDevice: @unchecked Sendable {
     /// Läuft schon ein Empfang eines anderen Besitzers, wird er beendet – der
     /// letzte Start bekommt das Gerät. Derselbe Besitzer startet nicht doppelt.
     func startReceiving(owner: AnyObject, handler: @escaping @Sendable (Data) -> Void) throws {
+        // Erst ohne `lifecycle` und ohne USB-`lock` prüfen: Während des Flashens
+        // gehört das Gerät der Installation (W7), und der Main Actor soll dabei
+        // nie auf das Löschen des Chips warten (Review 01.11.2026).
+        try checkStartable()
         lifecycle.lock()
         defer { lifecycle.unlock() }
-        guard !lock.withLock({ closed }) else { throw HackRFError.notFound }
-        // Während des Flashens gehört das Gerät der Installation (W7).
-        guard !isFlashing else { throw HackRFError.takenOver }
+        try checkStartable()
         let id = ObjectIdentifier(owner)
         let (running, current) = stateLock.withLock { (_streaming, _owner) }
         if running {
@@ -366,11 +405,11 @@ final class HackRFDevice: @unchecked Sendable {
             try controlOut(.setTransceiverMode, value: 1)
             if antennaPowerWanted { try controlOut(.antennaEnable, value: 1) }
         } catch {
-            hrf_usb_stream_stop(handle)
+            let stopped = stopStream()
             // Schon eingereihte Blöcke dürfen den Rückruf nicht mehr erreichen.
             stream.finish()
-            Unmanaged<ReceiveStream>.fromOpaque(context).release()
-            throw error
+            if stopped { Unmanaged<ReceiveStream>.fromOpaque(context).release() }
+            throw stopped ? error : HackRFError.unresponsive
         }
         stateLock.withLock {
             _stream = stream
@@ -428,10 +467,34 @@ final class HackRFDevice: @unchecked Sendable {
         }
         guard let stream else { return }
         try? controlOut(.setTransceiverMode, value: 0)
-        hrf_usb_stream_stop(handle)
-        if antennaPowerWanted { try? controlOut(.antennaEnable, value: 0) }
+        let stopped = stopStream()
+        if stopped, antennaPowerWanted { try? controlOut(.antennaEnable, value: 0) }
         stream.finish()
-        Unmanaged.passUnretained(stream).release()
+        // Aufgegebener Strom: Der C-Teil hält den Kontext womöglich noch –
+        // bewusst nicht freigeben (Leck statt Absturz).
+        if stopped { Unmanaged.passUnretained(stream).release() }
+    }
+
+    /// `hrf_usb_stream_stop` mit Auswertung: Gibt der C-Teil nach ≈ 5 s auf
+    /// (ein Transfer kam nie zurück), ist das Gerät unbrauchbar – vorher hing
+    /// hier `pthread_join` für immer, oft auf dem Main Actor (Review 01.11.2026,
+    /// offene Frage 5). Liefert `false` in diesem Fall.
+    private func stopStream() -> Bool {
+        guard hrf_usb_stream_stop(handle) != 0 else { return true }
+        stateLock.withLock { _unusable = true }
+        Self.log.error("Empfang ließ sich nicht beenden – HackRF unbrauchbar, bitte neu verbinden")
+        return false
+    }
+
+    private static let log = Logger(subsystem: "de.christiangolz.portapackmanager", category: "HackRF")
+
+    /// Wirft, wenn kein Empfang starten darf (geschlossen, unbrauchbar, Flash-Sperre).
+    private func checkStartable() throws {
+        try stateLock.withLock {
+            if _closed { throw HackRFError.notFound }
+            if _unusable { throw HackRFError.unresponsive }
+            if _flashing.blocksReceiving { throw HackRFError.takenOver }
+        }
     }
 
     var isReceiving: Bool { streaming }
@@ -519,7 +582,7 @@ final class HackRFDevice: @unchecked Sendable {
 
     /// Flash-Größe dieses Geräts (über die Board-ID).
     func flashCapacity() throws -> Int {
-        Self.flashCapacity(boardID: try controlIn(.boardIDRead, length: 1).first ?? 0)
+        Self.flashCapacity(boardID: try controlIn(.boardIDRead, length: 1, flashAccess: true).first ?? 0)
     }
 
     /// Schreibt ein Firmware-Abbild in den SPI-Flash – wie `hackrf_spiflash -w`.
@@ -535,7 +598,7 @@ final class HackRFDevice: @unchecked Sendable {
         try FirmwareImage.validate(image, capacity: try flashCapacity())
         try beginFlashing()
         defer { endFlashing() }
-        try controlOut(.spiflashErase, timeout: 30_000)
+        try controlOut(.spiflashErase, timeout: 30_000, flashAccess: true)
         var address = 0
         while address < image.count {
             let end = min(address + Self.flashPageSize, image.count)
@@ -544,7 +607,7 @@ final class HackRFDevice: @unchecked Sendable {
                 do {
                     try controlOut(.spiflashWrite,
                                    value: UInt16(address >> 16), index: UInt16(address & 0xFFFF),
-                                   data: image[address..<end], timeout: 2000)
+                                   data: image[address..<end], timeout: 2000, flashAccess: true)
                     break
                 } catch {
                     attempt += 1
@@ -566,7 +629,8 @@ final class HackRFDevice: @unchecked Sendable {
         var address = 0
         while address < length {
             let chunk = min(Self.flashPageSize, length - address)
-            let data = try controlIn(.spiflashRead, value: UInt16(address >> 16), index: UInt16(address & 0xFFFF), length: chunk, timeout: 2000)
+            let data = try controlIn(.spiflashRead, value: UInt16(address >> 16), index: UInt16(address & 0xFFFF), length: chunk, timeout: 2000,
+                                     flashAccess: true)
             guard data.count == chunk else {
                 throw HackRFError.transferFailed(request: "spiflashRead", code: Int32(data.count))
             }
@@ -584,7 +648,7 @@ final class HackRFDevice: @unchecked Sendable {
     private func beginFlashing() throws {
         lifecycle.lock()
         defer { lifecycle.unlock() }
-        guard !lock.withLock({ closed }) else { throw HackRFError.notFound }
+        guard !stateLock.withLock({ _closed }) else { throw HackRFError.notFound }
         stopReceiving()
         let began = stateLock.withLock { _flashing.beginAccess() }
         if !began { throw HackRFError.invalidParameter(String(localized: "Die Firmware wird gerade schon geschrieben.")) }
@@ -602,7 +666,7 @@ final class HackRFDevice: @unchecked Sendable {
     func holdFlash() throws {
         lifecycle.lock()
         defer { lifecycle.unlock() }
-        guard !lock.withLock({ closed }) else { throw HackRFError.notFound }
+        guard !stateLock.withLock({ _closed }) else { throw HackRFError.notFound }
         stopReceiving()
         stateLock.withLock { _flashing.held = true }
     }
