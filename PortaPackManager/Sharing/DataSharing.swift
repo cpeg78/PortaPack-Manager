@@ -13,9 +13,14 @@ final class NMEAFeeder: @unchecked Sendable {
     static let targetsKey = "shareAISTargets"
 
     private let queue = DispatchQueue(label: "de.christiangolz.portapackmanager.nmea")
-    private var connections: [String: NWConnection] = [:]
+    /// Ziel → Verbindung und ob sie `.ready` ist. Vorher ohne Zustand: in
+    /// `.waiting`/`.failed` ging jede Sendung still verloren, „gesendet“ zählte
+    /// trotzdem hoch, und der Sendepuffer wuchs (Review 05.11.2026).
+    private var connections: [String: (connection: NWConnection, ready: Bool)] = [:]
     private var enabled = false
     private var sent = 0
+    private var dropped = 0
+    static let log = Logger(subsystem: "de.christiangolz.portapackmanager", category: "AIS-Weitergabe")
 
     private init() {
         configure(enabled: UserDefaults.standard.bool(forKey: Self.enabledKey),
@@ -37,29 +42,67 @@ final class NMEAFeeder: @unchecked Sendable {
         queue.async { [self] in
             self.enabled = enabled
             let wanted = Set(parsed.map { "\($0.host):\($0.port)" })
-            for (key, connection) in connections where !wanted.contains(key) || !enabled {
-                connection.cancel()
+            for (key, entry) in connections where !wanted.contains(key) || !enabled {
+                entry.connection.stateUpdateHandler = nil
+                entry.connection.cancel()
                 connections.removeValue(forKey: key)
             }
             guard enabled else { return }
             for target in parsed where connections["\(target.host):\(target.port)"] == nil {
-                let connection = NWConnection(host: .init(target.host), port: .init(rawValue: target.port)!, using: .udp)
-                connection.start(queue: queue)
-                connections["\(target.host):\(target.port)"] = connection
+                connect(host: target.host, port: target.port)
             }
         }
+    }
+
+    /// Nur auf `queue`. Bei `.waiting`/`.failed` abbauen und nach 30 s neu
+    /// versuchen (wie `BeastFeeder`), damit kein Sendepuffer wächst.
+    private func connect(host: String, port: UInt16) {
+        guard let nwPort = NWEndpoint.Port(rawValue: port) else { return }
+        let key = "\(host):\(port)"
+        let connection = NWConnection(host: .init(host), port: nwPort, using: .udp)
+        connections[key] = (connection, false)
+        connection.stateUpdateHandler = { [weak self] state in
+            guard let self, self.connections[key]?.connection === connection else { return }
+            switch state {
+            case .ready:
+                self.connections[key]?.ready = true
+            case .waiting(let error), .failed(let error):
+                Self.log.notice("\(key, privacy: .public): \(error.localizedDescription, privacy: .public) – neuer Versuch in 30 s")
+                connection.stateUpdateHandler = nil
+                connection.cancel()
+                self.connections[key] = nil
+                self.queue.asyncAfter(deadline: .now() + 30) { [weak self] in
+                    guard let self, self.enabled, self.connections[key] == nil else { return }
+                    self.connect(host: host, port: port)
+                }
+            default:
+                break
+            }
+        }
+        connection.start(queue: queue)
     }
 
     func send(_ sentences: [String]) {
         queue.async { [self] in
             guard enabled, !connections.isEmpty, !sentences.isEmpty else { return }
             let data = Data(sentences.map { $0 + "\r\n" }.joined().utf8)
-            for connection in connections.values { connection.send(content: data, completion: .idempotent) }
-            sent += sentences.count
+            for entry in connections.values {
+                guard entry.ready else { dropped += sentences.count; continue }
+                entry.connection.send(content: data, completion: .contentProcessed { [weak self] error in
+                    guard let self else { return }
+                    self.queue.async {
+                        if error == nil { self.sent += sentences.count } else { self.dropped += sentences.count }
+                    }
+                })
+            }
         }
     }
 
     var sentCount: Int { queue.sync { sent } }
+    /// Sätze, die kein Ziel erreichten (Verbindung nicht bereit oder Fehler).
+    var droppedCount: Int { queue.sync { dropped } }
+    /// Ziele, die gerade verbunden sind.
+    var readyTargets: Int { queue.sync { connections.values.filter(\.ready).count } }
 }
 
 /// Beast-Binärformat (Mode-S Beast, wie dump1090/readsb auf Port 30005):
@@ -346,7 +389,9 @@ final class SondeHubUploader {
     var sharePosition = UserDefaults.standard.bool(forKey: "sondeHubSharePosition") {
         didSet { UserDefaults.standard.set(sharePosition, forKey: "sondeHubSharePosition"); listenerSent = nil }
     }
-    var antenna = UserDefaults.standard.string(forKey: "sondeHubAntenna") ?? "Moonraker Skyscan + LNA" {
+    /// Leer ab Werk: Der Wert erscheint öffentlich auf sondehub.org als Antenne
+    /// der Station – eine Vorgabe wäre die Antenne des Autors (Review 05.11.2026).
+    var antenna = UserDefaults.standard.string(forKey: "sondeHubAntenna") ?? "" {
         didSet { UserDefaults.standard.set(antenna, forKey: "sondeHubAntenna") }
     }
 
@@ -386,7 +431,14 @@ final class SondeHubUploader {
                 "lat": lat, "lon": lon, "alt": alt,
                 "frequency": (r.frequency / 1e3).rounded() / 1e3,
             ]
-            if r.kind == .rs41, !r.model.isEmpty { t["subtype"] = r.model }
+            if r.kind == .rs41 {
+                if let subtype = r.configuration.subtype { t["subtype"] = subtype } else if !r.model.isEmpty { t["subtype"] = r.model }
+                // Felder wie radiosonde_auto_rx.
+                if let board = r.configuration.mainboard { t["rs41_mainboard"] = board }
+                if let firmware = r.configuration.firmware { t["rs41_mainboard_fw"] = firmware }
+                if let seconds = r.configuration.activeCountdown { t["burst_timer"] = seconds }
+            }
+            if let v = r.pressure { t["pressure"] = v }
             if let v = r.temperature { t["temp"] = v }
             if let v = r.humidity { t["humidity"] = v }
             if let v = r.groundSpeed { t["vel_h"] = v }
@@ -455,11 +507,12 @@ final class SondeHubUploader {
     /// Station einmal täglich anmelden – nur mit Standort sinnvoll (Karte).
     private func announceListener() async {
         guard let position, listenerSent.map({ Date().timeIntervalSince($0) > 86_400 }) ?? true else { return }
-        let body: [String: Any] = [
+        var body: [String: Any] = [
             "software_name": "PortaPack Manager", "software_version": softwareVersion,
             "uploader_callsign": callsign.trimmingCharacters(in: .whitespaces),
-            "uploader_position": position, "uploader_antenna": antenna, "mobile": false,
+            "uploader_position": position, "mobile": false,
         ]
+        if !antenna.isEmpty { body["uploader_antenna"] = antenna }
         if (try? await put(Self.listenerEndpoint, body: body)) != nil { listenerSent = Date() }
     }
 

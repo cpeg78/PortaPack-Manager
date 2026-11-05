@@ -189,6 +189,59 @@ struct MeshtasticTests {
         #expect(e.readings == ["21.5 °C", "48 % rF"])
     }
 
+    private func le32(_ v: UInt32) -> [UInt8] { withUnsafeBytes(of: v.littleEndian, Array.init) }
+    /// Feldschlüssel als Varint – ab Feld 16 zwei Bytes.
+    private func float(_ field: UInt64, _ v: Float) -> [UInt8] { Self.varint(field << 3 | 5) + le32(v.bitPattern) }
+    private func message(_ field: UInt64, _ body: [UInt8]) -> [UInt8] { Self.varint(field << 3 | 2) + Self.varint(UInt64(body.count)) + body }
+
+    @Test("Traceroute: Zwischenknoten und SNR je Sprung (gepackt), Rückweg")
+    func traceroute() {
+        // route = [!0000000a, !0000000b] gepackt, snr_towards = [26 (6,5 dB), −128 (unbekannt), −12 (−3 dB)].
+        let snr = [UInt64(26), UInt64(bitPattern: -128), UInt64(bitPattern: -12)].flatMap(Self.varint)
+        let bytes = message(1, le32(0x0A) + le32(0x0B)) + message(2, snr) + message(3, le32(0x0C)) + message(4, Self.varint(40))
+        guard case .traceroute(let route) = MeshtasticContent(portnum: 70, payload: bytes) else { Issue.record("falscher Typ"); return }
+        #expect(route.towards == [0x0A, 0x0B])
+        #expect(route.snrTowards == [6.5, nil, -3])
+        #expect(route.back == [0x0C] && route.snrBack == [10])
+        #expect(MeshtasticContent(portnum: 70, payload: bytes).summary
+                == "!0000000a (6.5 dB) → !0000000b → Ziel (-3.0 dB) · zurück: !0000000c (10.0 dB) → Start")
+        // Einzeln statt gepackt kodiert geht auch.
+        let unpacked: [UInt8] = [0x0D] + le32(0x0A) + [0x10, 8]
+        #expect(MeshtasticRoute(unpacked).towards == [0x0A] && MeshtasticRoute(unpacked).snrTowards == [2])
+    }
+
+    @Test("Nachbarn, Routing-Fehler, Wegpunkt, Reichweitentest, Paxcounter")
+    func weitereInhalte() {
+        let neighbor = message(4, [0x08] + Self.varint(0xA1B2) + float(2, 7.25))
+        guard case .neighbors(let info) = MeshtasticContent(portnum: 71, payload: [0x08] + Self.varint(0x99) + neighbor) else {
+            Issue.record("falscher Typ"); return
+        }
+        #expect(info.node == 0x99)
+        #expect(info.neighbors == [.init(number: 0xA1B2, snr: 7.25)])
+        #expect(MeshtasticContent(portnum: 5, payload: [0x18, 1]).summary == "Kein Weg zum Ziel")
+        #expect(MeshtasticContent(portnum: 5, payload: []).summary == "Bestätigt")
+        let waypoint: [UInt8] = [0x08, 7, 0x15] + le32(UInt32(bitPattern: 525_200_000)) + [0x1D] + le32(UInt32(bitPattern: 134_050_000))
+            + message(6, Array("Hütte".utf8))
+        guard case .waypoint(let w) = MeshtasticContent(portnum: 8, payload: waypoint) else { Issue.record("falscher Typ"); return }
+        #expect(w.id == 7 && w.name == "Hütte" && abs((w.latitude ?? 0) - 52.52) < 1e-9)
+        #expect(MeshtasticContent(portnum: 66, payload: Array("seq 12".utf8)) == .rangeTest("seq 12"))
+        #expect(MeshtasticContent(portnum: 34, payload: [0x08, 14, 0x10, 3]) == .paxcounter(wifi: 14, ble: 3))
+    }
+
+    @Test("Telemetrie: Wind/Regen, Luftqualität, Strom, lokale Statistik")
+    func telemetrieArten() {
+        let weather = float(14, 3.5) + float(16, 7.2) + [0x68] + Self.varint(220) + float(19, 1.2)
+        let w = MeshtasticTelemetry(message(3, weather))
+        #expect(w.readings == ["Wind 3.5 m/s", "Böen 7.2 m/s", "aus 220°", "Regen 1.2 mm/h"])
+        let air = MeshtasticTelemetry(message(4, [0x28, 12, 0x68] + Self.varint(640)))
+        #expect(air.kind == "Luftqualität" && air.readings == ["PM2,5 12 µg/m³", "CO₂ 640 ppm"])
+        let power = MeshtasticTelemetry(message(5, float(1, 12.1) + float(2, 350)))
+        #expect(power.readings == ["Kanal 1: 12.10 V 350 mA"])
+        let stats = MeshtasticTelemetry(message(6, [0x20, 40, 0x28, 120, 0x38, 9, 0x40, 31]))
+        #expect(stats.kind == "Lokale Statistik")
+        #expect(stats.readings == ["40 gesendet, 120 empfangen", "9 von 31 Knoten aktiv"])
+    }
+
     @Test("Abgeschnittenes Protobuf wird abgelehnt")
     func protobufKaputt() {
         #expect(ProtobufMessage([0x12, 0x05, 0x41]) == nil)

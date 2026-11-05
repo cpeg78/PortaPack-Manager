@@ -302,6 +302,7 @@ struct FrequencyMemoryEditor: View {
 /// Einstellungen ▸ Frequenzen: alle Einträge suchen, bearbeiten, löschen,
 /// als CSV ein- und auslesen.
 struct FrequencyMemorySettingsPane: View {
+    @StoredColumns("frequencymemoryviews.1") private var columns: TableColumnCustomization<FrequencyMemoryEntry>
     private var memory: FrequencyMemory { FrequencyMemory.shared }
     @State private var search = ""
     @State private var selection = Set<UUID>()
@@ -325,16 +326,16 @@ struct FrequencyMemorySettingsPane: View {
                 Button("Exportieren …") { exportCSV(rows) }
                     .disabled(memory.entries.isEmpty)
             }
-            Table(rows, selection: $selection) {
-                TableColumn("Name") { e in Text(e.displayName) }.width(min: 100, ideal: 160)
+            Table(rows, selection: $selection, columnCustomization: $columns) {
+                TableColumn("Name") { e in Text(e.displayName) }.width(min: 100, ideal: 160).customizationID("name")
                 TableColumn("Frequenz") { e in
                     Text(FrequencyInput.format(e.mhz, decimals: 4) + " MHz").monospacedDigit()
-                }.width(min: 90, ideal: 110)
-                TableColumn("Betriebsart") { e in Text(e.modeTitle ?? "–") }.width(min: 60, ideal: 110)
-                TableColumn("Bandbreite") { e in Text(e.bandwidthHz.map(FrequencyMemoryEntry.bandwidthText) ?? "–").monospacedDigit() }.width(70)
-                TableColumn("Ordner") { e in Text(e.group.isEmpty ? "–" : e.group) }.width(min: 60, ideal: 100)
-                TableColumn("Seite") { e in Text(e.sidebarItem?.title ?? String(localized: "Alle")) }.width(min: 60, ideal: 110)
-                TableColumn("Notiz") { e in Text(e.note).lineLimit(1) }
+                }.width(min: 90, ideal: 110).customizationID("frequenz")
+                TableColumn("Betriebsart") { e in Text(e.modeTitle ?? "–") }.width(min: 60, ideal: 110).customizationID("betriebsart")
+                TableColumn("Bandbreite") { e in Text(e.bandwidthHz.map(FrequencyMemoryEntry.bandwidthText) ?? "–").monospacedDigit() }.width(min: 42, ideal: 70).customizationID("bandbreite")
+                TableColumn("Ordner") { e in Text(e.group.isEmpty ? "–" : e.group) }.width(min: 60, ideal: 100).customizationID("ordner")
+                TableColumn("Seite") { e in Text(e.sidebarItem?.title ?? String(localized: "Alle")) }.width(min: 60, ideal: 110).customizationID("seite")
+                TableColumn("Notiz") { e in Text(e.note).lineLimit(1) }.customizationID("notiz")
             }
             .contextMenu(forSelectionType: UUID.self) { ids in
                 let chosen = memory.entries.filter { ids.contains($0.id) }

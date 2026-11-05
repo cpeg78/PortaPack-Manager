@@ -52,4 +52,12 @@ struct SondeArchiveTests {
         #expect(parsed.first?.sample.temperature == -3.5)
         #expect(parsed.first?.serial == "V1")
     }
+
+    @Test("Windrichtung ist die Gegenrichtung des Kurses")
+    func windFrom() {
+        #expect(SondeSample.windFrom(heading: 90) == 270)     // treibt nach Osten → Westwind
+        #expect(SondeSample.windFrom(heading: 270) == 90)
+        #expect(SondeSample.windFrom(heading: 0) == 180)
+        #expect(SondeSample.windFrom(heading: 359) == 179)
+    }
 }

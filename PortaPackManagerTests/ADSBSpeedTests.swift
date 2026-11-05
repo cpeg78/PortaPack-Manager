@@ -154,7 +154,7 @@ struct ADSBSpeedTests {
         let second = demod.process(Self.signal([squitter, surveillance]), now: t0.addingTimeInterval(1))
         #expect(second.map(\.downlinkFormat) == [11, 4])
         #expect(second.allSatisfy { $0.icao == icao })
-        guard case let .surveillance(altitude) = try #require(second.last).content else { Issue.record("falscher Typ"); return }
+        guard case let .surveillance(altitude, _, _) = try #require(second.last).content else { Issue.record("falscher Typ"); return }
         #expect(altitude == 32300)
         #expect(demod.framesModeS == 2)
 
@@ -173,7 +173,7 @@ struct ADSBSpeedTests {
     @Test("Mode S: Höhe aus dem 13-Bit-Feld (pyModeS-Beispiel, Gillham, Meter)")
     func altitude13() {
         let message = ADSBDemodulator.decodeModeS(Self.bytes("A02014B400000000000000F9D514"), icao: 0)
-        guard case let .surveillance(altitude)? = message?.content else { Issue.record("falscher Typ"); return }
+        guard case let .surveillance(altitude, _, _)? = message?.content else { Issue.record("falscher Typ"); return }
         #expect(altitude == 32300)
         for feet in stride(from: -1200, through: 50_000, by: 700) {
             let ac12 = Self.gillhamAC12(feet: feet)

@@ -22,13 +22,17 @@ struct ReceiverControls<Model: GainTunable & Observable, Extra: View>: View {
     var body: some View {
         ReceiverStatusLine(model: model, device: device)
         GainOptimizerRow(model: model, device: device)
-        DisclosureGroup("Von Hand einstellen", isExpanded: $manualExpanded) {
-            LabeledContent("LNA \(Int(model.lnaGain)) dB") {
+        FoldOut("Von Hand einstellen", isExpanded: $manualExpanded) {
+            LabeledContent {
                 Slider(value: $model.lnaGain, in: 0...40, step: 8) { _ in model.applyFromControls(device) }
+            } label: {
+                GainLabel(name: "LNA", value: model.lnaGain)
             }
             .help(GainHelp.lna)
-            LabeledContent("VGA \(Int(model.vgaGain)) dB") {
+            LabeledContent {
                 Slider(value: $model.vgaGain, in: 0...62, step: 2) { _ in model.applyFromControls(device) }
+            } label: {
+                GainLabel(name: "VGA", value: model.vgaGain)
             }
             .help(GainHelp.vga)
             Toggle("Eingebauter Verstärker (+14 dB)", isOn: $model.amplifier)
@@ -39,6 +43,23 @@ struct ReceiverControls<Model: GainTunable & Observable, Extra: View>: View {
                 .help(GainHelp.biasTee)
             extra
         }
+    }
+}
+
+/// Reglerbeschriftung mit fester Breite: wechselte „LNA 8 dB“ zu „LNA 24 dB“,
+/// änderte sich die Breite des Reglers beim Ziehen, und das ganze Bedienfeld
+/// wackelte mit.
+struct GainLabel: View {
+    let name: String
+    let value: Double
+
+    var body: some View {
+        HStack(spacing: 4) {
+            Text(verbatim: name)
+            Spacer(minLength: 0)
+            Text("\(Int(value)) dB").monospacedDigit()
+        }
+        .frame(width: 86)
     }
 }
 
@@ -56,10 +77,19 @@ struct ReceiverStatusLine<Model: GainTunable & Observable>: View {
     let model: Model
     let device: HackRFDevice?
     @State private var tracker = ActivityTracker()
+    /// Zuletzt gezeigte Bewertung – nur eine echte Änderung zeichnet die Zeile
+    /// neu. Vorher lief über `TimelineView` zweimal je Sekunde ein Durchlauf
+    /// im Bedienfeld, und das Scrollen darin ruckelte (Fund 04.11.2026).
+    @State private var verdict: ReceiverVerdict?
 
     var body: some View {
-        TimelineView(.periodic(from: .now, by: 0.5)) { context in
-            line(now: context.date)
+        line
+        .task {
+            while !Task.isCancelled {
+                let next = currentVerdict(now: .now)
+                if next != verdict { verdict = next }
+                try? await Task.sleep(for: .seconds(0.5))
+            }
         }
         .task(id: model.running) {
             tracker.reset()
@@ -70,11 +100,14 @@ struct ReceiverStatusLine<Model: GainTunable & Observable>: View {
         }
     }
 
-    private func line(now: Date) -> some View {
+    private func currentVerdict(now: Date) -> ReceiverVerdict {
         // Sonden regeln selbst nach (`backOffIfClipping`), folgen aber demselben Schalter.
-        let auto = AutoGain.shared.enabled
-        let verdict = ReceiverVerdict.make(model: model, levels: levels, tracker: tracker, autoGain: auto,
-                                           occupant: occupant, now: now)
+        ReceiverVerdict.make(model: model, levels: levels, tracker: tracker, autoGain: AutoGain.shared.enabled,
+                             occupant: occupant, now: now)
+    }
+
+    private var line: some View {
+        let verdict = verdict ?? currentVerdict(now: .now)
         return Label {
             Text(verdict.text)
                 .lineLimit(3, reservesSpace: true)

@@ -95,6 +95,9 @@ struct RemoteIDTests {
     func textMessages() throws {
         guard case .selfID(let selfID) = try single(Reference.selfID) else { Issue.record("falscher Typ"); return }
         #expect(selfID.text == "DronesRUS: Real Estate")
+        #expect(!selfID.isEmergency && selfID.kindName == nil)
+        #expect(RemoteID.SelfID(descriptionType: 1, text: "Motor failure").isEmergency)
+        #expect(RemoteID.SelfID(descriptionType: 2, text: "").kindName == "Erweiterter Status")
         guard case .operatorID(let op) = try single(Reference.operatorID) else { Issue.record("falscher Typ"); return }
         #expect(op.id == "98765432100123456789")
         guard case .auth(let auth) = try single(Reference.auth0) else { Issue.record("falscher Typ"); return }

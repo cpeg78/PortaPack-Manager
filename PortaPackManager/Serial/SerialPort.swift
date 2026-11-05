@@ -179,64 +179,6 @@ final class SerialPort: @unchecked Sendable {
         return buffer
     }
 
-    /// Liest, bis `marker` im Datenstrom vorkommt, und liefert alles bis
-    /// einschließlich des Markers. `maxBytes` begrenzt den Puffer.
-    func readUntil(_ marker: Data, timeout: TimeInterval, maxBytes: Int = 4_000_000) throws -> Data {
-        let deadline = Date().addingTimeInterval(timeout)
-        var buffer = Data()
-        var searchStart = 0
-        while true {
-            if buffer.count >= marker.count {
-                let from = max(0, searchStart - marker.count)
-                if let range = buffer.range(of: marker, in: from..<buffer.count) {
-                    return buffer.prefix(range.upperBound)
-                }
-                searchStart = buffer.count
-            }
-            let remaining = deadline.timeIntervalSinceNow
-            guard remaining > 0, buffer.count < maxBytes else {
-                throw SerialPortError.timeout(
-                    waitingFor: String(decoding: marker, as: UTF8.self)
-                        .replacingOccurrences(of: "\r\n", with: "⏎"),
-                    received: buffer.count)
-            }
-            let chunk = try read(max: 65536, timeout: min(remaining, 0.25))
-            buffer.append(chunk)
-        }
-    }
-
-    /// Liest, bis einer der Marker auftaucht, und liefert alles Gelesene.
-    func readUntil(anyOf markers: [Data], timeout: TimeInterval) throws -> Data {
-        let deadline = Date().addingTimeInterval(timeout)
-        var buffer = Data()
-        while true {
-            if markers.contains(where: { buffer.range(of: $0) != nil }) { return buffer }
-            let remaining = deadline.timeIntervalSinceNow
-            guard remaining > 0 else {
-                throw SerialPortError.timeout(waitingFor: "Antwort", received: buffer.count)
-            }
-            buffer.append(try read(max: 65536, timeout: min(remaining, 0.25)))
-        }
-    }
-
-    /// Liest genau `count` Bytes.
-    func readExactly(_ count: Int, timeout: TimeInterval) throws -> Data {
-        let deadline = Date().addingTimeInterval(timeout)
-        var buffer = Data()
-        buffer.reserveCapacity(count)
-        while buffer.count < count {
-            let remaining = deadline.timeIntervalSinceNow
-            guard remaining > 0 else {
-                throw SerialPortError.timeout(waitingFor: "\(count) Bytes", received: buffer.count)
-            }
-            let chunk = try read(max: count - buffer.count, timeout: min(remaining, 0.25))
-            buffer.append(chunk)
-        }
-        return buffer
-    }
-
-    // MARK: - poll
-
     private func waitReadable(timeout: TimeInterval) throws -> Bool {
         try wait(timeout: timeout, events: Int16(POLLIN))
     }

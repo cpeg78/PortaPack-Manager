@@ -304,9 +304,9 @@ struct AirbandTranscriptDatabaseTests {
 
     @Test("Suchtext wird zu einer sicheren FTS5-Abfrage")
     func ftsQuery() {
-        #expect(AirbandLog.ftsQuery("118.005 tow") == "\"118.005\" \"tow\"*")
-        #expect(AirbandLog.ftsQuery("say \"again\"") == "\"say\" \"again\"*")
-        #expect(AirbandLog.ftsQuery(" - * ") == "")
+        #expect(FullTextSearch.query("118.005 tow") == "\"118.005\" \"tow\"*")
+        #expect(FullTextSearch.query("say \"again\"") == "\"say\" \"again\"*")
+        #expect(FullTextSearch.query(" - * ") == "")
     }
 
     @Test("Schema 1 → 2: Rufzeichen-Spalten kommen dazu, Einträge bleiben")

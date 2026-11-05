@@ -51,6 +51,18 @@ final class ACARSModel {
     private var pollTask: Task<Void, Never>?
     private(set) var lastCount = 0
     private weak var device: HackRFDevice?
+    /// Schon ins Archiv geschriebene Meldungen (Kennungen der Live-Liste).
+    @ObservationIgnored private var archived: Set<Int> = []
+    @ObservationIgnored private let log = ACARSLog.standard
+
+    /// Fertige Meldungen ins Archiv; die Merkliste bleibt auf die Live-Liste begrenzt.
+    private func archiveFinished(_ messages: [ACARSMessage]) {
+        let due = ACARSLog.finished(messages, stored: archived, now: Date())
+        guard !due.isEmpty else { return }
+        log.insert(due)
+        archived.formUnion(due.map(\.id))
+        if archived.count > 4000 { archived.formIntersection(messages.map(\.id)) }
+    }
 
     /// Plan für die aktuelle Auswahl (welche Kanäle ins Fenster passen).
     var plan: ACARSPlan.Result? { ACARSPlan.plan(Array(selectedMHz)) }
@@ -70,7 +82,9 @@ final class ACARSModel {
         func ingest(_ raw: ACARSMessage, now: Date) {
             var message = raw
             message.date = now
-            let (merged, replaces) = reassembler.add(message, now: now)
+            let (reassembled, replaces) = reassembler.add(message, now: now)
+            var merged = reassembled
+            merged.interpret()                               // Deutung einmal, nicht je Anzeige
             if let replaces, let index = messages.lastIndex(where: { $0.id == replaces }) {
                 var kept = merged
                 kept.id = replaces
@@ -194,6 +208,7 @@ final class ACARSModel {
                         (shared.messages, shared.count, shared.blocksSeen, shared.crcErrors, shared.powers)
                     }
                     if count != self.lastCount { self.lastCount = count; self.messages = messages.reversed() }
+                    self.archiveFinished(messages)
                     // Nur bei Änderung zuweisen – jede Zuweisung zeichnet neu (Review L2).
                     if self.blocksSeen != blocks { self.blocksSeen = blocks }
                     if self.crcErrors != errors { self.crcErrors = errors }
@@ -236,6 +251,7 @@ final class ACARSModel {
                     let (messages, count, frames, aircraft, fec, levels) = shared.lock.withLock {
                         (shared.messages, shared.count, shared.vdl2Frames, shared.vdl2Aircraft.count, shared.vdl2FECErrors, shared.powers)
                     }
+                    self.archiveFinished(messages)
                     if count != self.lastCount {
                         self.lastCount = count
                         self.messages = messages.reversed().map { m in
@@ -263,6 +279,10 @@ final class ACARSModel {
     func stop() {
         pollTask?.cancel()
         pollTask = nil
+        // Was noch offen ist (letzter Block fehlt), trotzdem sichern.
+        let open = shared.lock.withLock { shared.messages }.filter { !archived.contains($0.id) }
+        log.insert(open)
+        archived.formUnion(open.map(\.id))
         device?.stopReceiving(owner: self)
         running = false
         activePlan = nil
@@ -297,6 +317,7 @@ final class ACARSModel {
             shared.vdl2FECErrors = 0
             shared.reassembler = ACARSReassembler()
         }
+        archived = []
         messages = []
         lastCount = 0
         vdl2Frames = 0; vdl2Aircraft = 0; vdl2FECErrors = 0

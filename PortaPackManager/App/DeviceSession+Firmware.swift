@@ -18,8 +18,12 @@ extension DeviceSession {
                 // Ein liegengebliebenes Erneuern ist jetzt überholt – „Erneuern
                 // abschließen“ flashte sonst später womöglich eine ältere Version.
                 pendingRenewal = nil
+                // Wie die anderen Wege: Generation weiterdrehen, späte Meldungen verfallen.
+                finishProgress(installProgress)
             } catch {
                 note(String(localized: "Installation fehlgeschlagen: \(error.localizedDescription)"))
+                finishProgress(InstallProgress(phase: .failed, detail: error.localizedDescription,
+                                               startedAt: installProgress.startedAt))
             }
         }
     }
@@ -76,19 +80,29 @@ extension DeviceSession {
                 // In den HackRF-Modus wechseln.
                 if hackRF == nil {
                     update(.preparing, 0, String(localized: "Wechsle in den HackRF-Modus …"))
-                    if let device {
-                        await device.switchToHackRFMode()
-                    }
-                    self.device = nil
+                    // Wie `enterHackRFMode`: Läuft auf dem PortaPack eine App, beendet das
+                    // erste `hackrf` nur diese – die Mayhem-Konsole kommt zurück, und erst der
+                    // nächste Befehl wechselt. `pollOnce` ruht während `busy`, deshalb hier
+                    // selbst nachsehen und neu verbinden (Review 05.11.2026).
                     var opened: HackRFDevice?
-                    for _ in 0..<30 {
-                        try await Task.sleep(for: .seconds(1))
-                        if let candidate = try? await Task.detached(operation: { try HackRFDevice.openFirst() }).value {
-                            opened = candidate
-                            break
+                    var console = device
+                    attempts: for attempt in 1...3 {
+                        if let console { await console.switchToHackRFMode() }
+                        self.device = nil
+                        for _ in 0..<10 {
+                            try await Task.sleep(for: .seconds(1))
+                            if let candidate = try? await Task.detached(operation: { try HackRFDevice.openFirst() }).value {
+                                opened = candidate
+                                break attempts
+                            }
                         }
+                        guard attempt < 3, let again = try? await reconnectIfAvailable() else { break }
+                        Log.session.notice("HackRF-Modus nicht erreicht – Befehl erneut (Versuch \(attempt + 1))")
+                        console = again
                     }
                     guard let opened else {
+                        // `reconnectIfAvailable` hat `mode`/`device` auf Mayhem gesetzt, falls
+                        // die Konsole zurückkam – die App weiß dann, wo das Gerät steht.
                         throw HackRFError.notFound
                     }
                     hackRF = opened
@@ -101,6 +115,10 @@ extension DeviceSession {
                 // zweiten Versuch (W7-Rest): Sperre über den ganzen Vorgang halten.
                 try await Task.detached { try hackRF.holdFlash() }.value
                 defer { hackRF.releaseFlash() }
+                let board = try await Task.detached { try hackRF.readInfo() }.value
+                if let deviceType, FirmwareImage.boardMatches(boardID: board.boardID, type: deviceType) == false {
+                    throw FirmwareImage.ImageError.boardMismatch(reported: board.boardName, chosen: deviceType.displayName)
+                }
                 let capacity = try await Task.detached { try hackRF.flashCapacity() }.value
                 try FirmwareImage.validate(image, capacity: capacity)
 

@@ -35,7 +35,7 @@ Scripts/run.sh --start >/dev/null 2>&1
 if [[ -n "$mode" ]]; then
     for i in {1..10}; do
         sleep 3
-        login && curl -sf --max-time 5 -b "$jar" -H "X-PortaPack: 1" -o /dev/null "http://localhost:1478/api/mode?m=$mode" && break
+        login && curl -sf --max-time 5 -b "$jar" -H "X-PortaPack: 1" -o /dev/null -G --data-urlencode "m=$mode" "http://localhost:1478/api/mode" && break
     done
     echo "Fernzugriff wieder auf $mode"
 fi

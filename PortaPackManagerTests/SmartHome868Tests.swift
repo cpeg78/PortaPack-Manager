@@ -394,6 +394,142 @@ struct SmartHome868ProtocolTests {
         #expect(cold.values.first == SmartHomeValue(name: "Temperatur", unit: "°C", value: -5))
     }
 
+    @Test("EnOcean: Universal Teach-in (UTE) und VLD D2-01/D2-05")
+    func enoceanUTEAndVLD() throws {
+        // UTE: Anlernen für D2-01-12, Hersteller 0x046.
+        let ute = SmartHomeTestFrames.enocean(rorg: 0xD4, data: [0xA0, 0x02, 0x46, 0x00, 0x12, 0x01, 0xD2], sender: 0x0500_1234, status: 0)
+        let teach = try #require(EnOcean.parse(ute))
+        #expect(teach.fields.contains { $0.name == "EEP" && $0.value == "D2-01-12" })
+        #expect(teach.deviceTypeFromInfo && EnOcean.isSupported("D2-01-12"))
+        // D2-01 Zustand: Kanal 0 auf 100 % → „ein“; Messwert 1234 W.
+        let state = SmartHomeTestFrames.enocean(rorg: 0xD2, data: [0x04, 0x60, 0x64], sender: 0x0500_1234, status: 0)
+        #expect(try #require(EnOcean.parse(state, eep: "D2-01-12")).summary == "Kanal 0: ein")
+        let power = SmartHomeTestFrames.enocean(rorg: 0xD2, data: [0x07, 0x60, 0x00, 0x00, 0x04, 0xD2], sender: 0x0500_1234, status: 0)
+        #expect(try #require(EnOcean.parse(power, eep: "D2-01-12")).values == [SmartHomeValue(name: "Leistung", unit: "W", value: 1234)])
+        // D2-05 Rollladen: 40 % zu, Lamellen 20 %.
+        let blind = SmartHomeTestFrames.enocean(rorg: 0xD2, data: [40, 20, 0x00, 0x04], sender: 0x0500_1235, status: 0)
+        #expect(try #require(EnOcean.parse(blind, eep: "D2-05-00")).summary == "40 % geschlossen, Lamellen 20 %")
+        // Ohne Profil nur Rohdaten.
+        #expect(try #require(EnOcean.parse(state)).summary.contains("Profil unbekannt"))
+    }
+
+    @Test("wM-Bus: Kompaktrahmen (CI 0x79) mit dem Satzkopf eines vollständigen Rahmens")
+    func wmbusCompact() {
+        // Volumen 0x04 0x13 (l, 4 Byte) = 12 345 l, Temperatur 0x02 0x5A (0,1 °C, 2 Byte) = 21,5 °C, Füllbyte.
+        let full: [UInt8] = [0x2F, 0x04, 0x13, 0x39, 0x30, 0x00, 0x00, 0x02, 0x5A, 0xD7, 0x00]
+        let headers = WMBus.formatHeaders(full)
+        #expect(headers == [0x04, 0x13, 0x02, 0x5A])
+        let signature = WMBus.crc16(headers ?? [])
+        let compactData: [UInt8] = [UInt8(signature & 0xFF), UInt8(signature >> 8), 0x00, 0x00,
+                                    0x40, 0xE2, 0x01, 0x00, 0xE1, 0x00]   // 123 456 l, 22,5 °C
+        var known = SmartHomeFrame(radio: .wmbus, mode: "T1", address: "x", kind: "", summary: "", checksumOK: true, bytes: [])
+        WMBus.compact(compactData, formats: [signature: headers!], into: &known)
+        #expect(known.values.contains { $0.unit == "m³" && abs($0.value - 123.456) < 1e-9 } || known.values.contains { $0.value == 123_456 })
+        #expect(known.values.contains { $0.unit == "°C" && abs($0.value - 22.5) < 1e-9 })
+        var unknown = SmartHomeFrame(radio: .wmbus, mode: "T1", address: "x", kind: "", summary: "", checksumOK: true, bytes: [])
+        WMBus.compact(compactData, formats: [:], into: &unknown)
+        #expect(unknown.values.isEmpty && unknown.summary.contains("Kompaktrahmen"))
+        // Text variabler Länge (LVAR): kein fester Aufbau.
+        #expect(WMBus.formatHeaders([0x0D, 0x78, 0x03, 0x41, 0x42, 0x43]) == nil)
+    }
+
+    @Test("EnOcean: weitere 4BS-Profile und Fenstergriff F6-10-00")
+    func enoceanProfilesMore() throws {
+        func values(_ eep: String, _ d: [UInt8]) -> [SmartHomeValue] { EnOcean.fourBS(d, eep: eep) }
+        // A5-12-01: 1234,5 kWh (Stand 12345, Teiler 10), dann aktuell 850 W.
+        #expect(values("A5-12-01", [0x00, 0x30, 0x39, 0x09]) == [SmartHomeValue(name: "Energie", unit: "kWh", value: 1234.5)])
+        #expect(values("A5-12-01", [0x00, 0x03, 0x52, 0x0C]) == [SmartHomeValue(name: "Leistung", unit: "W", value: 850)])
+        #expect(values("A5-09-04", [100, 64, 128, 0x0E]).contains(SmartHomeValue(name: "CO₂", unit: "ppm", value: 640)))
+        #expect(values("A5-07-01", [0, 0, 200, 0x08]) == [SmartHomeValue(name: "Bewegung", unit: "", value: 1)])
+        #expect(values("A5-14-01", [200, 0, 0, 0x09]).first == SmartHomeValue(name: "Kontakt offen", unit: "", value: 0))
+        #expect(values("A5-10-03", [0, 128, 0, 0x08]).first == SmartHomeValue(name: "Temperatur", unit: "°C", value: 40))
+        #expect(values("A5-20-01", [35, 0x10, 128, 0x08]).contains(SmartHomeValue(name: "Batterie schwach", unit: "", value: 1)))
+        #expect(values("A5-06-01", [255, 0, 255, 0x08]).first == SmartHomeValue(name: "Helligkeit", unit: "lx", value: 60_000))
+        // Fenstergriff: gekippt (D0), T21 = 1, NU = 0 – mit Profil sicher, ohne vermutet.
+        let tilted = SmartHomeTestFrames.enocean(rorg: 0xF6, data: [0xD0], sender: 0x0100_ABCD, status: 0x20)
+        let known = try #require(EnOcean.parse(tilted, eep: "F6-10-00"))
+        #expect(known.summary == "Fenstergriff: gekippt")
+        #expect(!known.deviceTypeGuessed)
+        let guessed = try #require(EnOcean.parse(tilted))
+        #expect(guessed.summary == "Fenstergriff: gekippt" && guessed.deviceTypeGuessed)
+        // Wippe (NU = 1) bleibt Taster.
+        let rocker = SmartHomeTestFrames.enocean(rorg: 0xF6, data: [0x30], sender: 0x0100_ABCD, status: 0x30)
+        #expect(try #require(EnOcean.parse(rocker)).deviceType == "Taster (F6-02)")
+    }
+
+    @Test("Z-Wave: Türschloss, Thermostat, Benutzercode, Einstellung, Alarm, Klassenliste")
+    func zwaveClasses() {
+        #expect(ZWave.describe([0x62, 0x03, 0xFF, 0x00, 0x01]).summary == "Türschloss: verriegelt, Tür zu")
+        #expect(ZWave.describe([0x62, 0x03, 0x00, 0x00, 0x00]).values == [SmartHomeValue(name: "Verriegelt", unit: "", value: 0)])
+        #expect(ZWave.describe([0x42, 0x03, 0x01]).summary == "Thermostat: heizt")
+        // Benutzercode: der Code (hier 1234) taucht nirgends auf.
+        let code = ZWave.describe([0x63, 0x03, 0x05, 0x01, 0x31, 0x32, 0x33, 0x34])
+        #expect(code.summary == "Benutzercode 5: belegt")
+        #expect(!code.summary.contains("1234"))
+        #expect(ZWave.describe([0x70, 0x06, 0x0D, 0x02, 0xFF, 0x38]).summary == "Einstellung 13 = -200")
+        #expect(ZWave.describe([0x9C, 0x02, 0x00, 0x01, 0xFF]).summary == "Rauchmelder: Alarm!")
+        // Sensortyp 0xFF: vorher `UInt8 + 1` → Absturz per Funk (Review 05.11.2026).
+        #expect(ZWave.describe([0x9C, 0x02, 0x00, 0xFF, 0x01]).summary == "Alarm: Alarm!")
+        #expect(ZWave.describe([0x30, 0x03, 0xFF, 0x0C]).summary == "Bewegungsmelder: ausgelöst")
+        #expect(ZWave.describe([0x35, 0x05, 0x00, 0x01, 0x00, 0x00]).values.first?.value == 65_536)
+        #expect(ZWave.describe([0x85, 0x03, 0x01, 0x05, 0x00, 0x01, 0x0F]).summary == "Zuordnung Gruppe 1: Knoten 1, 15")
+        let info = ZWave.describe([0x01, 0x01, 0xD3, 0x9C, 0x01, 0x04, 0x10, 0x01, 0x5E, 0x25, 0x86, 0xEF, 0x20])
+        #expect(info.fields.contains { $0.name == "Klassen" && $0.value == "Z-Wave Plus, Binärschalter, Version" })
+    }
+
+    @Test("Homematic: Wandthermostat „10 0B“, Thermostat-Gruppe, Batteriebit der Bestätigung")
+    func homematicWallThermostat() throws {
+        func frame(_ type: UInt8, _ payload: [UInt8]) throws -> SmartHomeFrame {
+            try #require(Homematic.parse(enc: Homematic.scramble(SmartHomeTestFrames.homematic(
+                counter: 9, flags: 0x86, type: type, source: [0x33, 0x44, 0x55], target: [0, 0, 0], payload: payload))))
+        }
+        // Soll 21 °C (42 << 10), Ist 21,5 °C (215), 2,9 V (14) + schwach, Boost 10 min.
+        let word = 42 << 10 | 215
+        let wall = try frame(0x10, [0x0B, UInt8(word >> 8), UInt8(word & 0xFF), 0x80 | 14, 0xC0 | 10])
+        #expect(wall.summary == "21.5 °C, Soll 21.0 °C, Boost (10 min), Batterie schwach")
+        #expect(wall.values.contains(SmartHomeValue(name: "Batterie", unit: "V", value: 2.9)))
+        #expect(wall.deviceType == "Wandthermostat")
+        // −3,2 °C: Vorzeichen in Bit 9.
+        let cold = 34 << 10 | 0x200 | 32
+        #expect(try frame(0x10, [0x0B, UInt8(cold >> 8), UInt8(cold & 0xFF), 14, 0x40]).values.first?.value == -3.2)
+        #expect(try frame(0x59, [168 | 1]).summary == "Gruppe: Soll 21.0 °C, manuell")
+        #expect(try frame(0x02, [0x01, 0x01, 0xC8, 0x80]).summary == "Bestätigung, Kanal 1: ein, Batterie schwach")
+    }
+
+    @Test("Homematic: Sensorereignis je nach gelerntem Modell (Rauch, Wasser, Bewegung)")
+    func homematicSensorKinds() throws {
+        func event(_ payload: [UInt8], models: [String: UInt16] = [:]) throws -> SmartHomeFrame {
+            try #require(Homematic.parse(enc: Homematic.scramble(SmartHomeTestFrames.homematic(
+                counter: 7, flags: 0x84, type: 0x41, source: [0x11, 0x22, 0x33], target: [0, 0, 0], payload: payload)),
+                models: models))
+        }
+        // Geräteinfo des Rauchmelders HM-Sec-SD → Modell lernbar.
+        let info = try #require(Homematic.parse(enc: Homematic.scramble(SmartHomeTestFrames.homematic(
+            counter: 1, flags: 0x84, type: 0x00, source: [0x11, 0x22, 0x33], target: [0, 0, 0],
+            payload: [0x10, 0x00, 0x42] + Array("KEQ0123456".utf8) + [0x20, 0x01, 0x00]))))
+        #expect(info.deviceType == "HM-Sec-SD")
+        #expect(Homematic.model(in: info) == 0x0042)
+        let smoke = try event([0x01, 0x05, 0xC8], models: ["112233": 0x0042])
+        #expect(smoke.summary == "Rauchalarm!")
+        #expect(smoke.values == [SmartHomeValue(name: "Rauch", unit: "", value: 1)])
+        #expect(try event([0x01, 0x06, 0x01], models: ["112233": 0x0042]).summary == "Kein Rauch")
+        #expect(try event([0x01, 0x06, 0xC7], models: ["112233": 0x0042]).summary == "Alarmton aus")
+        let water = try event([0x01, 0x05, 0x64], models: ["112233": 0x0045])
+        #expect(water.summary == "Kanal 1: feucht")
+        #expect(water.deviceType == "Wassermelder")
+        #expect(!water.deviceTypeGuessed)
+        // Ohne Modell: drei Bytes = vermutlich Fensterkontakt, vier = Bewegungsmelder.
+        let contact = try event([0x81, 0x05, 0x00])
+        #expect(contact.summary == "Kanal 1: geschlossen, Batterie schwach")
+        #expect(contact.deviceTypeGuessed)
+        let motion = try event([0x01, 0x2A, 0x37, 0x40])
+        #expect(motion.summary == "Bewegung (Nr. 42), Helligkeit 55, nächste Meldung frühestens in 15 s")
+        #expect(motion.deviceType == "Bewegungsmelder")
+        #expect(motion.values.contains(SmartHomeValue(name: "Helligkeit", unit: "", value: 55)))
+        // Kein Geräteinfo-Rahmen → kein Modell.
+        #expect(Homematic.model(in: smoke) == nil)
+    }
+
     // MARK: - EnOcean
 
     @Test("EnOcean: 8-aus-12-Kodierung hin und zurück")

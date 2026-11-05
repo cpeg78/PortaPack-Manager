@@ -1,12 +1,32 @@
 import Foundation
 
-/// Programmbegleitende Daten (PAD, EN 300 401 §7): hier nur das Dynamic
-/// Label (Lauftext, X-PAD-Anwendungstypen 2 und 3). Aufbau wie in DABlin.
+/// Programmbegleitende Daten (PAD, EN 300 401 §7): Dynamic Label (Lauftext,
+/// X-PAD-Anwendungstypen 2 und 3) samt DL Plus (Titel, Interpret …, ETSI
+/// TS 102 980) und die MOT-Diashow (Typ 1 Längenangabe, 12 Beginn, 13
+/// Fortsetzung einer MSC-Datengruppe; ETSI TS 101 499). Aufbau wie in DABlin.
 final class DABPADDecoder: @unchecked Sendable {
     /// Längen der X-PAD-Unterfelder je Längenindex.
     private static let subfieldLengths = [4, 6, 8, 12, 16, 24, 32, 48]
 
     private(set) var dynamicLabel = ""
+    /// DL-Plus-Markierungen des aktuellen Lauftexts.
+    private(set) var dlPlusTags: [RadioTextTag] = []
+    /// DL Plus: Läuft das markierte Stück gerade („Item running“)? Sonst gelten
+    /// Titel und Interpret nicht mehr (Wortbeitrag, Nachrichten).
+    private(set) var itemRunning = false
+    /// Umschaltbit des aktuellen Lauftexts – ein DL-Plus-Befehl gilt nur für den
+    /// Text mit demselben Bit (Link-Bit).
+    private var labelToggle: Bool?
+    private var pendingDLPlus: (link: Bool, running: Bool, markers: [RadioTextPlus.Marker])?
+
+    /// Letztes vollständiges Bild der Diashow (JPEG/PNG) und seine Laufnummer.
+    private(set) var slide: DABMOTObject?
+    private(set) var slideNumber = 0
+    /// Länge der nächsten MOT-Datengruppe (aus X-PAD-Typ 1), die laufende Gruppe.
+    private var motLength: Int?
+    private var motGroup: [UInt8] = []
+    private var motNeeded = 0
+    private var mot = DABMOTAssembler()
 
     /// Zuletzt benutztes Unterfeld (für Fortsetzungen ohne CI-Liste).
     private var lastType: Int?
@@ -16,10 +36,21 @@ final class DABPADDecoder: @unchecked Sendable {
 
     func reset() {
         dynamicLabel = ""
+        dlPlusTags = []
+        itemRunning = false
+        labelToggle = nil
+        pendingDLPlus = nil
         lastType = nil
         group = []
         groupNeeded = 4
         segments = [:]
+        // Zähler weiterdrehen, damit die Anzeige das alte Bild verwirft.
+        if slide != nil { slideNumber += 1 }
+        slide = nil
+        motLength = nil
+        motGroup = []
+        motNeeded = 0
+        mot = DABMOTAssembler()
     }
 
     /// Verarbeitet das PAD eines Rahmens/einer AU. `pad` endet mit den zwei
@@ -75,6 +106,15 @@ final class DABPADDecoder: @unchecked Sendable {
             case 2, 3:
                 if feedDynamicLabel(start: subfield.type == 2, data) { changed = true }
                 continued = 3
+            case 1:
+                // Längenangabe der folgenden MOT-Datengruppe: 14 Bit + CRC.
+                if data.count >= 4, DABCRC.ccitt(data[0..<2]) == UInt16(data[2]) << 8 | UInt16(data[3]) {
+                    motLength = Int(data[0] & 0x3F) << 8 | Int(data[1])
+                }
+                continued = nil
+            case 12, 13:
+                if feedMOT(start: subfield.type == 12, data) { changed = true }
+                continued = 13
             default:
                 continued = nil
             }
@@ -82,6 +122,27 @@ final class DABPADDecoder: @unchecked Sendable {
         }
         lastType = continued
         return changed
+    }
+
+    // MARK: - MOT-Diashow
+
+    private func feedMOT(start: Bool, _ data: [UInt8]) -> Bool {
+        if start {
+            guard let length = motLength else { motGroup = []; return false }
+            motLength = nil
+            motGroup = []
+            motNeeded = length
+        } else if motGroup.isEmpty && motNeeded == 0 {
+            return false
+        }
+        motGroup += data
+        guard motGroup.count >= motNeeded else { return false }
+        defer { motGroup = []; motNeeded = 0 }
+        guard let group = DABDataGroup(Array(motGroup.prefix(motNeeded))), let object = mot.add(group),
+              object.imageKind != nil else { return false }
+        slide = object
+        slideNumber += 1
+        return true
     }
 
     // MARK: - Datengruppe des Dynamic Label
@@ -98,8 +159,10 @@ final class DABPADDecoder: @unchecked Sendable {
         guard group.count >= groupNeeded else { return false }
 
         let command = group[0] & 0x10 != 0
-        let fieldLength = command ? 0 : Int(group[0] & 0x0F) + 1
-        if command && group[0] & 0x0F != 0x01 {
+        let commandCode = group[0] & 0x0F
+        // Befehle: 0x01 Lauftext löschen (ohne Feld), 0x02 DL Plus (Länge in Byte 1).
+        let fieldLength = command ? (commandCode == 0x02 ? Int(group[1] & 0x0F) + 1 : 0) : Int(group[0] & 0x0F) + 1
+        if command && commandCode != 0x01 && commandCode != 0x02 {
             group = []
             return false
         }
@@ -110,11 +173,16 @@ final class DABPADDecoder: @unchecked Sendable {
         defer { group = [] }
         guard DABCRC.ccitt(group[0..<realLength]) == crc else { return false }
 
+        if command && commandCode == 0x02 {
+            return dlPlus(link: group[1] & 0x80 != 0, Array(group[2..<realLength]))
+        }
         if command {
             // „Lauftext löschen“
             segments = [:]
-            let changed = !dynamicLabel.isEmpty
+            let changed = !dynamicLabel.isEmpty || !dlPlusTags.isEmpty
             dynamicLabel = ""
+            dlPlusTags = []
+            labelToggle = nil
             return changed
         }
         let toggle = group[0] & 0x80 != 0
@@ -139,9 +207,38 @@ final class DABPADDecoder: @unchecked Sendable {
                 let text = DABCharset.decode(raw, charset: charset)
                 guard text != dynamicLabel else { return false }
                 dynamicLabel = text
+                labelToggle = segment.toggle
+                dlPlusTags = []
+                applyDLPlus()
                 return true
             }
         }
         return false
+    }
+
+    // MARK: - DL Plus
+
+    /// DL-Plus-Befehl (TS 102 980 §7): CId 0 = Markierungen. Byte 0: CId (4),
+    /// Item-Toggle, Item-Running, Anzahl − 1 (2); dann je 3 Byte Inhaltsart (7),
+    /// Anfang (7), Länge − 1 (6).
+    private func dlPlus(link: Bool, _ field: [UInt8]) -> Bool {
+        guard let head = field.first, head >> 4 == 0 else { return false }
+        let count = Int(head & 0x03) + 1
+        guard field.count >= 1 + 3 * count else { return false }
+        let markers = (0..<count).map { k -> RadioTextPlus.Marker in
+            let i = 1 + 3 * k
+            return .init(type: Int(field[i] & 0x7F), start: Int(field[i + 1] & 0x7F), length: Int(field[i + 2] & 0x3F) + 1)
+        }
+        pendingDLPlus = (link, head & 0x04 != 0, markers)
+        let before = (dlPlusTags, itemRunning)
+        applyDLPlus()
+        return before != (dlPlusTags, itemRunning)
+    }
+
+    /// Den letzten Befehl auf den Text anwenden, zu dem er gehört.
+    private func applyDLPlus() {
+        guard let pending = pendingDLPlus, let labelToggle, pending.link == labelToggle else { return }
+        dlPlusTags = RadioTextPlus.tags(in: dynamicLabel, markers: pending.markers)
+        itemRunning = pending.running
     }
 }

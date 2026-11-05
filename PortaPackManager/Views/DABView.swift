@@ -5,6 +5,8 @@ struct DABView: View {
     /// Gehört dem Fernzugriff, damit App und Browser denselben Empfänger bedienen.
     @Bindable private var model = RemoteHub.shared.dab
     @State private var pendingDelete: DeleteConfirmation?
+    /// Bild der Diashow – nur neu dekodiert, wenn ein neues kommt.
+    @State private var slideImage: NSImage?
 
     var body: some View {
         if session.mode != .hackRF || session.hackRF == nil {
@@ -117,11 +119,44 @@ struct DABView: View {
                         .font(.title2.weight(.semibold))
                         Text(subtitle)
                             .font(.callout).foregroundStyle(.secondary)
+                        if let id = model.playingServiceID {
+                            let alternatives = model.alternatives(of: id)
+                            if !alternatives.ensembles.isEmpty {
+                                Label("Auch in: \(alternatives.ensembles.joined(separator: ", "))", systemImage: "dot.radiowaves.left.and.right")
+                                    .font(.caption).foregroundStyle(.secondary)
+                                    .help("Der Sender meldet, dass dieses Programm auch in diesen Ensembles läuft (FIG 0/24).")
+                            }
+                            if !alternatives.fm.isEmpty {
+                                Label("Auch auf UKW: \(alternatives.fm.joined(separator: " · ")) MHz", systemImage: "radio")
+                                    .font(.caption).foregroundStyle(.secondary)
+                                    .help("UKW-Frequenzen desselben Programms laut Sender (FIG 0/21).")
+                            }
+                        }
+                        ForEach(model.status.ensemble.activeAnnouncements(), id: \.subchannelID) { announcement in
+                            let station = model.status.ensemble.service(onSubchannel: announcement.subchannelID)?.label
+                            Label(DABAnnouncement.names(announcement.types).joined(separator: ", ")
+                                  + (station.map { " – \($0)" } ?? ""), systemImage: "megaphone.fill")
+                                .font(.callout.weight(.medium)).foregroundStyle(.orange)
+                                .help("Laufende Durchsage im Ensemble (DAB-Ankündigung). Der Ton läuft auf dem genannten Sender.")
+                        }
                     }
                     Spacer()
                 }
+                if let slideImage {
+                    Image(nsImage: slideImage)
+                        .resizable().aspectRatio(contentMode: .fit)
+                        .frame(maxWidth: .infinity, maxHeight: 220)
+                        .clipShape(RoundedRectangle(cornerRadius: 6))
+                        .help("Diashow des Senders (DAB-Slideshow)")
+                }
                 // Radiotext mit fester Höhe (drei Zeilen): er wechselt alle paar
                 // Sekunden seine Länge, und alles darunter sprang mit.
+                if let playing = RadioTextPlus.nowPlaying(model.status.dlPlus) {
+                    Label(playing, systemImage: "music.note")
+                        .font(.headline)
+                        .textSelection(.enabled)
+                        .help(model.status.dlPlus.compactMap { tag in tag.name.map { "\($0): \(tag.text)" } }.joined(separator: "\n"))
+                }
                 if model.running || !model.status.dynamicLabel.isEmpty {
                     Text(model.status.dynamicLabel.isEmpty ? " " : model.status.dynamicLabel)
                         .font(.body)
@@ -162,27 +197,16 @@ struct DABView: View {
 
             // Direkt unter der Kanalwahl: darunter wechseln Zeilen und Abschnitte
             // („Betriebsart“, „Format“) ihre Höhe – weiter unten sprangen die Regler.
+            if !model.status.programmes.isEmpty {
+                Section("Programm") {
+                    ProgrammeGuideList(programmes: model.status.programmes)
+                }
+            }
             Section(PanelSection.empfang) {
                 ReceiverControls(model: model, device: session.hackRF)
             }
             Section(PanelSection.status) {
-                LabeledContent("Synchronisation") {
-                    Text(model.status.synchronized ? "eingerastet" : (model.running ? "wird gesucht …" : "–"))
-                        .foregroundStyle(model.status.synchronized ? .green : .secondary)
-                }
-                LabeledContent("Störabstand") { Text(verbatim: model.status.synchronized ? model.status.snr.formatted(.number.precision(.fractionLength(1))) + " dB" : "–").monospacedDigit() }
-                LabeledContent("Audiorahmen") {
-                    Text("\(model.status.accessUnitsGood) gut · \(model.status.accessUnitsBad) fehlerhaft").monospacedDigit()
-                }
-                if !model.status.format.isEmpty {
-                    LabeledContent("Format", value: model.status.format)
-                }
-                DisclosureGroup("Technische Details") {
-                    LabeledContent("FIC fehlerfrei") { Text(verbatim: model.status.synchronized ? "\(Int(model.status.ficQuality * 100)) %" : "–").monospacedDigit() }
-                        .help("Anteil fehlerfrei empfangener Senderinformationen (Fast Information Channel)")
-                    LabeledContent("Frequenzablage") { Text(verbatim: model.status.frequencyOffset.formatted(.number.precision(.fractionLength(0)).sign(strategy: .always())) + " Hz").monospacedDigit() }
-                    LabeledContent("Audiopuffer") { Text(verbatim: model.bufferFill.formatted(.number.precision(.fractionLength(2))) + " s").monospacedDigit() }
-                }
+                DABStatusRows(model: model)
             }
 
             Section("Suchlauf") {
@@ -225,6 +249,9 @@ struct DABView: View {
         }
         .deleteConfirmation($pendingDelete)
         .formStyle(.grouped)
+        .onChange(of: model.status.slideNumber, initial: true) { _, _ in
+            slideImage = model.status.slide.flatMap(NSImage.init(data:))
+        }
     }
 
     private var subtitle: String {
@@ -272,5 +299,67 @@ private struct ServiceRow: View {
         if !type.isEmpty { parts.append(type) }
         if !alsoOn.isEmpty { parts.append(String(localized: "auch \(alsoOn.joined(separator: ", "))")) }
         return parts.joined(separator: " · ")
+    }
+}
+
+/// Laufende und kommende Sendungen aus dem DAB-Programmführer (SPI).
+private struct ProgrammeGuideList: View {
+    let programmes: [DABProgramme]
+
+    var body: some View {
+        TimelineView(.everyMinute) { context in
+            ForEach(programmes.filter { $0.end > context.date }.prefix(8)) { programme in
+                let running = programme.start <= context.date
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    Text(programme.start, format: .dateTime.hour().minute())
+                        .font(.callout.monospacedDigit())
+                        .foregroundStyle(running ? .primary : .secondary)
+                        .frame(width: 44, alignment: .leading)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(programme.name).font(running ? .callout.weight(.semibold) : .callout)
+                        if running, let detail = programme.detail {
+                            Text(detail).font(.caption).foregroundStyle(.secondary).lineLimit(3)
+                        }
+                    }
+                    Spacer(minLength: 0)
+                    if running {
+                        Text("Jetzt").font(.caption.weight(.semibold)).foregroundStyle(.green)
+                    }
+                }
+                .help(programme.detail ?? "")
+            }
+        }
+    }
+}
+
+/// Zähler und Pegel als eigene Ansicht: sie ändern sich mehrmals je Sekunde,
+/// und im Bedienfeld selbst gelesen zeichneten sie das ganze Formular neu –
+/// das Scrollen ruckelte (Review 05.11.2026).
+private struct DABStatusRows: View {
+    let model: DABModel
+
+    var body: some View {
+        LabeledContent("Synchronisation") {
+            Text(model.status.synchronized ? "eingerastet" : (model.running ? "wird gesucht …" : "–"))
+                .foregroundStyle(model.status.synchronized ? .green : .secondary)
+        }
+        if let clock = model.status.ensemble.clock {
+            LabeledContent("Senderzeit") {
+                Text(clock.formatted(date: .abbreviated, time: .standard)).monospacedDigit()
+            }
+        }
+        LabeledContent("Störabstand") { Text(verbatim: model.status.synchronized ? model.status.snr.formatted(.number.precision(.fractionLength(1))) + " dB" : "–").monospacedDigit() }
+        LabeledContent("Audiorahmen") {
+            Text("\(model.status.accessUnitsGood) gut · \(model.status.accessUnitsBad) fehlerhaft").monospacedDigit()
+        }
+        if !model.status.format.isEmpty {
+            LabeledContent("Format", value: model.status.format)
+        }
+        FoldOut("Technische Details") {
+            LabeledContent("FIC fehlerfrei") { Text(verbatim: model.status.synchronized ? "\(Int(model.status.ficQuality * 100)) %" : "–").monospacedDigit() }
+                .help("Anteil fehlerfrei empfangener Senderinformationen (Fast Information Channel)")
+            LabeledContent("Frequenzablage") { Text(verbatim: model.status.frequencyOffset.formatted(.number.precision(.fractionLength(0)).sign(strategy: .always())) + " Hz").monospacedDigit() }
+            LabeledContent("Audiopuffer") { Text(verbatim: model.bufferFill.formatted(.number.precision(.fractionLength(2))) + " s").monospacedDigit() }
+        }
     }
 }

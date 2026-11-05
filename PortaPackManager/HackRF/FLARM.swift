@@ -84,7 +84,9 @@ final class FLARMDemodulator {
         frequency = []; power = []; noise = 0; crcErrors = 0
     }
 
-    func process(_ block: Data) -> [FLARMPacket] {
+    /// `now`: Zeitstempel erkannter Pakete – durchgereicht statt `Date()` im
+    /// Dekoder (Review 05.11.2026), wie bei ADS-B/AIS/APRS.
+    func process(_ block: Data, now: Date = Date()) -> [FLARMPacket] {
         let count = block.count / 2
         guard count > 0 else { return [] }
         var re = carryRe, im = carryIm
@@ -126,7 +128,7 @@ final class FLARMDemodulator {
         frequency += angles
         power += blockPower
         updateNoise(blockPower)
-        return scan()
+        return scan(now: now)
     }
 
     private func updateNoise(_ values: [Float]) {
@@ -152,7 +154,7 @@ final class FLARMDemodulator {
         return magnitude > 0 ? correlation / magnitude : 0
     }
 
-    private func scan() -> [FLARMPacket] {
+    private func scan(now: Date) -> [FLARMPacket] {
         let spb = Self.samplesPerBit
         var packets: [FLARMPacket] = []
         let gate = noise * 4
@@ -163,7 +165,7 @@ final class FLARMDemodulator {
             var best = n, bestScore = abs(score(n))
             for k in 1...spb { let s = abs(score(n + k)); if s > bestScore { best = n + k; bestScore = s } }
             let inverted = score(best) < 0
-            if let packet = decode(at: best, inverted: inverted) {
+            if let packet = decode(at: best, inverted: inverted, now: now) {
                 packets.append(packet)
                 n = best + (syncBits.count + FLARMLink.packetBytes * 8) * spb
             } else {
@@ -176,7 +178,7 @@ final class FLARMDemodulator {
         return packets
     }
 
-    private func decode(at start: Int, inverted: Bool) -> FLARMPacket? {
+    private func decode(at start: Int, inverted: Bool, now: Date) -> FLARMPacket? {
         let spb = Self.samplesPerBit
         var mean: Float = 0
         let totalBits = syncBits.count + FLARMLink.packetBytes * 8
@@ -201,6 +203,6 @@ final class FLARMDemodulator {
         for k in 0..<(syncBits.count * spb) { level += power[start + k] }
         level /= Float(syncBits.count * spb)
         return FLARMPacket(bytes: bytes, crcValid: valid,
-                           rssiDB: 10 * log10(Double(max(level, 1e-12))), offsetKHz: 0, date: Date())
+                           rssiDB: 10 * log10(Double(max(level, 1e-12))), offsetKHz: 0, date: now)
     }
 }

@@ -78,6 +78,13 @@ final class AirbandModel {
             receiver?.lock.withLock { receiver?.speechOnly = speechOnly }
         }
     }
+    /// Rauschminderung beim Hören (Mitschnitte und Abschrift bleiben unbearbeitet).
+    var noiseReduction = NoiseReduction(rawValue: UserDefaults.standard.string(forKey: "airbandNoiseReduction") ?? "") ?? .medium {
+        didSet {
+            UserDefaults.standard.set(noiseReduction.rawValue, forKey: "airbandNoiseReduction")
+            receiver?.lock.withLock { receiver?.noiseReduction = noiseReduction }
+        }
+    }
     /// Festgehaltener Kanal (Rasterindex).
     private(set) var hold: Int?
 
@@ -165,6 +172,7 @@ final class AirbandModel {
                 receiver.recordAudio = recordAudio
                 receiver.transcribeAudio = transcription.wantsAudio
                 receiver.speechOnly = speechOnly
+                receiver.noiseReduction = noiseReduction
                 receiver.remoteTap = remoteTap
                 receiver.localMuted = localMuted
                 receiver.hold = hold
@@ -449,7 +457,7 @@ final class AirbandModel {
     // MARK: - Verlauf
 
     func recordingURL(_ item: AirbandTransmission) -> URL? {
-        item.recording.map { log.recordingURL($0) }
+        item.recording.flatMap { log.recordingURL($0) }
     }
 
     func deleteHistory() {

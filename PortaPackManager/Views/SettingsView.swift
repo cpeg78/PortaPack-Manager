@@ -357,7 +357,8 @@ struct NotificationSettingsPane: View {
                     Toggle("Satellit kommt in 10 Minuten", isOn: $notifier.notifyPasses)
                     Toggle("Ergebnis geplanter Aufnahmen", isOn: $notifier.notifyPlan)
                     Toggle("Gerät nicht erreichbar", isOn: $notifier.notifyProblems)
-                    Toggle("Seefunk-Notruf (DSC)", isOn: $notifier.notifyDSC)
+                    Toggle("Seenotruf (DSC, AIS-Notsender)", isOn: $notifier.notifyDSC)
+                    Toggle("Flugzeug meldet Notfall", isOn: $notifier.notifyAircraftEmergency)
                     HStack {
                         Button("Testnachricht senden") { notifier.testMessage() }
                         if let result = notifier.lastResult { Text(result).font(.caption).foregroundStyle(.secondary) }
@@ -592,6 +593,7 @@ struct ArchiveSettingsPane: View {
         case ArchiveBackup.Area.adsb: String(localized: "Flugzeuge")
         case ArchiveBackup.Area.ais: String(localized: "Schiffe")
         case ArchiveBackup.Area.sondes: String(localized: "Radiosonden")
+        case ArchiveBackup.Area.acars: String(localized: "Datenfunk (ACARS/VDL2)")
         case ArchiveBackup.Area.database: String(localized: "Archiv-Datenbank")
         case ArchiveMigration.oldFolderName: String(localized: "Alte Archivdateien (übernommen)")
         case "Archiv", "Radiosonden": String(localized: "Alte Archivdateien (noch nicht übernommen)")
@@ -613,10 +615,12 @@ struct ArchiveSettingsPane: View {
             parts.append(String(localized: "\(stat.entries ?? 0) Sichtungen, \(stat.distinct ?? 0) verschiedene Schiffe"))
         case ArchiveBackup.Area.sondes:
             parts.append(String(localized: "\(stat.entries ?? 0) Flüge, \(stat.distinct ?? 0) Meldungen"))
+        case ArchiveBackup.Area.acars:
+            parts.append(String(localized: "\(stat.entries ?? 0) Meldungen von \(stat.distinct ?? 0) Flugzeugen"))
         case "Flugfunk":
             parts.append(String(localized: "\(stat.entries ?? 0) Übertragungen im Verlauf"))
         case ArchiveBackup.Area.database:
-            parts.append(String(localized: "enthält Flugzeuge, Schiffe, Radiosonden und den Flugfunk-Verlauf"))
+            parts.append(String(localized: "enthält Flugzeuge, Schiffe, Radiosonden, Datenfunk und den Flugfunk-Verlauf"))
         case ArchiveMigration.oldFolderName:
             parts.append(String(localized: "Inhalt steht in der Datenbank"))
         default:

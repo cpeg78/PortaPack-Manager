@@ -383,6 +383,9 @@ struct MapOptions: Equatable, Encodable {
     var zoom: Double = 5
     var zoomInTitle = String(localized: "Vergrößern")
     var zoomOutTitle = String(localized: "Verkleinern")
+    /// Kachelebene (OpenStreetMap) anlegen – `false` nur für Tests, die ohne
+    /// Netz und ohne Anfragen an fremde Server laufen sollen (Review 05.11.2026).
+    var tiles = true
 }
 
 /// Eine Nachricht an die Kartenseite.

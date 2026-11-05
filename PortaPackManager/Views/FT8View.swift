@@ -100,12 +100,7 @@ struct FT8View: View {
                 ReceiverControls(model: model, device: session.hackRF)
             }
             Section(PanelSection.status) {
-                TimelineView(.periodic(from: .now, by: 1)) { context in
-                    VStack(alignment: .leading, spacing: 3) {
-                        Text("UTC \(Self.utcLong.string(from: context.date))").font(.callout.monospacedDigit())
-                        if model.running { cycleInfo(context.date) }
-                    }
-                }
+                FT8ClockRows(model: model)
                 LabeledContent("Dekodierungen", value: "\(model.decodeCount)")
                 LabeledContent("Stationen auf der Karte", value: "\(model.stations.count)")
                 clockStatus
@@ -144,23 +139,23 @@ struct FT8View: View {
     }
 
     @ViewBuilder
-    private func cycleInfo(_ now: Date) -> some View {
+    static func cycleInfo(_ now: Date, model: FT8Model) -> some View {
         let t = now.timeIntervalSince1970
         if model.mode.hasFT8 {
             let into = t.truncatingRemainder(dividingBy: 15)
             let busy = model.decoding.contains(.ft8)
-            Text(Self.cycleText("FT8", into: Int(into), period: 15, busy: busy, last: model.lastCycleCount[.ft8]))
+            Text(cycleText("FT8", into: Int(into), period: 15, busy: busy, last: model.lastCycleCount[.ft8]))
                 .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
         }
         if model.mode.hasWSPR {
             let into = t.truncatingRemainder(dividingBy: 120)
             let busy = model.decoding.contains(.wspr)
-            Text(Self.cycleText("WSPR", into: Int(into), period: 120, busy: busy, last: model.lastCycleCount[.wspr]))
+            Text(cycleText("WSPR", into: Int(into), period: 120, busy: busy, last: model.lastCycleCount[.wspr]))
                 .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
         }
     }
 
-    private static func cycleText(_ mode: String, into: Int, period: Int, busy: Bool, last: Int?) -> String {
+    fileprivate static func cycleText(_ mode: String, into: Int, period: Int, busy: Bool, last: Int?) -> String {
         if busy { return String(localized: "\(mode): Zyklus \(into) / \(period) s · rechnet …") }
         if let last { return String(localized: "\(mode): Zyklus \(into) / \(period) s · zuletzt \(last)") }
         return String(localized: "\(mode): Zyklus \(into) / \(period) s")
@@ -214,7 +209,7 @@ struct FT8View: View {
 
     // MARK: - Hilfen
 
-    private static let utcLong: DateFormatter = {
+    fileprivate static let utcLong: DateFormatter = {
         let f = DateFormatter()
         f.dateFormat = "HH:mm:ss"
         f.timeZone = TimeZone(identifier: "UTC")
@@ -372,6 +367,7 @@ struct FT8MapPane: View {
 /// Liste der Dekodierungen (eigene Ansicht, siehe `FT8WaterfallPane`). Filtern und
 /// Sortieren laufen nur, wenn sich Spots, Filter oder Sortierung ändern.
 struct FT8SpotTable: View {
+    @StoredColumns("ft8.1") private var columns: TableColumnCustomization<FT8Spot>
     let model: FT8Model
     @Binding var selection: FT8Spot.ID?
     @Binding var order: [ColumnSort<FT8Spot>]
@@ -384,33 +380,33 @@ struct FT8SpotTable: View {
     }
 
     var body: some View {
-        Table(rows, selection: $selection, sortOrder: $order) {
+        Table(rows, selection: $selection, sortOrder: $order, columnCustomization: $columns) {
             TableColumn("UTC", sortUsing: ColumnSort("utc") { $0.cycle }) { spot in
                 Text(Self.utc.string(from: spot.cycle)).font(.body.monospacedDigit())
-            }.width(min: 56, ideal: 62)
+            }.width(min: 56, ideal: 62).customizationID("utc")
             TableColumn("Art", sortUsing: ColumnSort("art", text: { $0.mode.rawValue })) { spot in
                 Text(spot.mode.rawValue + (spot.viaOSD ? "*" : "")).foregroundStyle(spot.mode == .wspr ? .purple : .primary)
-            }.width(min: 38, ideal: 44)
+            }.width(min: 38, ideal: 44).customizationID("art")
             TableColumn("SNR", sortUsing: ColumnSort("snr") { $0.snr }) { spot in
                 Text(String(format: "%+.0f", spot.snr)).monospacedDigit()
-            }.width(min: 34, ideal: 40)
+            }.width(min: 34, ideal: 40).customizationID("snr")
             TableColumn("Δt", sortUsing: ColumnSort("dt") { $0.dt }) { spot in
                 Text(String(format: "%+.1f", spot.dt)).monospacedDigit()
-            }.width(min: 34, ideal: 40)
+            }.width(min: 34, ideal: 40).customizationID("t")
             TableColumn("Hz", sortUsing: ColumnSort("hz") { $0.frequency }) { spot in
                 Text(String(format: "%.0f", spot.frequency)).monospacedDigit()
-            }.width(min: 40, ideal: 48)
+            }.width(min: 40, ideal: 48).customizationID("hz")
             TableColumn("Nachricht", sortUsing: ColumnSort("nachricht", text: { $0.message })) { spot in
                 Text(spot.message).font(.body.monospaced())
                     .fontWeight(spot.isCQ ? .semibold : .regular)
                     .foregroundStyle(spot.isCQ ? Color.green : Color.primary)
-            }.width(min: 160, ideal: 220)
+            }.width(min: 160, ideal: 220).customizationID("nachricht")
             TableColumn("Locator", sortUsing: ColumnSort("locator", text: { $0.grid })) { spot in
                 Text(spot.grid ?? "–").font(.body.monospaced()).foregroundStyle(spot.gridFromMessage ? .primary : .secondary)
-            }.width(min: 50, ideal: 60)
+            }.width(min: 50, ideal: 60).customizationID("locator")
             TableColumn("Entfernung", sortUsing: byDistance) { spot in
                 Text(distanceString(spot))
-            }.width(min: 80, ideal: 100)
+            }.width(min: 80, ideal: 100).customizationID("entfernung")
         }
         .contextMenu(forSelectionType: FT8Spot.ID.self) { ids in
             if let spot = model.spots.first(where: { ids.contains($0.id) }) {
@@ -471,5 +467,28 @@ extension FT8View {
                          .number(s.frequency, digits: 0), .number(s.drift), .text(s.message), .text(s.call), .text(s.grid),
                          .flag(s.gridFromMessage), .flag(s.isCQ), .flag(s.viaOSD), .integer(s.powerDBm)]
                     })
+    }
+}
+
+/// UTC-Uhr und Zyklusstand im Bedienfeld – als eigene Ansicht mit fester
+/// Höhe, damit der Sekundentakt nicht das ganze Formular neu anordnet
+/// (`TimelineView` im `Form` ruckelte beim Scrollen, Review 05.11.2026).
+private struct FT8ClockRows: View {
+    let model: FT8Model
+    @State private var now = Date()
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text("UTC \(FT8View.utcLong.string(from: now))")
+                .font(.callout.monospacedDigit())
+                .lineLimit(1, reservesSpace: true)
+            if model.running { FT8View.cycleInfo(now, model: model) }
+        }
+        .task {
+            while !Task.isCancelled {
+                now = Date()
+                try? await Task.sleep(for: .seconds(1))
+            }
+        }
     }
 }

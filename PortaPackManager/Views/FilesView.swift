@@ -2,6 +2,7 @@ import AppKit
 import SwiftUI
 
 struct FilesView: View {
+    @StoredColumns("files.1") private var columns: TableColumnCustomization<SDEntry>
     @Environment(DeviceSession.self) private var session
     @State private var path = "/"
     @State private var entries: [SDEntry] = []
@@ -24,7 +25,7 @@ struct FilesView: View {
             VStack(spacing: 0) {
                 toolbar
                 Divider()
-                Table(visibleEntries, selection: $selection, sortOrder: $order) {
+                Table(visibleEntries, selection: $selection, sortOrder: $order, columnCustomization: $columns) {
                     TableColumn("Name", sortUsing: ColumnSort("name", text: { $0.name })) { entry in
                         HStack {
                             Label(entry.name, systemImage: entry.isDirectory ? "folder" : icon(for: entry.name))
@@ -34,12 +35,12 @@ struct FilesView: View {
                                     .help("Über die USB-Verbindung nicht erreichbar: \(reason). Benenne die Datei am Gerät um oder öffne die SD-Karte als Laufwerk (Übersicht › „SD-Karte als Laufwerk“).")
                             }
                         }
-                    }
+                    }.customizationID("name")
                     TableColumn("Art", sortUsing: ColumnSort("art", text: { $0.isDirectory ? "" : ($0.name as NSString).pathExtension })) { entry in
                         Text(entry.isDirectory ? "Ordner" : (entry.name as NSString).pathExtension.uppercased())
                             .foregroundStyle(.secondary)
                     }
-                    .width(80)
+                    .width(min: 48, ideal: 80).customizationID("art")
                 }
                 .contextMenu(forSelectionType: SDEntry.ID.self) { ids in
                     if let entry = entries.first(where: { ids.contains($0.id) }) {

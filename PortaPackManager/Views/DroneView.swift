@@ -2,6 +2,7 @@ import CoreLocation
 import SwiftUI
 
 struct DroneView: View {
+    @StoredColumns("drone.1") private var columns: TableColumnCustomization<Drone>
     @Environment(DeviceSession.self) private var session
     /// Lebt im `ReceiverStore` – überlebt den Seitenwechsel samt laufendem Empfang.
     @Bindable private var model = ReceiverStore.shared.drones
@@ -121,27 +122,30 @@ struct DroneView: View {
     // MARK: - Tabelle
 
     private var table: some View {
-        Table(model.drones.sorted(by: order, current: [byDistance]), selection: $selection, sortOrder: $order) {
+        Table(model.drones.sorted(by: order, current: [byDistance]), selection: $selection, sortOrder: $order, columnCustomization: $columns) {
             TableColumn("Kennung", sortUsing: ColumnSort("kennung", text: { $0.uasID })) { drone in
                 Text(drone.uasID ?? drone.address.string).font(.body.monospaced())
                     .foregroundStyle(drone.uasID == nil ? .secondary : .primary)
-            }
-            TableColumn("Art", sortUsing: ColumnSort("art", text: { $0.uaType })) { Text($0.uaType ?? "–") }.width(110)
+            }.customizationID("kennung")
+            TableColumn("Art", sortUsing: ColumnSort("art", text: { $0.uaType })) { Text($0.uaType ?? "–") }.width(min: 66, ideal: 110).customizationID("art")
             TableColumn("Status", sortUsing: ColumnSort("status", text: { $0.location?.statusName })) { drone in
-                Text(drone.location?.statusName ?? "–")
-                    .foregroundStyle(drone.location?.status == 3 ? .red : .primary)
-            }.width(80)
+                // Notfall aus der Position (Status 3) oder der Self-ID (Art 1).
+                let emergency = drone.location?.status == 3 || drone.selfID?.isEmergency == true
+                Text(drone.selfID?.isEmergency == true ? String(localized: "Notfall") : drone.location?.statusName ?? "–")
+                    .foregroundStyle(emergency ? .red : .primary)
+                    .fontWeight(emergency ? .bold : .regular)
+            }.width(min: 48, ideal: 80).customizationID("status")
             TableColumn("Höhe", sortUsing: ColumnSort("hoehe") { $0.location?.altitudeGeo ?? $0.location?.altitudeBaro }) { drone in
                 Text(meters(drone.location?.height ?? drone.location?.altitudeGeo ?? drone.location?.altitudeBaro))
-            }.width(60)
+            }.width(min: 36, ideal: 60).customizationID("hohe")
             TableColumn("Tempo", sortUsing: ColumnSort("tempo") { $0.location?.speed }) { drone in
                 Text(drone.location?.speed.map { String(format: "%.1f m/s", $0) } ?? "–")
-            }.width(65)
+            }.width(min: 39, ideal: 65).customizationID("tempo")
             TableColumn("Entfernung", sortUsing: byDistance) { drone in
                 Text(distanceKm(drone.latitude, drone.longitude).map { String(format: "%.2f km", $0) } ?? "–")
-            }.width(75)
-            TableColumn("Pegel", sortUsing: ColumnSort("pegel") { $0.rssiDB }) { Text(String(format: "%.0f dB", $0.rssiDB)).monospacedDigit() }.width(50)
-            TableColumn("Zuletzt", sortUsing: ColumnSort("zuletzt") { $0.lastSeen }) { Text($0.lastSeen, style: .relative).foregroundStyle(.secondary) }.width(90)
+            }.width(min: 45, ideal: 75).customizationID("entfernung")
+            TableColumn("Pegel", sortUsing: ColumnSort("pegel") { $0.rssiDB }) { Text(String(format: "%.0f dB", $0.rssiDB)).monospacedDigit() }.width(min: 30, ideal: 50).customizationID("pegel")
+            TableColumn("Zuletzt", sortUsing: ColumnSort("zuletzt") { $0.lastSeen }) { Text($0.lastSeen, style: .relative).foregroundStyle(.secondary) }.width(min: 54, ideal: 90).customizationID("zuletzt")
         }
         .overlay {
             if model.drones.isEmpty {
@@ -191,6 +195,9 @@ struct DroneView: View {
                         row("Position", String(format: "%.6f, %.6f", lat, lon))
                     }
                     if let accuracy = location.horizontalAccuracyMeters { row("Genauigkeit", "< \(format(accuracy)) m") }
+                    if let accuracy = location.verticalAccuracyMeters { row("Höhe genau auf", "< \(format(accuracy)) m") }
+                    if let accuracy = location.baroAccuracyMeters { row("Druckhöhe genau auf", "< \(format(accuracy)) m") }
+                    if let accuracy = location.speedAccuracyMeters { row("Tempo genau auf", "< \(format(accuracy)) m/s") }
                     row("Höhe WGS-84", meters(location.altitudeGeo))
                     row("Druckhöhe", meters(location.altitudeBaro))
                     row(location.heightOverGround ? "Höhe über Grund" : "Höhe über Start", meters(location.height))
@@ -215,13 +222,19 @@ struct DroneView: View {
                     if let alt = system.operatorAltitude { row("Pilot Höhe", meters(alt)) }
                     if let eu = system.euClassification { row("EU-Einstufung", eu) }
                     if system.areaCount > 1 { row("Schwarm", String(localized: "\(system.areaCount) Fluggeräte, Radius \(system.areaRadius) m")) }
+                    if system.areaCeiling != nil || system.areaFloor != nil {
+                        row("Einsatzhöhe", "\(meters(system.areaFloor)) – \(meters(system.areaCeiling))")
+                    }
                     if let time = system.timestamp { row("Zeitstempel", time.formatted(date: .numeric, time: .standard)) }
                 }
             }
             if drone.operatorID != nil || drone.selfID != nil || drone.authType != nil {
                 section("Betreiber") {
                     if let op = drone.operatorID { row("Betreiber-ID", op.id) }
-                    if let selfID = drone.selfID, !selfID.text.isEmpty { row("Beschreibung", selfID.text) }
+                    if let selfID = drone.selfID, !selfID.text.isEmpty || selfID.kindName != nil {
+                        row(selfID.isEmergency ? "Notfall" : "Beschreibung",
+                            [selfID.isEmergency ? nil : selfID.kindName, selfID.text.isEmpty ? nil : selfID.text].compactMap { $0 }.joined(separator: ": "))
+                    }
                     if let auth = drone.authType {
                         row("Authentisierung", String(localized: "\(RemoteID.Auth(authType: auth, page: 0).typeName) (nicht geprüft)"))
                     }
@@ -341,27 +354,7 @@ struct DroneView: View {
                 ReceiverControls(model: model, device: session.hackRF)
             }
             Section(PanelSection.status) {
-                LabeledContent("Drohnen", value: "\(model.drones.count)")
-                LabeledContent("Remote-ID-Nachrichten", value: "\(model.messageCount)")
-                LabeledContent("BLE-Rahmen (HackRF)", value: "\(model.packetCount)")
-                if model.useWLAN24 || model.useWLAN5 {
-                    LabeledContent("WLAN-Rahmen (HackRF)", value: String(localized: "\(model.wlanFrames) · \(model.nanFrames) NAN · \(model.wlanRemoteID) Remote ID"))
-                }
-                if model.useWiFi, model.running {
-                    LabeledContent("WLAN-Suchen (Mac)", value: String(localized: "\(model.wifiScans) · \(model.wifiFrames) Remote-ID-Beacons"))
-                }
-                if model.useMacBluetooth, model.running {
-                    LabeledContent("Bluetooth (Mac)", value: String(localized: "\(model.macBluetoothFrames) Remote-ID-Rahmen"))
-                }
-                if let wifiError = model.wifiError {
-                    Text(wifiError).font(.caption).foregroundStyle(.orange)
-                }
-                if let macBluetoothError = model.macBluetoothError {
-                    Text(macBluetoothError).font(.caption).foregroundStyle(.orange)
-                }
-                if model.running {
-                    LabeledContent("HackRF", value: model.step.map { "\($0.title) · \(String(format: "%.1f dBFS", model.noiseDB))" } ?? String(localized: "aus"))
-                }
+                DroneStatusRows(model: model)
             }
             Section(PanelSection.anzeige) {
                 Toggle("Flugspuren zeigen", isOn: $showTrails)
@@ -375,5 +368,36 @@ struct DroneView: View {
             }
         }
         .formStyle(.grouped)
+    }
+}
+
+/// Zähler und Pegel als eigene Ansicht: sie ändern sich mehrmals je Sekunde,
+/// und im Bedienfeld selbst gelesen zeichneten sie das ganze Formular neu –
+/// das Scrollen ruckelte (Review 05.11.2026).
+private struct DroneStatusRows: View {
+    let model: DroneModel
+
+    var body: some View {
+        LabeledContent("Drohnen", value: "\(model.drones.count)")
+        LabeledContent("Remote-ID-Nachrichten", value: "\(model.messageCount)")
+        LabeledContent("BLE-Rahmen (HackRF)", value: "\(model.packetCount)")
+        if model.useWLAN24 || model.useWLAN5 {
+            LabeledContent("WLAN-Rahmen (HackRF)", value: String(localized: "\(model.wlanFrames) · \(model.nanFrames) NAN · \(model.wlanRemoteID) Remote ID"))
+        }
+        if model.useWiFi, model.running {
+            LabeledContent("WLAN-Suchen (Mac)", value: String(localized: "\(model.wifiScans) · \(model.wifiFrames) Remote-ID-Beacons"))
+        }
+        if model.useMacBluetooth, model.running {
+            LabeledContent("Bluetooth (Mac)", value: String(localized: "\(model.macBluetoothFrames) Remote-ID-Rahmen"))
+        }
+        if let wifiError = model.wifiError {
+            Text(wifiError).font(.caption).foregroundStyle(.orange)
+        }
+        if let macBluetoothError = model.macBluetoothError {
+            Text(macBluetoothError).font(.caption).foregroundStyle(.orange)
+        }
+        if model.running {
+            LabeledContent("HackRF", value: model.step.map { "\($0.title) · \(String(format: "%.1f dBFS", model.noiseDB))" } ?? String(localized: "aus"))
+        }
     }
 }

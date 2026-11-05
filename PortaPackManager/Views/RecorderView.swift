@@ -3,6 +3,12 @@ import SwiftUI
 import UniformTypeIdentifiers
 
 struct RecorderView: View {
+    @StoredColumns("recorder.3") private var columns3: TableColumnCustomization<GPSChannelStatus>
+    @StoredColumns("recorder.6") private var columns6: TableColumnCustomization<DABStoredEnsemble.Service>
+    @StoredColumns("recorder.5") private var columns5: TableColumnCustomization<TSService>
+    @StoredColumns("recorder.4") private var columns4: TableColumnCustomization<ZigbeeOfflineResult.Line>
+    @StoredColumns("recorder.2") private var columns2: TableColumnCustomization<Aircraft>
+    @StoredColumns("recorder.1") private var columns: TableColumnCustomization<IQRecording>
     @Environment(DeviceSession.self) private var session
     /// Lebt im `ReceiverStore` – überlebt den Seitenwechsel samt laufendem Empfang.
     @Bindable private var model = ReceiverStore.shared.recorder
@@ -36,7 +42,7 @@ struct RecorderView: View {
     }
 
     private var fileList: some View {
-        Table(model.recordings.sorted(by: order), selection: $selection, sortOrder: $order) {
+        Table(model.recordings.sorted(by: order), selection: $selection, sortOrder: $order, columnCustomization: $columns) {
             TableColumn("Aufnahme", sortUsing: ColumnSort("datum") { $0.date }) { rec in
                 VStack(alignment: .leading, spacing: 1) {
                     Text(rec.name).font(.body)
@@ -47,11 +53,11 @@ struct RecorderView: View {
                     }
                     .font(.caption).foregroundStyle(.secondary)
                 }
-            }
-            TableColumn("Mitte", sortUsing: ColumnSort("mitte") { $0.centerMHz }) { rec in Text(String(format: "%.3f MHz", rec.centerMHz)).monospacedDigit() }.width(100)
-            TableColumn("Rate", sortUsing: ColumnSort("rate") { $0.sampleRateMHz }) { rec in Text(String(format: "%.1f MS/s", rec.sampleRateMHz)).monospacedDigit() }.width(80)
-            TableColumn("Dauer", sortUsing: ColumnSort("dauer") { $0.duration }) { rec in Text(String(format: "%.1f s", rec.duration)).monospacedDigit() }.width(70)
-            TableColumn("Größe", sortUsing: ColumnSort("groesse") { $0.byteCount }) { rec in Text(ByteCountFormatter.string(fromByteCount: Int64(rec.byteCount), countStyle: .file)) }.width(90)
+            }.customizationID("aufnahme")
+            TableColumn("Mitte", sortUsing: ColumnSort("mitte") { $0.centerMHz }) { rec in Text(String(format: "%.3f MHz", rec.centerMHz)).monospacedDigit() }.width(min: 60, ideal: 100).customizationID("mitte")
+            TableColumn("Rate", sortUsing: ColumnSort("rate") { $0.sampleRateMHz }) { rec in Text(String(format: "%.1f MS/s", rec.sampleRateMHz)).monospacedDigit() }.width(min: 48, ideal: 80).customizationID("rate")
+            TableColumn("Dauer", sortUsing: ColumnSort("dauer") { $0.duration }) { rec in Text(String(format: "%.1f s", rec.duration)).monospacedDigit() }.width(min: 42, ideal: 70).customizationID("dauer")
+            TableColumn("Größe", sortUsing: ColumnSort("groesse") { $0.byteCount }) { rec in Text(ByteCountFormatter.string(fromByteCount: Int64(rec.byteCount), countStyle: .file)) }.width(min: 54, ideal: 90).customizationID("gro-e")
         }
         .contextMenu(forSelectionType: IQRecording.ID.self) { ids in
             if let rec = model.recordings.first(where: { ids.contains($0.id) }) {
@@ -130,14 +136,14 @@ struct RecorderView: View {
                 if model.adsbResults.isEmpty {
                     placeholder("Nimm mit der Vorlage „ADS-B“ auf und spiel die Aufnahme ab: Die Flugzeuge erscheinen hier.")
                 } else {
-                    Table(model.adsbResults.sorted(by: adsbOrder), sortOrder: $adsbOrder) {
-                        TableColumn("ICAO", sortUsing: ColumnSort("icao", text: { $0.icaoHex })) { Text($0.icaoHex).monospaced() }
-                        TableColumn("Kennung", sortUsing: ColumnSort("kennung", text: { $0.callsign })) { Text($0.callsign ?? "–") }
+                    Table(model.adsbResults.sorted(by: adsbOrder), sortOrder: $adsbOrder, columnCustomization: $columns2) {
+                        TableColumn("ICAO", sortUsing: ColumnSort("icao", text: { $0.icaoHex })) { Text($0.icaoHex).monospaced() }.customizationID("icao")
+                        TableColumn("Kennung", sortUsing: ColumnSort("kennung", text: { $0.callsign })) { Text($0.callsign ?? "–") }.customizationID("kennung")
                         TableColumn("Position") { p in
                             Text(p.latitude != nil ? String(format: "%.3f, %.3f", p.latitude!, p.longitude!) : "–")
                                 .font(.caption.monospacedDigit())
-                        }
-                        TableColumn("Nachrichten", sortUsing: ColumnSort("msg") { $0.messages }) { Text("\($0.messages)") }
+                        }.customizationID("position")
+                        TableColumn("Nachrichten", sortUsing: ColumnSort("msg") { $0.messages }) { Text("\($0.messages)") }.customizationID("nachrichten")
                     }
                 }
             case .gps:
@@ -158,11 +164,11 @@ struct RecorderView: View {
                                 .font(.callout).foregroundStyle(.secondary)
                         }
                     }
-                    Table(model.gpsStatus?.channels ?? []) {
-                        TableColumn("PRN") { Text("\($0.prn)") }
-                        TableColumn("Zustand") { Text($0.state.title) }
-                        TableColumn("C/N₀") { Text(String(format: "%.0f dB-Hz", $0.cn0)).monospacedDigit() }
-                        TableColumn("Doppler") { Text(String(format: "%+.0f Hz", $0.dopplerHz)).monospacedDigit() }
+                    Table(model.gpsStatus?.channels ?? [], columnCustomization: $columns3) {
+                        TableColumn("PRN") { Text("\($0.prn)") }.customizationID("prn")
+                        TableColumn("Zustand") { Text($0.state.title) }.customizationID("zustand")
+                        TableColumn("C/N₀") { Text(String(format: "%.0f dB-Hz", $0.cn0)).monospacedDigit() }.customizationID("c-n0")
+                        TableColumn("Doppler") { Text(String(format: "%+.0f Hz", $0.dopplerHz)).monospacedDigit() }.customizationID("doppler")
                     }
                 }
             case .tv:
@@ -195,16 +201,16 @@ struct RecorderView: View {
         VStack(alignment: .leading, spacing: 8) {
             Text("Kanal \(r.channel ?? 0) · \(r.frames) Rahmen (\(r.crcErrors) Prüfsummenfehler) · \(r.decrypted) entschlüsselt · \(r.threadFrames) Thread · \(r.nodes.count) Geräte")
                 .font(.callout.monospacedDigit())
-            Table(r.lines) {
-                TableColumn("Zeit") { (l: ZigbeeOfflineResult.Line) in Text(String(format: "%.3f s", l.time)).monospacedDigit() }.width(70)
-                TableColumn("Von") { (l: ZigbeeOfflineResult.Line) in Text(l.from).font(.caption.monospaced()) }.width(70)
-                TableColumn("An") { (l: ZigbeeOfflineResult.Line) in Text(l.to).font(.caption.monospaced()) }.width(70)
+            Table(r.lines, columnCustomization: $columns4) {
+                TableColumn("Zeit") { (l: ZigbeeOfflineResult.Line) in Text(String(format: "%.3f s", l.time)).monospacedDigit() }.width(min: 42, ideal: 70).customizationID("zeit")
+                TableColumn("Von") { (l: ZigbeeOfflineResult.Line) in Text(l.from).font(.caption.monospaced()) }.width(min: 42, ideal: 70).customizationID("von")
+                TableColumn("An") { (l: ZigbeeOfflineResult.Line) in Text(l.to).font(.caption.monospaced()) }.width(min: 42, ideal: 70).customizationID("an")
                 TableColumn("Inhalt") { (l: ZigbeeOfflineResult.Line) in
                     HStack(spacing: 4) {
                         if l.encrypted { Image(systemName: "lock.fill").foregroundStyle(.secondary) }
                         Text(l.summary).lineLimit(1)
                     }
-                }
+                }.customizationID("inhalt")
             }
             .frame(minHeight: 200)
         }
@@ -235,11 +241,11 @@ struct RecorderView: View {
             }
             .font(.callout)
             if !r.services.isEmpty {
-                Table(r.services.sorted(by: tvOrder), sortOrder: $tvOrder) {
-                    TableColumn("Dienst", sortUsing: ColumnSort("dienst", text: { $0.name })) { Text($0.name.isEmpty ? "Dienst \($0.id)" : $0.name) }
-                    TableColumn("Anbieter", sortUsing: ColumnSort("anbieter", text: { $0.provider })) { Text($0.provider) }
-                    TableColumn("Art") { Text($0.typeName) }
-                    TableColumn("Verschlüsselt") { Text($0.scrambled ? "ja" : "nein") }.width(90)
+                Table(r.services.sorted(by: tvOrder), sortOrder: $tvOrder, columnCustomization: $columns5) {
+                    TableColumn("Dienst", sortUsing: ColumnSort("dienst", text: { $0.name })) { Text($0.name.isEmpty ? "Dienst \($0.id)" : $0.name) }.customizationID("dienst")
+                    TableColumn("Anbieter", sortUsing: ColumnSort("anbieter", text: { $0.provider })) { Text($0.provider) }.customizationID("anbieter")
+                    TableColumn("Art") { Text($0.typeName) }.customizationID("art")
+                    TableColumn("Verschlüsselt") { Text($0.scrambled ? "ja" : "nein") }.width(min: 54, ideal: 90).customizationID("verschlusselt")
                 }
             } else if s.blocksGood == 0 && s.frames > 0 {
                 Text("Kein FEC-Block fehlerfrei – zu wenig Störabstand für diese Betriebsart.")
@@ -263,10 +269,10 @@ struct RecorderView: View {
             }
             .font(.callout)
             if !r.services.isEmpty {
-                Table(r.services.sorted(by: dabOrder), sortOrder: $dabOrder) {
-                    TableColumn("Dienst", sortUsing: ColumnSort("dienst", text: { $0.label })) { Text($0.label.isEmpty ? String(format: "0x%04X", $0.id) : $0.label) }
-                    TableColumn("Art") { Text($0.kind.title) }.width(60)
-                    TableColumn("Bitrate", sortUsing: ColumnSort("bitrate") { $0.bitrate }) { Text("\($0.bitrate) kbit/s").monospacedDigit() }.width(80)
+                Table(r.services.sorted(by: dabOrder), sortOrder: $dabOrder, columnCustomization: $columns6) {
+                    TableColumn("Dienst", sortUsing: ColumnSort("dienst", text: { $0.label })) { Text($0.label.isEmpty ? String(format: "0x%04X", $0.id) : $0.label) }.customizationID("dienst")
+                    TableColumn("Art") { Text($0.kind.title) }.width(min: 36, ideal: 60).customizationID("art")
+                    TableColumn("Bitrate", sortUsing: ColumnSort("bitrate") { $0.bitrate }) { Text("\($0.bitrate) kbit/s").monospacedDigit() }.width(min: 48, ideal: 80).customizationID("bitrate")
                 }
             }
         }
@@ -359,22 +365,7 @@ struct RecorderView: View {
                 ReceiverControls(model: model, device: session.hackRF)
             }
             Section(PanelSection.status) {
-                if model.recording {
-                    LabeledContent("Aufgenommen", value: ByteCountFormatter.string(fromByteCount: Int64(model.recordedBytes), countStyle: .file))
-                    LabeledContent("Pegel") { LevelBar(value: model.level) }
-                }
-                LabeledContent("Datenrate", value: ByteCountFormatter.string(fromByteCount: Int64(model.bytesPerSecond), countStyle: .file) + "/s")
-                if let seconds = model.maxRecordingSeconds {
-                    let remaining = model.recording ? max(0, seconds - Double(model.recordedBytes) / model.bytesPerSecond) : seconds
-                    LabeledContent(model.recording ? "Noch möglich" : "Platz für") {
-                        Text(Self.durationText(remaining))
-                            .foregroundStyle(remaining < 60 ? Color.red : (remaining < 300 ? Color.orange : Color.primary))
-                    }
-                    if remaining < 300 {
-                        Text("Wenig Platz: Die Aufnahme stoppt, bevor weniger als 2 GB frei sind.")
-                            .font(.caption).foregroundStyle(.orange)
-                    }
-                }
+                RecorderStatusRows(model: model)
             }
             FrequencyMemorySection(page: .recorder, currentMHz: model.centerMHz) { model.centerMHz = $0.mhz }
             Section("Auswertung") {
@@ -467,5 +458,31 @@ private struct LevelBar: View {
             }
         }
         .frame(width: 120, height: 10)
+    }
+}
+
+/// Zähler und Pegel als eigene Ansicht: sie ändern sich mehrmals je Sekunde,
+/// und im Bedienfeld selbst gelesen zeichneten sie das ganze Formular neu –
+/// das Scrollen ruckelte (Review 05.11.2026).
+private struct RecorderStatusRows: View {
+    let model: RecorderModel
+
+    var body: some View {
+        if model.recording {
+            LabeledContent("Aufgenommen", value: ByteCountFormatter.string(fromByteCount: Int64(model.recordedBytes), countStyle: .file))
+            LabeledContent("Pegel") { LevelBar(value: model.level) }
+        }
+        LabeledContent("Datenrate", value: ByteCountFormatter.string(fromByteCount: Int64(model.bytesPerSecond), countStyle: .file) + "/s")
+        if let seconds = model.maxRecordingSeconds {
+            let remaining = model.recording ? max(0, seconds - Double(model.recordedBytes) / model.bytesPerSecond) : seconds
+            LabeledContent(model.recording ? "Noch möglich" : "Platz für") {
+                Text(RecorderView.durationText(remaining))
+                    .foregroundStyle(remaining < 60 ? Color.red : (remaining < 300 ? Color.orange : Color.primary))
+            }
+            if remaining < 300 {
+                Text("Wenig Platz: Die Aufnahme stoppt, bevor weniger als 2 GB frei sind.")
+                    .font(.caption).foregroundStyle(.orange)
+            }
+        }
     }
 }

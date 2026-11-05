@@ -350,6 +350,31 @@ struct DVBT2Tests {
         #expect(!service.scrambled)
     }
 
+    @Test("Transportstrom: EIT jetzt/nächste, TDT/TOT-Zeit, logische Kanalnummer aus der NIT")
+    func epgTimeLCN() throws {
+        let demux = TSDemuxer()
+        let pat = Self.section(table: 0x00, id: 0x1234, body: [0x00, 0x0A, 0xE1, 0x00])
+        demux.process(Self.packet(pid: 0, pat))
+        // EIT: Ereignis 1, Start 2026-11-04 (MJD 61348 = 0xEFA4) 20:15:00, Dauer 01:30:00, „Tatort“.
+        let title = Array("Tatort".utf8), text = Array("Krimi".utf8)
+        let short: [UInt8] = [0x4D, UInt8(5 + title.count + text.count), 0x64, 0x65, 0x75, UInt8(title.count)] + title + [UInt8(text.count)] + text
+        let event: [UInt8] = [0x00, 0x01, 0xEF, 0xA4, 0x20, 0x15, 0x00, 0x01, 0x30, 0x00, 0x80, UInt8(short.count)] + short
+        let eit = Self.section(table: 0x4E, id: 10, body: [0x12, 0x34, 0x00, 0x01, 0x00, 0x4E] + event)
+        demux.process(Self.packet(pid: 0x12, eit))
+        let now = try #require(demux.services[10]?.now)
+        #expect(now.title == "Tatort" && now.text == "Krimi" && now.duration == 5400)
+        #expect(now.start == Date(timeIntervalSince1970: 1_793_820_900 + 40 * 60))   // 20:15 = 19:35 UTC + 40 min
+        // TDT: 2026-11-04 19:35:00 UTC (Kurzsektion ohne CRC).
+        demux.process(Self.packet(pid: 0x14, [0x70, 0x70, 0x05, 0xEF, 0xA4, 0x19, 0x35, 0x00]))
+        #expect(demux.utc == Date(timeIntervalSince1970: 1_793_820_900))
+        // NIT mit LCN-Deskriptor 0x83: Dienst 10 → Programmplatz 1.
+        let lcn: [UInt8] = [0x83, 0x04, 0x00, 0x0A, 0xFC, 0x01]
+        let streamLoop: [UInt8] = [0x12, 0x34, 0x00, 0x01, 0xF0, UInt8(lcn.count)] + lcn
+        let nit = Self.section(table: 0x40, id: 1, body: [0xF0, 0x00, 0xF0, UInt8(streamLoop.count)] + streamLoop)
+        demux.process(Self.packet(pid: 0x10, nit))
+        #expect(demux.services[10]?.channelNumber == 1)
+    }
+
     @Test("DVB-Text: ISO 6937 mit Akzentzeichen, ISO 8859-9 und UTF-8")
     func dvbText() {
         #expect(DVBText.decode([0x4D, 0xC8, 0x75, 0x6E, 0x63, 0x68, 0x65, 0x6E][...]) == "München")

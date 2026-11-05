@@ -41,6 +41,8 @@ final class MeteorReceiver: @unchecked Sendable {
         var lines = 0
         var spacecraftID: Int?
         var symbols = 0
+        /// Bordzeit der ersten/letzten Bildzeile, Sekunde des Tages.
+        var onboardSpan: ClosedRange<Double>?
     }
 
     private let lock = NSLock()
@@ -119,6 +121,7 @@ final class MeteorReceiver: @unchecked Sendable {
             for c in assembler.channelNumbers { s.segments[c] = assembler.segmentCount(channel: c) }
             s.lines = assembler.lineCount
             s.spacecraftID = spacecraftID
+            s.onboardSpan = assembler.onboardSpan
             s.symbols = symbols
             return s
         }

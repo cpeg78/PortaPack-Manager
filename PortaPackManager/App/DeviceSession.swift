@@ -220,6 +220,9 @@ final class DeviceSession {
     /// verbindet sich damit. Für den Installer.
     func reconnectIfAvailable() async throws -> MayhemDevice? {
         guard let serial = await Task.detached(operation: { SerialDeviceFinder.mayhemConsoles().first }).value else { return nil }
+        // Hängt der CDC-Treiber, meidet `pollOnce` die Schnittstelle – hier genauso,
+        // sonst entstand je Versuch ein neuer steckender Thread (Review 05.11.2026).
+        guard stuckSerialPath != serial.path else { return nil }
         // Nach dem Neustart braucht das Gerät einen Moment, bis die Shell antwortet.
         try await Task.sleep(for: .seconds(2))
         await connect(to: serial.path)
@@ -307,6 +310,10 @@ final class DeviceSession {
         return { [weak self] progress in
             Task { @MainActor in
                 guard let self, self.progressGeneration == generation else { return }
+                // Startzeit behalten – Meldungen des Installers tragen keine, und die
+                // Laufzeitanzeige sprang sonst nach der ersten weg (Review 05.11.2026).
+                var progress = progress
+                if progress.startedAt == nil { progress.startedAt = self.installProgress.startedAt }
                 self.installProgress = progress
             }
         }

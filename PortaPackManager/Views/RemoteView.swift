@@ -77,13 +77,16 @@ struct RemoteView: View {
                                 NSPasteboard.general.setString(address.url, forType: .string)
                             }
                             .labelStyle(.iconOnly).buttonStyle(.borderless)
+                            .help("Kopieren")
                             Button("QR-Code", systemImage: "qrcode") { qrAddress = address.url }
                                 .labelStyle(.iconOnly).buttonStyle(.borderless)
+                                .help("QR-Code")
                             Button("Öffnen", systemImage: "safari") {
                                 if let url = URL(string: address.url) { NSWorkspace.shared.open(url) }
                             }
                             .labelStyle(.iconOnly).buttonStyle(.borderless)
                             .disabled(!hub.running)
+                            .help("Öffnen")
                         }
                     }
                 }

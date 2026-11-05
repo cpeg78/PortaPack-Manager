@@ -4,7 +4,9 @@ import Foundation
 /// Rahmen zu 280 Bit: Kopf 0x45CF, Konfiguration (7 Hamming-Wörter),
 /// zwei Datenblöcke (je 13 Wörter), jeweils verschränkt. Aufbau nach
 /// rs1729/RS (`dfm09mod.c`); ausgewertet werden Position, Geschwindigkeit,
-/// Zeit und Seriennummer, keine Messwerte.
+/// Zeit und Seriennummer, bei DFM-09/17 (STM32) dazu Temperatur und
+/// Batteriespannung aus den Messkanälen der Konfiguration (`conf_out`,
+/// `get_Temp`). DFM-06 (andere Messkette) bleibt ohne Messwerte.
 final class DFMDecoder {
     static let chipRate = 5000.0
     static let frameBits = 280
@@ -42,6 +44,12 @@ final class DFMDecoder {
     private var dateParts: (year: Int, month: Int, day: Int, hour: Int, minute: Int)?
     private var satellites: Int?
     private var updated: Set<String> = []
+    /// Kanal der Seriennummer (0xA DFM-09/17, 0xB DFM-17, 0xC DFM-09P/17TU, 0xD DFM-17P) – wie `ptu_out`.
+    private var ptuChannel = 0
+    /// Messwerte der Konfigurationskanäle 0–8 (24-Bit-Gleitkomma `fl24`).
+    private var measurements = [Double?](repeating: nil, count: 9)
+    private var batteryVolts: Double?
+    private var serialNumber = 0
 
     /// Nimmt harte Halbbits (0/1) auf und liefert fertige Meldungen.
     func process(chips: [UInt8]) -> [SondeReport] {
@@ -94,6 +102,8 @@ final class DFMDecoder {
               abs(latitude) <= 90, abs(longitude) <= 180, altitude > -1000, altitude < 50_000 else { return nil }
         updated.removeAll()
         var report = SondeReport(kind: .dfm, serial: serial ?? "", model: model)
+        report.temperature = temperature
+        report.batteryVolts = batteryVolts
         report.frame = frameNumber
         report.latitude = latitude
         report.longitude = longitude
@@ -162,6 +172,11 @@ final class DFMDecoder {
     private func handleConfiguration(_ bits: [UInt8]) {
         let id = Self.value(bits, 0, 4)
         let kind = Self.value(bits, 4, 4)
+        if id <= 8 { measurements[id] = Self.fl24(Self.value(bits, 4, 24)) }
+        if ptuChannel >= 0xA {
+            // Batterie (mV) im Kanal 5, beim Drucksensor-Modell 7 – innere 16 Bit.
+            if id == 0x5 + (sensorP ? 2 : 0) { batteryVolts = Double(Self.value(bits, 8, 16)) / 1000 }
+        }
         // Seriennummer in zwei Hälften: Kanal ≥ 6, zweites Nibble 0xC,
         // die letzten 4 Bit nennen die Hälfte (0/1).
         guard id >= 6, kind == 0xC else { return }
@@ -171,13 +186,53 @@ final class DFMDecoder {
         if id != serialChannel { serialHalves = [:]; serialChannel = id }
         serialHalves[half] = (value >> 4) & 0xFFFF
         if let high = serialHalves[0], let low = serialHalves[1] {
-            serial = String(high << 16 | low)
-            model = switch id {
-            case 0xA: "DFM-09"
-            case 0xB, 0xD: "DFM-17"
-            default: "DFM-09/17"
-            }
+            serialNumber = high << 16 | low
+            serial = String(serialNumber)
+            ptuChannel = id
+            model = modelName
         }
+    }
+
+    /// 24-Bit-Gleitkomma: Exponent in Bit 23–20, Mantisse 19–0, Wert = m / 2^e.
+    static func fl24(_ d: Int) -> Double {
+        Double(d & 0xF_FFFF) / Double(1 << ((d >> 20) & 0xF))
+    }
+
+    /// Drucksensor-Modell (DFM-09P, DFM-17P): andere Messkanäle für die Temperatur.
+    private var sensorP: Bool {
+        guard measurements.allSatisfy({ $0 != nil }) else { return false }
+        return ptuChannel >= 0xD || (ptuChannel >= 0xC && (measurements[6] ?? 0) < 220e3)
+    }
+
+    /// DFM-17 mit Kanal 0xA: Seriennummer ab 23 000 000 und invertierte Polarität (`dfm17_0xA`).
+    private var dfm17OnChannelA: Bool { serialNumber >= 23_000_000 && inverted }
+
+    private var modelName: String {
+        switch ptuChannel {
+        case 0xA: dfm17OnChannelA ? "DFM-17" : "DFM-09"
+        case 0xB: "DFM-17"
+        case 0xC: sensorP ? "DFM-09P" : "DFM-17"
+        case 0xD: "DFM-17P"
+        default: "DFM-09/17"
+        }
+    }
+
+    /// Temperatur (°C) wie `get_Temp`: NTC EPCOS B57540G0502 gegen Referenz Rf
+    /// (220 kΩ DFM-09, 332 kΩ DFM-17), Steinhart-Hart; erst wenn alle Kanäle 0–8 da sind.
+    var temperature: Double? {
+        guard ptuChannel >= 0xA, measurements.allSatisfy({ $0 != nil }) else { return nil }
+        let m = measurements.map { $0 ?? 0 }
+        let p = sensorP
+        let (f, f1, f2) = p ? (m[1], m[5], m[6]) : (m[0], m[3], m[4])
+        let rf = (([0xB, 0xC].contains(ptuChannel) && !p) || ptuChannel >= 0xD
+                  || (ptuChannel == 0xA && !p && dfm17OnChannelA)) ? 332e3 : 220e3
+        guard f > 0, f1 > 0, f2 > 0 else { return nil }
+        let r = (f - f1) / (f2 / rf)
+        guard r > 0 else { return nil }
+        let l = log(r)
+        let kelvin = 1 / (1.09698417e-03 + 2.39564629e-04 * l + 2.48821437e-06 * l * l + 5.84354921e-08 * l * l * l)
+        let celsius = kelvin - 273.15
+        return (-100...60).contains(celsius) ? celsius : nil
     }
 
     private func handleData(_ bits: [UInt8]) {

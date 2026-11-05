@@ -73,6 +73,37 @@ struct APRSTests {
         #expect(decode(iq).isEmpty)
     }
 
+    @Test("Telemetrie mit Namen, Einheiten und Umrechnung aus PARM/UNIT/EQNS")
+    func telemetry() throws {
+        var tracker = APRSStationTracker()
+        for line in ["DL0ABC>APRS::DL0ABC   :PARM.Batt,Temp,,,", "DL0ABC>APRS::DL0ABC   :UNIT.V,deg.C",
+                     "DL0ABC>APRS::DL0ABC   :EQNS.0,0.1,0,0,0.5,-20,0,0,0,0,0,0,0,0,0"] {
+            let p = try #require(APRSPacket.parse(tnc2: line))
+            #expect(p.kind == .telemetry && p.telemetryDefinition != nil)
+            tracker.ingest(p)
+        }
+        let t = try #require(APRSPacket.parse(tnc2: "DL0ABC>APRS:T#042,126,83,0,0,0,10100000"))
+        #expect(t.telemetry?.values == [126, 83, 0, 0, 0])
+        tracker.ingest(t)
+        #expect(tracker.stations["DL0ABC"]?.telemetry == "Nr. 042: Batt 12.60 V, Temp 21.50 deg.C, Kanal 3 0, Kanal 4 0, Kanal 5 0, Bits 10100000")
+    }
+
+    @Test("Nachrichten: Nummer, Bestätigung, Ablehnung; NMEA; Regen und Sonne")
+    func messagesNMEAWeather() throws {
+        let message = try #require(APRSPacket.parse(tnc2: "DL1ABC>APRS::DL2XYZ   :Hallo{12"))
+        #expect(message.comment == "an DL2XYZ: Hallo (Nr. 12)")
+        #expect(try #require(APRSPacket.parse(tnc2: "DL2XYZ>APRS::DL1ABC   :ack12")).comment == "Bestätigung an DL1ABC (Nr. 12)")
+        #expect(try #require(APRSPacket.parse(tnc2: "DL2XYZ>APRS::DL1ABC   :rej12")).comment == "Abgelehnt an DL1ABC (Nr. 12)")
+        let nmea = try #require(APRSPacket.parse(tnc2: "DL1ABC-9>GPS:$GPRMC,123519,A,4807.038,N,01131.000,E,022.4,084.4,230394,003.1,W*6A"))
+        #expect(nmea.kind == .position)
+        #expect(abs(nmea.latitude! - 48.1173) < 1e-4 && abs(nmea.longitude! - 11.516667) < 1e-4)
+        #expect(nmea.speedKnots == 22.4 && nmea.courseDegrees == 84.4)
+        let weather = APRSPacket.weatherSummary("090/005g010t068r012p030L456")
+        #expect(weather?.contains("Regen 3.0 mm (1 h)") == true)
+        #expect(weather?.contains("Regen 7.6 mm (24 h)") == true)
+        #expect(weather?.contains("456 W/m²") == true)
+    }
+
     @Test("Unkomprimierte Position mit Kurs, Tempo und Höhe")
     func uncompressed() throws {
         let p = try #require(APRSPacket.parse(tnc2: "DL1ABC-9>APRS,WIDE1-1:!4903.50N/07201.75W>088/036Mobil unterwegs /A=001234"))
@@ -123,6 +154,15 @@ struct APRSTests {
         #expect(p.comment == "Mobil")
     }
 
+    @Test("Mic-E: Bytes unter 28 in Tempo und Kurs ergeben keine Werte (vorher −272 kn)")
+    func micEBelowOffset() throws {
+        // Breite/Länge wie oben gültig, Tempo/Kurs/Symbol aber mit Bytes < 28.
+        let info = "`(#f" + String(decoding: [0x1B, 0x1B, 0x1B], as: UTF8.self) + ">/"
+        let p = try #require(APRSPacket.parse(tnc2: "DL1ABC-9>SS2UVT,WIDE1-1:" + info))
+        #expect(p.kind == .micE)
+        #expect(p.speedKnots == nil && p.courseDegrees == nil && p.latitude == nil)
+    }
+
     @Test("Objekt, Status, Nachricht und Wetter")
     func otherTypes() throws {
         let object = try #require(APRSPacket.parse(tnc2: "DB0ABC>APRS:;LEADER   *092345z4903.50N/07201.75W>Gruppe"))
@@ -136,7 +176,7 @@ struct APRSTests {
         #expect(status.kind == .status && status.comment == "Unterwegs nach Hause")
 
         let message = try #require(APRSPacket.parse(tnc2: "DL1ABC>APRS::DL2XYZ   :Hallo{01"))
-        #expect(message.kind == .message && message.comment == "an DL2XYZ: Hallo{01")
+        #expect(message.kind == .message && message.comment == "an DL2XYZ: Hallo (Nr. 01)")
 
         let weather = try #require(APRSPacket.parse(tnc2: "DL1ABC>APRS:!4903.50N/07201.75W_220/004g005t077r000p000P000h50b09900"))
         #expect(weather.kind == .weather)

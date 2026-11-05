@@ -17,12 +17,15 @@ struct DABStoredEnsemble: Codable, Hashable, Identifiable, Sendable {
     /// Störabstand beim Einlesen; entscheidet, wo ein mehrfach gesendeter
     /// Dienst gelistet wird (fehlt in älteren Einträgen).
     var snr: Double?
+    /// Ensemble-Kennung (FIG 0/0); fehlt in älteren Einträgen.
+    var eid: UInt16?
     var id: String { channel }
 
     init(channel: String, ensemble: DABEnsemble, snr: Double? = nil) {
         self.channel = channel
         label = ensemble.label
         self.snr = snr
+        eid = ensemble.id
         services = ensemble.audioServices.map { service in
             Service(id: service.id, label: service.label, kind: service.kind,
                     bitrate: ensemble.subchannel(for: service)?.bitrate ?? 0, programmeType: service.programmeType)
@@ -63,6 +66,12 @@ final class DABModel {
     private final class Shared: @unchecked Sendable {
         let lock = NSLock()
         let receiver = DABReceiver()
+        /// Statusabzug aus dem Empfangsthread (alle ≈ 0,4 s), unter eigenem Lock:
+        /// Der Main-Actor-Poll wartete sonst je Takt auf einen ganzen Block
+        /// (Frontend, OFDM, Viterbi – mit Programmführer zwei), Review 05.11.2026.
+        let statusLock = NSLock()
+        var lastStatus = DABReceiver.Status()
+        var lastStatusTime = Date.distantPast
         var volume: Float = 0.7
         /// Fernzugriff: bekommt die Werte vor der Lautstärke (für den AAC-Strom).
         var remoteTap: (@Sendable ([Float], [Float]) -> Void)?
@@ -149,7 +158,14 @@ final class DABModel {
                 }
             }
             try device.startReceiving(owner: self) { block in
-                shared.lock.withLock { shared.receiver.process(block) }
+                shared.lock.withLock {
+                    shared.receiver.process(block)
+                    let now = Date()
+                    guard now.timeIntervalSince(shared.lastStatusTime) >= 0.4 else { return }
+                    shared.lastStatusTime = now
+                    let status = shared.receiver.status()
+                    shared.statusLock.withLock { shared.lastStatus = status }
+                }
             }
             running = true
             error = nil
@@ -157,7 +173,7 @@ final class DABModel {
                 while !Task.isCancelled {
                     try? await Task.sleep(for: .milliseconds(500))
                     guard let self else { return }
-                    self.status = self.shared.lock.withLock { self.shared.receiver.status() }
+                    self.status = self.shared.statusLock.withLock { self.shared.lastStatus }
                     self.bufferFill = Double(self.audio.buffer.fill) / 48_000
                     self.rememberEnsemble()
                     self.updateAudioRecording()
@@ -318,6 +334,34 @@ final class DABModel {
     /// Weitere Kanäle, auf denen ein Dienst ebenfalls läuft.
     func otherChannels(of id: UInt32, besides channel: String) -> [String] {
         ensembles.filter { $0.channel != channel && $0.services.contains { $0.id == id } }.map(\.channel)
+    }
+
+    /// Wo ein Dienst laut Sender sonst noch läuft: andere Ensembles (FIG 0/24,
+    /// mit Name und Kanal, soweit gemerkt oder per FIG 0/21 bekannt) und UKW
+    /// (FIG 0/21 unter der PI, die bei 16-Bit-Kennungen der SId entspricht).
+    func alternatives(of sid: UInt32) -> (ensembles: [String], fm: [String]) {
+        let live = status.ensemble
+        let ensembleNames: [String] = (live.otherEnsembles[sid] ?? []).sorted().map { eid in
+            let stored = ensembles.first { $0.eid == eid }
+            let channel = stored?.channel ?? live.ensembleFrequencies[eid].flatMap { Self.channelName(kHz: $0) }
+            switch (stored?.label, channel) {
+            case let (label?, channel?): return "\(label) (\(channel))"
+            case let (nil, channel?): return String(localized: "Kanal \(channel)")
+            default: return String(format: "%04X", eid)
+            }
+        }
+        let fm: [String] = sid <= 0xFFFF
+            ? (live.fmFrequencies[UInt16(sid)] ?? []).sorted().map { (Double($0) / 1000).formatted(.number.precision(.fractionLength(1))) }
+            : []
+        return (ensembleNames, fm)
+    }
+
+    /// Kanalname zu einer der gemeldeten Frequenzen (Raster 16 kHz, Kanäle ≥ 1,5 MHz auseinander).
+    nonisolated static func channelName(kHz frequencies: Set<Int>) -> String? {
+        for khz in frequencies.sorted() {
+            if let channel = DABChannel.bandIII.first(where: { abs(Int($0.frequency / 1000) - khz) <= 16 }) { return channel.name }
+        }
+        return nil
     }
 
     /// Hält das gemerkte Ensemble des aktuellen Kanals aktuell.

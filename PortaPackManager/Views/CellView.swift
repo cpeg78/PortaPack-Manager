@@ -3,6 +3,7 @@ import SwiftUI
 
 /// Mobilfunkzellen (LTE): Suchlauf, Zellenliste, Beobachten einer Zelle.
 struct CellView: View {
+    @StoredColumns("cell.1") private var columns: TableColumnCustomization<LTECell>
     @Environment(DeviceSession.self) private var session
     /// Lebt im `ReceiverStore` – überlebt den Seitenwechsel samt laufendem Empfang.
     @Bindable private var model = ReceiverStore.shared.cells
@@ -93,20 +94,20 @@ struct CellView: View {
     private static let byTAC = ColumnSort<LTECell>("tac") { (c: LTECell) -> Int? in c.sib1?.tac }
 
     private var table: some View {
-        Table(model.cells.sorted(by: order), selection: $selection, sortOrder: $order) {
+        Table(model.cells.sorted(by: order), selection: $selection, sortOrder: $order, columnCustomization: $columns) {
             Group {
-            TableColumn("Band", sortUsing: Self.byBand) { (c: LTECell) in Text("B\(c.band)").monospacedDigit() }.width(44)
-            TableColumn("EARFCN", sortUsing: Self.byEARFCN) { (c: LTECell) in Text("\(c.earfcn)").monospacedDigit() }.width(58)
-            TableColumn("MHz") { (c: LTECell) in Text(String(format: "%.1f", c.frequencyMHz)).monospacedDigit() }.width(58)
-            TableColumn("PCI", sortUsing: Self.byPCI) { (c: LTECell) in Text("\(c.pci)").monospacedDigit() }.width(40)
+            TableColumn("Band", sortUsing: Self.byBand) { (c: LTECell) in Text("B\(c.band)").monospacedDigit() }.width(min: 28, ideal: 44).customizationID("band")
+            TableColumn("EARFCN", sortUsing: Self.byEARFCN) { (c: LTECell) in Text("\(c.earfcn)").monospacedDigit() }.width(min: 35, ideal: 58).customizationID("earfcn")
+            TableColumn("MHz") { (c: LTECell) in Text(String(format: "%.1f", c.frequencyMHz)).monospacedDigit() }.width(min: 35, ideal: 58).customizationID("mhz")
+            TableColumn("PCI", sortUsing: Self.byPCI) { (c: LTECell) in Text("\(c.pci)").monospacedDigit() }.width(min: 28, ideal: 40).customizationID("pci")
             TableColumn("Bandbreite", sortUsing: Self.byBandwidth) { (c: LTECell) in
                 Text("\(c.bandwidthMHz, format: .number.precision(.fractionLength(0...1))) MHz").monospacedDigit()
-            }.width(62)
-            TableColumn("Ant.") { (c: LTECell) in Text("\(c.mib.ports)").monospacedDigit() }.width(32)
+            }.width(min: 37, ideal: 62).customizationID("bandbreite")
+            TableColumn("Ant.") { (c: LTECell) in Text("\(c.mib.ports)").monospacedDigit() }.width(min: 28, ideal: 32).customizationID("ant")
             TableColumn("RSRP", sortUsing: Self.byRSRP) { (c: LTECell) in
                 Text(c.measurement.map { String(format: "%.0f dBFS", $0.rsrpDBFS) } ?? "–").monospacedDigit()
-            }.width(70)
-            TableColumn("Qualität", sortUsing: Self.bySINR) { (c: LTECell) in quality(c) }.width(min: 90, ideal: 110)
+            }.width(min: 42, ideal: 70).customizationID("rsrp")
+            TableColumn("Qualität", sortUsing: Self.bySINR) { (c: LTECell) in quality(c) }.width(min: 90, ideal: 110).customizationID("qualitat")
             }
             Group {
             TableColumn("Betreiber", sortUsing: Self.byOperator) { (c: LTECell) in
@@ -115,13 +116,13 @@ struct CellView: View {
                 } else {
                     Text("–").foregroundStyle(.secondary).help(c.sib1Note ?? "")
                 }
-            }.width(min: 70, ideal: 110)
-            TableColumn("TAC", sortUsing: Self.byTAC) { (c: LTECell) in Text(c.sib1.map { "\($0.tac)" } ?? "–").monospacedDigit() }.width(54)
+            }.width(min: 70, ideal: 110).customizationID("betreiber")
+            TableColumn("TAC", sortUsing: Self.byTAC) { (c: LTECell) in Text(c.sib1.map { "\($0.tac)" } ?? "–").monospacedDigit() }.width(min: 32, ideal: 54).customizationID("tac")
             TableColumn("Zell-ID") { (c: LTECell) in
                 Text(c.sib1.map { "\($0.enbID) / \($0.localCellID)" } ?? "–").monospacedDigit()
                     .help(c.sib1.map { String(localized: "Cell Identity \($0.cellIdentity): eNB \($0.enbID), Sektor \($0.localCellID)") } ?? "")
-            }.width(min: 80, ideal: 100)
-            TableColumn("Gesehen") { (c: LTECell) in Text(c.lastSeen, style: .relative).foregroundStyle(.secondary) }.width(70)
+            }.width(min: 80, ideal: 100).customizationID("zell-id")
+            TableColumn("Gesehen") { (c: LTECell) in Text(c.lastSeen, style: .relative).foregroundStyle(.secondary) }.width(min: 42, ideal: 70).customizationID("gesehen")
             }
         }
         .overlay {
@@ -283,17 +284,7 @@ struct CellView: View {
                 ReceiverControls(model: model, device: session.hackRF)
             }
             Section(PanelSection.status) {
-                LabeledContent("Zellen", value: "\(model.cells.count)")
-                LabeledContent("Mit Netzbetreiber", value: "\(model.cells.filter { $0.sib1 != nil }.count)")
-                if model.clipped >= 0.005 {
-                    Text(String(format: String(localized: "Übersteuert (%.1f %% am Anschlag) – senk die Verstärkung."), model.clipped * 100))
-                        .font(.caption).foregroundStyle(.orange)
-                }
-                if let ppm = model.ppm {
-                    // Ablage = −ε·f: läuft der Quarz zu schnell (ε > 0), erscheint die Zelle zu tief.
-                    LabeledContent("Quarz-Restfehler", value: String(format: "%+.2f ppm", -ppm))
-                        .help("Gemessen an den gefundenen Zellen, deren Takt GPS-genau ist. Ab etwa 1 ppm lohnt es, den Wert in den Einstellungen (Quarzkorrektur) nachzutragen.")
-                }
+                CellStatusRows(model: model)
             }
             if model.spectra.count > 1 {
                 Section(PanelSection.anzeige) {
@@ -327,5 +318,26 @@ struct CellView: View {
     private func checkFrequency() {
         guard let mhz = parsedFrequency, !model.running, let device = session.hackRF else { return }
         model.check(frequencyMHz: mhz, on: device)
+    }
+}
+
+/// Zähler und Pegel als eigene Ansicht: sie ändern sich mehrmals je Sekunde,
+/// und im Bedienfeld selbst gelesen zeichneten sie das ganze Formular neu –
+/// das Scrollen ruckelte (Review 05.11.2026).
+private struct CellStatusRows: View {
+    let model: CellModel
+
+    var body: some View {
+        LabeledContent("Zellen", value: "\(model.cells.count)")
+        LabeledContent("Mit Netzbetreiber", value: "\(model.cells.filter { $0.sib1 != nil }.count)")
+        if model.clipped >= 0.005 {
+            Text(String(format: String(localized: "Übersteuert (%.1f %% am Anschlag) – senk die Verstärkung."), model.clipped * 100))
+                .font(.caption).foregroundStyle(.orange)
+        }
+        if let ppm = model.ppm {
+            // Ablage = −ε·f: läuft der Quarz zu schnell (ε > 0), erscheint die Zelle zu tief.
+            LabeledContent("Quarz-Restfehler", value: String(format: "%+.2f ppm", -ppm))
+                .help("Gemessen an den gefundenen Zellen, deren Takt GPS-genau ist. Ab etwa 1 ppm lohnt es, den Wert in den Einstellungen (Quarzkorrektur) nachzutragen.")
+        }
     }
 }

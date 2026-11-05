@@ -116,33 +116,7 @@ struct MeteorView: View {
             }
 
             Section(PanelSection.status) {
-                HStack(alignment: .top) {
-                    ConstellationView(points: model.snapshot.constellation, locked: model.snapshot.locked)
-                        .frame(width: 120, height: 120)
-                    VStack(alignment: .leading, spacing: 4) {
-                        status("Signal", model.snapshot.locked)
-                            .help("Die App hat den Träger des Satelliten gefunden.")
-                        status("Entschlüsselt", model.snapshot.frame.viterbiLocked)
-                            .help("Der Fehlerschutz (Viterbi) ist eingerastet.")
-                        status("Rahmen", model.snapshot.frame.framesOK > 0 && model.busy)
-                        Text("Ablage \(model.snapshot.frequencyOffset, format: .number.precision(.fractionLength(0)).sign(strategy: .always())) Hz")
-                        Text("Pegel \(model.snapshot.levelDB, format: .number.precision(.fractionLength(0))) dBFS")
-                    }
-                    .font(.caption)
-                    .monospacedDigit()
-                }
-                LabeledContent("Rahmen", value: "\(model.snapshot.frame.framesOK)")
-                LabeledContent("Prüfsummenfehler", value: "\(model.snapshot.frame.framesFailed)")
-                LabeledContent("Pakete", value: "\(model.snapshot.packets)")
-                DisclosureGroup("Technische Details") {
-                    LabeledContent("Viterbi-BER", value: (model.snapshot.frame.bitErrorRate * 100).formatted(.number.precision(.fractionLength(1))) + " %")
-                    LabeledContent("Phasenlage", value: model.snapshot.frame.hypothesis)
-                    LabeledContent("RS-korrigierte Bytes", value: "\(model.snapshot.frame.rsCorrectedBytes)")
-                    if !model.snapshot.segments.isEmpty {
-                        LabeledContent("Kanäle", value: model.snapshot.segments.keys.sorted()
-                            .map { "\($0): \(model.snapshot.segments[$0]!)" }.joined(separator: " · "))
-                    }
-                }
+                MeteorStatusRows(model: model)
             }
 
             Section("Überflüge") {
@@ -220,11 +194,6 @@ struct MeteorView: View {
         }
         .formStyle(.grouped)
     }
-
-    private func status(_ title: LocalizedStringKey, _ ok: Bool) -> some View {
-        Label(title, systemImage: ok ? "checkmark.circle.fill" : "circle")
-            .foregroundStyle(ok ? .green : .secondary)
-    }
 }
 
 /// Streudiagramm der Symbole (vier Wolken auf den Diagonalen bei Rasterung).
@@ -255,5 +224,56 @@ struct ConstellationView: View {
             }
         }
         .background(.black.opacity(0.85), in: RoundedRectangle(cornerRadius: 6))
+    }
+}
+
+/// Zähler und Pegel als eigene Ansicht: sie ändern sich mehrmals je Sekunde,
+/// und im Bedienfeld selbst gelesen zeichneten sie das ganze Formular neu –
+/// das Scrollen ruckelte (Review 05.11.2026).
+private struct MeteorStatusRows: View {
+    let model: MeteorModel
+
+    var body: some View {
+        HStack(alignment: .top) {
+            ConstellationView(points: model.snapshot.constellation, locked: model.snapshot.locked)
+                .frame(width: 120, height: 120)
+            VStack(alignment: .leading, spacing: 4) {
+                status("Signal", model.snapshot.locked)
+                    .help("Die App hat den Träger des Satelliten gefunden.")
+                status("Entschlüsselt", model.snapshot.frame.viterbiLocked)
+                    .help("Der Fehlerschutz (Viterbi) ist eingerastet.")
+                status("Rahmen", model.snapshot.frame.framesOK > 0 && model.busy)
+                Text("Ablage \(model.snapshot.frequencyOffset, format: .number.precision(.fractionLength(0)).sign(strategy: .always())) Hz")
+                Text("Pegel \(model.snapshot.levelDB, format: .number.precision(.fractionLength(0))) dBFS")
+            }
+            .font(.caption)
+            .monospacedDigit()
+        }
+        LabeledContent("Rahmen", value: "\(model.snapshot.frame.framesOK)")
+        LabeledContent("Prüfsummenfehler", value: "\(model.snapshot.frame.framesFailed)")
+        LabeledContent("Pakete", value: "\(model.snapshot.packets)")
+        if let span = model.snapshot.onboardSpan {
+            let start = MeteorTime.utc(secondOfDay: span.lowerBound, near: model.receptionDate)
+            let end = MeteorTime.utc(secondOfDay: span.upperBound, near: model.receptionDate)
+            LabeledContent("Aufgenommen") {
+                Text(start.formatted(date: .omitted, time: .standard) + "–" + end.formatted(date: .omitted, time: .standard))
+                    .monospacedDigit()
+            }
+            .help("Bordzeit der ersten und letzten Bildzeile, in Ortszeit.")
+        }
+        FoldOut("Technische Details") {
+            LabeledContent("Viterbi-BER", value: (model.snapshot.frame.bitErrorRate * 100).formatted(.number.precision(.fractionLength(1))) + " %")
+            LabeledContent("Phasenlage", value: model.snapshot.frame.hypothesis)
+            LabeledContent("RS-korrigierte Bytes", value: "\(model.snapshot.frame.rsCorrectedBytes)")
+            if !model.snapshot.segments.isEmpty {
+                LabeledContent("Kanäle", value: model.snapshot.segments.keys.sorted()
+                    .map { "\($0): \(model.snapshot.segments[$0]!)" }.joined(separator: " · "))
+            }
+        }
+    }
+
+    private func status(_ title: LocalizedStringKey, _ ok: Bool) -> some View {
+        Label(title, systemImage: ok ? "checkmark.circle.fill" : "circle")
+            .foregroundStyle(ok ? .green : .secondary)
     }
 }

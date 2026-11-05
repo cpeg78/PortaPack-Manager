@@ -177,6 +177,20 @@ struct AmateurSatTests {
         #expect(foreign.source == "–" && foreign.hex == "01 02 03")
     }
 
+    @Test("APRS über die ISS: Position und Kommentar werden gedeutet, Text ohne APRS nicht")
+    func aprsViaSatellite() throws {
+        let position = AmateurFrame(bytes: frame("DL1ABC-7", "APRS", "!5230.00N/01323.00E-Gruss ueber ARISS", path: ["ARISS"]).encoded(),
+                                    satellite: "ISS", channel: "APRS")
+        let aprs = try #require(position.aprs)
+        #expect(aprs.kind == .position)
+        #expect(abs((aprs.latitude ?? 0) - 52.5) < 1e-6)
+        #expect(abs((aprs.longitude ?? 0) - 13.383333) < 1e-5)
+        #expect(position.aprsSummary == "Position · 52.5000, 13.3833 · Gruss ueber ARISS")
+        // Klartext ohne APRS-Kennung bleibt Text.
+        let plain = AmateurFrame(bytes: frame("RS0ISS", "CQ", "Hallo", path: []).encoded(), satellite: "ISS", channel: "APRS")
+        #expect(plain.aprs == nil && plain.aprsSummary == nil)
+    }
+
     // MARK: Liste und Doppler
 
     @Test("Satellitenliste: eindeutige Nummern, Frequenzen in den Amateurbändern")

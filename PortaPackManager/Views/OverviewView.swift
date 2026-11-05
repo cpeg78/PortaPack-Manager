@@ -52,7 +52,7 @@ struct OverviewView: View {
 
             if session.info != nil || hackRFInfo != nil {
                 Section {
-                    DisclosureGroup("Technische Details", isExpanded: $detailsExpanded) { details }
+                    FoldOut("Technische Details", isExpanded: $detailsExpanded) { details }
                 }
             }
 
@@ -102,7 +102,7 @@ struct OverviewView: View {
 
             // Notfallwerkzeuge eingeklappt – im Alltag braucht sie niemand (Review 29.10.2026).
             Section {
-                DisclosureGroup("Fehlerbehebung", isExpanded: $troubleshootingExpanded) {
+                FoldOut("Fehlerbehebung", isExpanded: $troubleshootingExpanded) {
                     HStack {
                         Button("USB neu anmelden") { request(.usbReset) }
                             .disabled(session.busy)

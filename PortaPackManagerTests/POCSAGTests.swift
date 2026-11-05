@@ -22,12 +22,15 @@ struct POCSAGTests {
         return TestSignals.iq(carriers: [freq], amplitude: amplitude, noise: noise, seed: seed)
     }
 
+    /// Fester Zeitstempel: der Dekoder bekommt `now` durchgereicht (Review 05.11.2026).
+    static let now = Date(timeIntervalSince1970: 1_800_000_000)
+
     private func decode(_ iq: Data) -> [PagerMessage] {
         let front = FMChannelizer(channelOffsets: [0], stage1Cutoff: 50_000, channelCutoff: 9_000)
         let demod = POCSAGDemodulator()
         var out: [PagerMessage] = []
-        for block in TestSignals.blocks(iq) { out += demod.process(front.process(block)[0]) }
-        return out + demod.flush()
+        for block in TestSignals.blocks(iq) { out += demod.process(front.process(block)[0], now: Self.now) }
+        return out + demod.flush(now: Self.now)
     }
 
     private let pages: [POCSAGEncoder.Page] = [
@@ -61,6 +64,16 @@ struct POCSAGTests {
                 #expect(POCSAG.correct(cw ^ 1 << UInt32(i) ^ 1 << UInt32(j) ^ 1 << UInt32(k)) == nil)
             }
         }
+    }
+
+    @Test("DAPNET: Zeitsignal, Skyper-Rubrik (ROT-1), Dienstnamen (Beispiele aus dem DAPNET-Wiki)")
+    func dapnet() {
+        #expect(DAPNET.timeSignal("193500 161018") == "Zeit 19:35:00, 16.10.18")
+        #expect(DAPNET.timeSignal("XTIME=1935161018XTIME=1935161018") == "Zeit 19:35, 16.10.18")
+        #expect(DAPNET.decode(ric: 4520, "H!Fejohfo.Ofdlbsibvtfo!Fouxbsovoh;!Csboe") == "Edingen-Neckarhausen Entwarnung: Brand")
+        #expect(DAPNET.decode(ric: 1234, "Hallo") == nil)
+        #expect(DAPNET.serviceName(ric: 8) == "Senderkennung")
+        #expect(DAPNET.serviceName(ric: 1004) == "DX-Cluster")
     }
 
     @Test("Text und Ziffern: Rundreise, deutscher Zeichensatz")
@@ -100,6 +113,7 @@ struct POCSAGTests {
     func endToEnd(bitRate: Int) {
         let out = decode(fskIQ(POCSAGEncoder.transmission(pages), bitRate: bitRate))
         #expect(out.allSatisfy { $0.bitRate == bitRate })
+        #expect(out.allSatisfy { $0.date == Self.now })
         check(out)
     }
 

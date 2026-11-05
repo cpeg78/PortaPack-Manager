@@ -74,7 +74,8 @@ enum Homematic {
 
     // MARK: - Bitstrom → Rahmen
 
-    static func frames(inBits bits: [UInt8]) -> [SmartHomeFrame] {
+    /// `models`: gelernte Modellnummern je Absender (aus der Geräteinfo 0x00).
+    static func frames(inBits bits: [UInt8], models: [String: UInt16] = [:]) -> [SmartHomeFrame] {
         var out: [SmartHomeFrame] = []
         for start in SmartHomeDemod.find(syncBits, in: bits) {
             guard let first = SmartHomeDemod.bytes(bits, from: start, count: 1) else { continue }
@@ -85,7 +86,7 @@ enum Homematic {
             let enc = Array(plain[0...length])
             let crc = UInt16(plain[length + 1]) << 8 | UInt16(plain[length + 2])
             guard crc16(enc) == crc else { continue }
-            guard let frame = parse(enc: enc) else { continue }
+            guard let frame = parse(enc: enc, models: models) else { continue }
             if !out.contains(where: { $0.bytes == frame.bytes }) { out.append(frame) }
         }
         return out
@@ -98,9 +99,9 @@ enum Homematic {
         0x02: String(localized: "Bestätigung"), 0x03: String(localized: "AES-Antwort"),
         0x04: String(localized: "AES-Schlüssel"), 0x10: String(localized: "Information"),
         0x11: String(localized: "Steuerbefehl"), 0x12: String(localized: "Daten vorhanden"),
-        0x3E: String(localized: "Schalten"), 0x3F: String(localized: "Zeitstempel"),
+        0x3E: String(localized: "Schalten"), 0x3F: String(localized: "Zeitanfrage"),
         0x40: String(localized: "Tastendruck"), 0x41: String(localized: "Sensorereignis"),
-        0x53: String(localized: "Wassermelder"), 0x58: String(localized: "Klimaereignis"),
+        0x53: String(localized: "Sensordaten"), 0x58: String(localized: "Klimaereignis"),
         0x59: String(localized: "Thermostat-Gruppe"), 0x5A: String(localized: "Thermostat"),
         0x5E: String(localized: "Leistungsmesser"), 0x5F: String(localized: "Leistungsmesser"),
         0x70: String(localized: "Wetterdaten"),
@@ -112,14 +113,34 @@ enum Homematic {
         0x00AD: "HM-TC-IT-WM-W-EU", 0x00C7: "HM-Sec-SCo", 0x00D8: "HM-LC-Sw1-Pl-DN-R1", 0x00F4: "HM-RC-4-2",
         0x0011: "HM-LC-Sw1-Pl", 0x002F: "HM-Sec-SC", 0x004A: "HM-Sec-MDIR", 0x00AC: "HM-ES-PMSw1-Pl",
         0x00BD: "HM-CC-RT-DN-BoM", 0x00DB: "HM-Sen-MDIR-WM55", 0x00C1: "HM-Sec-SC-2", 0x00A9: "HM-PB-6-WM55",
+        0x0030: "HM-Sec-RHS", 0x0045: "HM-Sec-WDS", 0x00AA: "HM-Sec-SD-2",
     ]
+
+    /// Was ein Sensorereignis (0x41) bedeutet, hängt vom Gerät ab: Dieselben
+    /// Werte 0x00/0x64/0xC8 heißen beim Fensterkontakt zu/gekippt/offen, beim
+    /// Wassermelder trocken/feucht/nass; der Rauchmelder meldet 0xC8 als Alarm,
+    /// der Bewegungsmelder Helligkeit und Bewegungszähler (FHEM `10_CUL_HM.pm`).
+    enum SensorKind: Equatable {
+        case contact, water, smoke, motion
+
+        init?(model: UInt16) {
+            switch model {
+            case 0x002F, 0x0030, 0x00C1, 0x00C7: self = .contact
+            case 0x0045: self = .water
+            case 0x0042, 0x00AA: self = .smoke
+            case 0x004A, 0x00DB: self = .motion
+            default: return nil
+            }
+        }
+    }
 
     static func address(_ b: ArraySlice<UInt8>) -> String {
         b.map { String(format: "%02X", $0) }.joined()
     }
 
     /// Wertet einen Rahmen aus (`enc`: Länge + verwürfelte Daten, CRC geprüft).
-    static func parse(enc: [UInt8]) -> SmartHomeFrame? {
+    /// `models`: gelernte Modellnummern je Absender, deuten mehrdeutige Sensorereignisse.
+    static func parse(enc: [UInt8], models: [String: UInt16] = [:]) -> SmartHomeFrame? {
         guard enc.count >= 10 else { return nil }
         let dec = descramble(enc)
         let type = dec[3]
@@ -142,7 +163,7 @@ enum Homematic {
             .init(name: String(localized: "Absender"), value: source),
             .init(name: String(localized: "Empfänger"), value: target),
         ]
-        describe(type: type, p, into: &frame)
+        describe(type: type, p, sensor: models[source].flatMap(SensorKind.init(model:)), into: &frame)
         return frame
     }
 
@@ -169,7 +190,13 @@ enum Homematic {
         v == 0 ? String(localized: "aus") : v >= 0xC8 ? String(localized: "ein") : String(format: "%.0f %%", Double(v) / 2)
     }
 
-    static func describe(type: UInt8, _ p: [UInt8], into f: inout SmartHomeFrame) {
+    /// Modellnummer aus einer Geräteinfo (0x00), sonst `nil` – zum Lernen je Absender.
+    static func model(in frame: SmartHomeFrame) -> UInt16? {
+        guard frame.radio == .homematic, frame.deviceTypeFromInfo, frame.bytes.count >= 13 else { return nil }
+        return UInt16(frame.bytes[11]) << 8 | UInt16(frame.bytes[12])
+    }
+
+    static func describe(type: UInt8, _ p: [UInt8], sensor: SensorKind? = nil, into f: inout SmartHomeFrame) {
         switch type {
         case 0x00 where p.count >= 13:
             let model = UInt16(p[1]) << 8 | UInt16(p[2])
@@ -183,6 +210,7 @@ enum Homematic {
             case 0x01? where p.count >= 3:
                 f.summary = String(localized: "Bestätigung, Kanal \(Int(p[1] & 0x3F)): \(level(p[2]))")
                 f.values.append(channelLevel(p[1], p[2]))
+                if p.count >= 4, p[3] & 0x80 != 0 { f.summary += batteryLowSuffix }
             case 0x04?: f.summary = String(localized: "Bestätigung mit AES-Signaturanforderung"); f.encrypted = true
             case 0x80?: f.summary = String(localized: "Ablehnung")
             default: f.summary = String(localized: "Bestätigung")
@@ -215,12 +243,7 @@ enum Homematic {
                 let target = set < 5 ? String(localized: "aus") : set > 30 ? String(localized: "ein") : String(format: "%.1f °C", set)
                 f.summary = String(localized: "\(String(format: "%.1f", actual)) °C, Soll \(target), Ventil \(Int(valve)) %")
                 if p.count >= 6 {
-                    let mode: String = switch p[5] >> 6 {
-                    case 0: String(localized: "Automatik")
-                    case 1: String(localized: "manuell")
-                    case 2: String(localized: "Party")
-                    default: String(localized: "Boost")
-                    }
+                    let mode = Self.modeText(p[5] >> 6)
                     f.summary += ", " + mode
                     f.fields.append(.init(name: String(localized: "Betriebsart"), value: mode))
                 }
@@ -239,6 +262,23 @@ enum Homematic {
                     f.fields.append(.init(name: String(localized: "Fehler"), value: errorText))
                 }
                 f.deviceType = f.deviceType.isEmpty ? String(localized: "Heizkörperthermostat") : f.deviceType
+            case 0x0B? where p.count >= 5:
+                // Wandthermostat HM-TC-IT-WM-W-EU (FHEM „100B“): Wort wie 0A, Ist aber
+                // mit Vorzeichen (Bit 9); Batterie Bits 0–4 (+ Schwach-Bit 7), Betriebsart Bits 6–7.
+                let word = Int(p[1]) << 8 | Int(p[2])
+                let set = Double((word >> 10) & 0x3F) / 2
+                var actual = Double(word & 0x1FF) / 10
+                if word & 0x200 != 0 { actual = -actual }
+                let battery = 1.5 + Double(p[3] & 0x1F) / 10
+                f.values += [SmartHomeValue(name: "Temperatur", unit: "°C", value: actual),
+                             SmartHomeValue(name: "Sollwert", unit: "°C", value: set),
+                             SmartHomeValue(name: "Batterie", unit: "V", value: battery)]
+                let mode = Self.modeText(p[4] >> 6)
+                f.summary = String(localized: "\(String(format: "%.1f", actual)) °C, Soll \(String(format: "%.1f", set)) °C, \(mode)")
+                if p[4] >> 6 == 3 { f.summary += String(localized: " (\(Int(p[4] & 0x3F)) min)") }
+                if p[3] & 0x80 != 0 { f.summary += batteryLowSuffix }
+                f.fields.append(.init(name: String(localized: "Betriebsart"), value: mode))
+                f.deviceType = f.deviceType.isEmpty ? String(localized: "Wandthermostat") : f.deviceType
             default:
                 f.summary = String(localized: "Information") + (p.first.map { String(format: " 0x%02X", $0) } ?? "")
             }
@@ -252,22 +292,16 @@ enum Homematic {
             if p[0] & 0x80 != 0 { f.summary += batteryLowSuffix }
             f.deviceType = f.deviceType.isEmpty ? String(localized: "Taster") : f.deviceType
         case 0x41 where p.count >= 3:
-            let value = p[2]
-            let state: String = switch value {
-            case 0x00: String(localized: "geschlossen")
-            case 0x64: String(localized: "gekippt")
-            case 0xC8: String(localized: "offen")
-            default: String(localized: "Wert \(Int(value))")
-            }
-            f.summary = String(localized: "Kanal \(Int(p[0] & 0x3F)): \(state)")
-            if p[0] & 0x80 != 0 { f.summary += batteryLowSuffix }
-            if [0x00, 0x64, 0xC8].contains(value) {
-                f.values.append(SmartHomeValue(name: "Kontakt offen", unit: "%", value: Double(value) / 2))
-                f.deviceType = f.deviceType.isEmpty ? String(localized: "Fensterkontakt") : f.deviceType
-            } else {
-                f.values.append(SmartHomeValue(name: "Sensorwert", unit: "", value: Double(value)))
-                f.deviceType = f.deviceType.isEmpty ? String(localized: "Sensor") : f.deviceType
-            }
+            sensorEvent(p, sensor: sensor, into: &f)
+        case 0x3F:
+            f.summary = String(localized: "Fragt die Uhrzeit ab")
+        case 0x53 where !p.isEmpty:
+            // Sensordaten (Helligkeit, Temperatur, Gaszähler …) – Format je Gerät; sicher ist nur das Batteriebit.
+            f.summary = String(localized: "Sensordaten Kanal \(Int(p[0] & 0x3F))") + (p[0] & 0x80 != 0 ? batteryLowSuffix : "")
+        case 0x59 where !p.isEmpty:
+            // Thermostat-Gruppe: neuer Sollwert für das Team (FHEM „inform team“).
+            let set = Double(Int(p[0]) / 4) / 2
+            f.summary = String(localized: "Gruppe: Soll \(String(format: "%.1f", set)) °C, \(Self.modeText(p[0] & 0x03))")
         case 0x58 where p.count >= 2:
             let valve = (Double(p[1]) / 2.56).rounded()
             f.summary = String(localized: "Ventil \(Int(valve)) %")
@@ -316,6 +350,68 @@ enum Homematic {
             f.deviceType = f.deviceType.isEmpty ? String(localized: "Temperatur-/Feuchtesensor") : f.deviceType
         default:
             break
+        }
+    }
+
+    /// Sensorereignis 0x41: Kanal · Zähler · Wert (Bewegungsmelder: · nächstes Intervall).
+    /// Ohne gelerntes Modell: vier Bytes = Bewegungsmelder, sonst vermutlich Fensterkontakt.
+    private static func sensorEvent(_ p: [UInt8], sensor: SensorKind?, into f: inout SmartHomeFrame) {
+        let channel = Int(p[0] & 0x3F), value = p[2]
+        let kind = sensor ?? (p.count >= 4 ? .motion : .contact)
+        let threeState: (String, String, String)?
+        switch kind {
+        case .contact:
+            threeState = (String(localized: "geschlossen"), String(localized: "gekippt"), String(localized: "offen"))
+        case .water:
+            threeState = (String(localized: "trocken"), String(localized: "feucht"), String(localized: "nass"))
+        case .smoke:
+            // FHEM: 01 kein Alarm, C7 Ton aus (Alarm quittiert), C8 Rauchalarm.
+            threeState = nil
+            let alarm = value == 0xC8
+            f.summary = alarm ? String(localized: "Rauchalarm!") : value == 0xC7 ? String(localized: "Alarmton aus") : String(localized: "Kein Rauch")
+            f.values.append(SmartHomeValue(name: "Rauch", unit: "", value: alarm ? 1 : 0))
+            f.deviceType = f.deviceType.isEmpty ? String(localized: "Rauchmelder") : f.deviceType
+        case .motion:
+            threeState = nil
+            f.summary = String(localized: "Bewegung (Nr. \(Int(p[1]))), Helligkeit \(Int(value))")
+            // Nächste Meldung frühestens nach 15 · 2^(hohes Halbbyte − 4) s (FHEM `nextTr`).
+            if p.count >= 4, p[3] >> 4 >= 4 {
+                f.summary += String(localized: ", nächste Meldung frühestens in \(15 << Int(p[3] >> 4 - 4)) s")
+            }
+            f.values.append(SmartHomeValue(name: "Helligkeit", unit: "", value: Double(value)))
+            f.values.append(SmartHomeValue(name: "Bewegungen", unit: "", value: Double(p[1])))
+            f.deviceType = f.deviceType.isEmpty ? String(localized: "Bewegungsmelder") : f.deviceType
+        }
+        if let (low, middle, high) = threeState {
+            let state: String = switch value {
+            case 0x00: low
+            case 0x64: middle
+            case 0xC8: high
+            default: String(localized: "Wert \(Int(value))")
+            }
+            f.summary = String(localized: "Kanal \(channel): \(state)")
+            if [0x00, 0x64, 0xC8].contains(value) {
+                let name = kind == .water ? "Wasserstand" : "Kontakt offen"
+                f.values.append(SmartHomeValue(name: name, unit: "%", value: Double(value) / 2))
+                let device = kind == .water ? String(localized: "Wassermelder") : String(localized: "Fensterkontakt")
+                f.deviceType = f.deviceType.isEmpty ? device : f.deviceType
+                // Ohne Geräteinfo nur angenommen – kann auch ein Wassermelder sein.
+                f.deviceTypeGuessed = sensor == nil
+            } else {
+                f.values.append(SmartHomeValue(name: "Sensorwert", unit: "", value: Double(value)))
+                f.deviceType = f.deviceType.isEmpty ? String(localized: "Sensor") : f.deviceType
+            }
+        }
+        if p[0] & 0x80 != 0 { f.summary += batteryLowSuffix }
+    }
+
+    /// Betriebsart der Thermostate (Bits 6–7 bzw. 0–1): Automatik, manuell, Party, Boost.
+    static func modeText(_ bits: UInt8) -> String {
+        switch bits & 0x03 {
+        case 0: String(localized: "Automatik")
+        case 1: String(localized: "manuell")
+        case 2: String(localized: "Party")
+        default: String(localized: "Boost")
         }
     }
 

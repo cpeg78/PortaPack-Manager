@@ -5,8 +5,11 @@ import Foundation
 /// mit den Sitzungsschlüsseln entschlüsseln (nur eigene Geräte) und die MIC
 /// prüfen. PHY: expliziter Kopf, CR 4/5, Sync-Wort 0x34, CRC an – alles
 /// bereits im Demodulator. Krypto nach LoRaWAN 1.0.x: AES-128, CMAC für die
-/// MIC, zählergestützte Verschlüsselung der Nutzlast. Join-Accept (OTAA)
-/// wird mit dem AppKey entschlüsselt und daraus die Sitzungsschlüssel abgeleitet.
+/// MIC, zählergestützte Verschlüsselung der Nutzlast. Sitzungsschlüssel
+/// trägt der Nutzer ein (ABP, oder nach einem OTAA-Join aus dem Netzserver
+/// abgelesen). Den Join-Accept selbst kann die App nicht mitlesen: Er kommt
+/// wie jeder Downlink mit invertiertem IQ, den `LoRaDemodulator` nicht
+/// empfängt – daraus ließen sich sonst die Schlüssel mit dem AppKey ableiten.
 enum LoRaWANCrypto {
     /// AES-128 ein Block (ECB), über `CCMStar.aes`.
     static func aes(_ key: [UInt8], _ block: [UInt8]) -> [UInt8] { CCMStar.aes(key, block) }
@@ -118,18 +121,127 @@ struct LoRaWANFrame: Sendable, Equatable {
     var devEUI: UInt64?
     var devNonce: UInt16?
 
+    /// MAC-Befehle: in FOpts (unverschlüsselt in 1.0.x) bzw. als Nutzlast auf Port 0.
+    var macCommands: [LoRaWANMAC.Command] {
+        var bytes = fOpts
+        if fPort == 0, let decrypted { bytes += decrypted }
+        return LoRaWANMAC.parse(bytes, uplink: mType.isUplink)
+    }
+
+    /// Nutzlast als Cayenne LPP, wenn sie vollständig in dieses Format passt.
+    var cayenne: [String]? {
+        guard let decrypted, let fPort, fPort != 0 else { return nil }
+        return CayenneLPP.decode(decrypted)
+    }
+
     var summary: String {
         var parts = [mType.name]
         if let devAddr { parts.append(String(format: "DevAddr %08X", devAddr)) }
         if let devEUI { parts.append(String(format: "DevEUI %016llX", devEUI)) }
         if let fCnt { parts.append("FCnt \(fullFCnt ?? UInt32(fCnt))") }
         if let fPort { parts.append("Port \(fPort)") }
-        if let decrypted { parts.append("\(decrypted.count) B: " + decrypted.map { String(format: "%02X", $0) }.joined()) }
+        if adr { parts.append("ADR") }
+        if ack { parts.append(String(localized: "bestätigt")) }
+        if framePending { parts.append(String(localized: "mehr Daten folgen")) }
+        let commands = macCommands
+        if !commands.isEmpty { parts.append(commands.map(\.text).joined(separator: ", ")) }
+        if let values = cayenne { parts.append(values.joined(separator: ", ")) }
+        else if let decrypted, fPort != 0 { parts.append("\(decrypted.count) B: " + decrypted.map { String(format: "%02X", $0) }.joined()) }
         else if mType == .unconfirmedUp || mType == .confirmedUp || mType == .unconfirmedDown || mType == .confirmedDown {
             parts.append(String(localized: "verschlüsselt"))
         }
         if micValid == false { parts.append(String(localized: "Prüfcode (MIC) falsch")) }
         return parts.joined(separator: " · ")
+    }
+}
+
+/// MAC-Befehle nach LoRaWAN 1.0.x (Tabelle 4): Kennung (CID) und feste Länge
+/// je Richtung. Ab der ersten unbekannten Kennung ist der Rest nicht lesbar.
+enum LoRaWANMAC {
+    struct Command: Sendable, Equatable {
+        var cid: UInt8
+        var text: String
+        /// DevStatusAns: Batterie (0 Netz, 1–254 Stand, 255 unbekannt) und Linkreserve (dB).
+        var battery: Int?
+        var margin: Int?
+    }
+
+    static func parse(_ bytes: [UInt8], uplink: Bool) -> [Command] {
+        var out: [Command] = []
+        var i = 0
+        while i < bytes.count {
+            let cid = bytes[i]
+            let lengths: [UInt8: Int] = uplink
+                ? [0x02: 0, 0x03: 1, 0x04: 0, 0x05: 1, 0x06: 2, 0x07: 1, 0x08: 0, 0x09: 0, 0x0A: 1, 0x0D: 0]
+                : [0x02: 2, 0x03: 4, 0x04: 1, 0x05: 4, 0x06: 0, 0x07: 5, 0x08: 1, 0x09: 1, 0x0A: 4, 0x0D: 5]
+            guard let length = lengths[cid], i + 1 + length <= bytes.count else {
+                out.append(Command(cid: cid, text: String(format: String(localized: "MAC 0x%02X …"), cid)))
+                break
+            }
+            let p = Array(bytes[(i + 1)..<(i + 1 + length)])
+            out.append(describe(cid, p, uplink: uplink))
+            i += 1 + length
+        }
+        return out
+    }
+
+    private static func describe(_ cid: UInt8, _ p: [UInt8], uplink: Bool) -> Command {
+        var c = Command(cid: cid, text: "")
+        switch (uplink, cid) {
+        case (true, 0x02): c.text = String(localized: "fragt Empfang ab (LinkCheck)")
+        case (true, 0x03): c.text = String(localized: "Datenrate übernommen") + (p[0] & 0x07 == 0x07 ? "" : String(localized: " (teilweise)"))
+        case (true, 0x06):
+            c.battery = Int(p[0])
+            var margin = Int(p[1] & 0x3F)
+            if margin >= 32 { margin -= 64 }
+            c.margin = margin
+            let battery = p[0] == 0 ? String(localized: "Netzbetrieb") : p[0] == 255 ? String(localized: "Batterie unbekannt")
+                : String(format: String(localized: "Batterie %.0f %%"), Double(p[0] - 1) / 253 * 100)
+            c.text = String(localized: "Gerätestatus: \(battery), Reserve \(margin) dB")
+        case (true, 0x0D): c.text = String(localized: "fragt Uhrzeit ab")
+        case (false, 0x02): c.text = String(localized: "Empfang: Reserve \(Int(p[0])) dB, \(Int(p[1])) Gateways")
+        case (false, 0x03): c.text = String(localized: "neue Datenrate DR\(Int(p[0] >> 4)), Leistung \(Int(p[0] & 0x0F))")
+        case (false, 0x06): c.text = String(localized: "fragt Gerätestatus ab")
+        default: c.text = String(format: String(localized: "MAC 0x%02X"), cid)
+        }
+        return c
+    }
+}
+
+/// Cayenne LPP (myDevices): Kanal · Typ · Wert fester Länge, beliebig oft
+/// hintereinander. Nur, wenn die ganze Nutzlast aufgeht – sonst ist es kein LPP.
+enum CayenneLPP {
+    static func decode(_ p: [UInt8]) -> [String]? {
+        var out: [String] = []
+        var i = 0
+        func signed(_ start: Int, _ length: Int) -> Int {
+            var v = 0
+            for k in 0..<length { v = v << 8 | Int(p[start + k]) }
+            return v >= 1 << (8 * length - 1) ? v - (1 << (8 * length)) : v
+        }
+        func unsigned(_ start: Int, _ length: Int) -> Int { (0..<length).reduce(0) { $0 << 8 | Int(p[start + $1]) } }
+        while i + 2 <= p.count {
+            let channel = Int(p[i]), type = p[i + 1]
+            let sizes: [UInt8: Int] = [0: 1, 1: 1, 2: 2, 3: 2, 101: 2, 102: 1, 103: 2, 104: 1, 113: 6, 115: 2, 134: 6, 136: 9]
+            guard let size = sizes[type], i + 2 + size <= p.count else { return nil }
+            let d = i + 2
+            let value: String
+            switch type {
+            case 0, 1: value = String(localized: "Schalter \(Int(p[d]))")
+            case 2, 3: value = String(format: "%.2f", Double(signed(d, 2)) / 100)
+            case 101: value = "\(unsigned(d, 2)) lx"
+            case 102: value = p[d] != 0 ? String(localized: "anwesend") : String(localized: "niemand")
+            case 103: value = String(format: "%.1f °C", Double(signed(d, 2)) / 10)
+            case 104: value = String(format: "%.1f %%", Double(p[d]) / 2)
+            case 113: value = String(format: "%.3f / %.3f / %.3f g", Double(signed(d, 2)) / 1000, Double(signed(d + 2, 2)) / 1000, Double(signed(d + 4, 2)) / 1000)
+            case 115: value = String(format: "%.1f hPa", Double(unsigned(d, 2)) / 10)
+            case 134: value = String(format: "%.2f / %.2f / %.2f °/s", Double(signed(d, 2)) / 100, Double(signed(d + 2, 2)) / 100, Double(signed(d + 4, 2)) / 100)
+            default: value = String(format: "%.4f, %.4f, %.1f m", Double(signed(d, 3)) / 10_000, Double(signed(d + 3, 3)) / 10_000, Double(signed(d + 6, 3)) / 100)
+            }
+            out.append(String(localized: "K\(channel): \(value)"))
+            i = d + size
+        }
+        return i == p.count && !out.isEmpty ? out : nil
     }
 }
 
@@ -168,7 +280,9 @@ enum LoRaWANParser {
     /// FCnt 65 536 ginge die MIC sonst nie mehr auf (Review 01.11.2026).
     static func parse(_ phy: [UInt8], sessions: [UInt32: LoRaWANSession],
                       counters: [UInt64: UInt32] = [:]) -> LoRaWANFrame? {
-        guard phy.count >= 5, let mType = LoRaWANFrame.MType(rawValue: Int(phy[0] >> 5)) else { return nil }
+        // Höchstens 255 Byte: der B0-Block der MIC trägt die Länge in einem Byte
+        // (`UInt8(msg.count)` trappte sonst – Review 05.11.2026).
+        guard phy.count >= 5, phy.count <= 255, let mType = LoRaWANFrame.MType(rawValue: Int(phy[0] >> 5)) else { return nil }
         if mType == .joinRequest || mType == .rejoinRequest {
             guard phy.count >= 23 else { return nil }
             let joinEUI = le64(phy, 1), devEUI = le64(phy, 9)

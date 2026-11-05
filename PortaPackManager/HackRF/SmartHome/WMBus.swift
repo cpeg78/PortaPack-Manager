@@ -111,11 +111,12 @@ enum WMBus {
     // MARK: - Bitstrom → Rahmen
 
     /// `keys`: Ident-Nummer (8 Ziffern) → AES-Schlüssel.
-    static func frames(inBits stream: [UInt8], keys: [String: [UInt8]]) -> [SmartHomeFrame] {
+    /// `formats`: gelernte Datensatzköpfe je Formatsignatur – für Kompaktrahmen (CI 0x79).
+    static func frames(inBits stream: [UInt8], keys: [String: [UInt8]], formats: [UInt16: [UInt8]] = [:]) -> [SmartHomeFrame] {
         var out: [SmartHomeFrame] = []
         for bits in [stream, SmartHomeDemod.inverted(stream)] {
             for start in SmartHomeDemod.find(syncBits, in: bits) {
-                if let frame = decodeAt(bits, start: start, keys: keys), !out.contains(where: { $0.bytes == frame.bytes }) {
+                if let frame = decodeAt(bits, start: start, keys: keys, formats: formats), !out.contains(where: { $0.bytes == frame.bytes }) {
                     out.append(frame)
                 }
             }
@@ -124,7 +125,7 @@ enum WMBus {
         return out
     }
 
-    private static func decodeAt(_ bits: [UInt8], start: Int, keys: [String: [UInt8]]) -> SmartHomeFrame? {
+    private static func decodeAt(_ bits: [UInt8], start: Int, keys: [String: [UInt8]], formats: [UInt16: [UInt8]]) -> SmartHomeFrame? {
         // C1: 0x54 und Formatkennung
         if let mark = SmartHomeDemod.bytes(bits, from: start, count: 2), mark[0] == 0x54, mark[1] == 0xCD || mark[1] == 0x3D {
             let dataStart = start + 16
@@ -132,18 +133,18 @@ enum WMBus {
             if mark[1] == 0xCD {
                 guard lField >= 9, let raw = SmartHomeDemod.bytes(bits, from: dataStart, count: formatALength(Int(lField))),
                       let stripped = stripFormatA(raw), stripped.crcOK else { return nil }
-                return parse(stripped.data, mode: "C1 · Format A", keys: keys)
+                return parse(stripped.data, mode: "C1 · Format A", keys: keys, formats: formats)
             } else {
                 guard lField >= 12, let raw = SmartHomeDemod.bytes(bits, from: dataStart, count: Int(lField) + 1),
                       let stripped = stripFormatB(raw), stripped.crcOK else { return nil }
-                return parse(stripped.data, mode: "C1 · Format B", keys: keys)
+                return parse(stripped.data, mode: "C1 · Format B", keys: keys, formats: formats)
             }
         }
         // T1: 3-aus-6
         guard let lField = decode3of6(bits, from: start, count: 1)?.first, lField >= 9 else { return nil }
         guard let raw = decode3of6(bits, from: start, count: formatALength(Int(lField))),
               let stripped = stripFormatA(raw), stripped.crcOK else { return nil }
-        return parse(stripped.data, mode: "T1", keys: keys)
+        return parse(stripped.data, mode: "T1", keys: keys, formats: formats)
     }
 
     // MARK: - Sicherungsschicht
@@ -216,7 +217,7 @@ enum WMBus {
     }
 
     /// `data`: Rahmen ohne CRCs, ab dem L-Feld.
-    static func parse(_ data: [UInt8], mode: String, keys: [String: [UInt8]]) -> SmartHomeFrame? {
+    static func parse(_ data: [UInt8], mode: String, keys: [String: [UInt8]], formats: [UInt16: [UInt8]] = [:]) -> SmartHomeFrame? {
         guard data.count >= 10 else { return nil }
         let c = data[1]
         let mCode = UInt16(data[3]) << 8 | UInt16(data[2])
@@ -239,7 +240,7 @@ enum WMBus {
             frame.summary = String(localized: "ohne Anwendungsdaten")
             return frame
         }
-        var app = ApplicationContext(manufacturer: Array(data[2...3]), address: Array(data[4...9]), id: id)
+        var app = ApplicationContext(manufacturer: Array(data[2...3]), address: Array(data[4...9]), id: id, formats: formats)
         application(Array(data[10...]), context: &app, keys: keys, frame: &frame, depth: 0)
         return frame
     }
@@ -254,6 +255,8 @@ enum WMBus {
         var aflCounter: [UInt8]?
         var aflControl: UInt8 = 0
         var aflMAC: [UInt8] = []
+        /// Gelernte Datensatzköpfe (Formatsignatur → DIF/VIF-Folge).
+        var formats: [UInt16: [UInt8]] = [:]
     }
 
     static func ciName(_ ci: UInt8) -> String {
@@ -425,9 +428,17 @@ enum WMBus {
                 frame.summary = String(localized: "verschlüsselt (Modus \(securityMode), nicht unterstützt)")
                 return
             }
-            records(payload, into: &frame)
+            learningRecords(payload, into: &frame)
         case 0x78:
-            records(Array(a[1...]), into: &frame)
+            learningRecords(Array(a[1...]), into: &frame)
+        case 0x79:
+            compact(Array(a[1...]), formats: context.formats, into: &frame)
+        case 0x70, 0x71:
+            // Anwendungsfehler bzw. Alarm (EN 13757-3): Kennbyte des Geräts, Rest herstellerabhängig.
+            let code = a.count >= 2 ? Int(a[1]) : nil
+            let name = ci == 0x70 ? String(localized: "Anwendungsfehler") : String(localized: "Alarm")
+            frame.summary = code.map { String(format: "%@ 0x%02X", name, $0) } ?? name
+            if let code { frame.values.append(SmartHomeValue(name: ci == 0x70 ? "Fehlercode" : "Alarm", unit: "", value: Double(code))) }
         case 0xA0, 0xA2:
             if context.manufacturer == [0x68, 0x50], context.address.last == 0x80,
                techemHeatCostAllocator(Array(a[1...]), into: &frame) { return }
@@ -541,6 +552,80 @@ enum WMBus {
         var storage: Int
         var tariff: Int
         var function: Int
+    }
+
+    /// Datensätze auswerten und den Satzkopf merken (für spätere Kompaktrahmen).
+    private static func learningRecords(_ payload: [UInt8], into frame: inout SmartHomeFrame) {
+        records(payload, into: &frame)
+        frame.wmbusFormat = formatHeaders(payload)
+    }
+
+    /// Kompaktrahmen (EN 13757-3, CI 0x79): Formatsignatur (2), Prüfsumme über
+    /// die vollen Daten (2), dann nur die Werte. Die Köpfe (DIF/VIF) stammen aus
+    /// einem früheren vollständigen Rahmen mit derselben Signatur (CRC-16 über
+    /// die Kopfbytes, wie wmbusmeters) – ohne ihn bleibt der Rahmen ungedeutet.
+    static func compact(_ p: [UInt8], formats: [UInt16: [UInt8]], into frame: inout SmartHomeFrame) {
+        guard p.count >= 4 else { frame.summary = ciName(0x79); return }
+        let little = UInt16(p[1]) << 8 | UInt16(p[0]), big = UInt16(p[0]) << 8 | UInt16(p[1])
+        frame.fields.append(.init(name: String(localized: "Formatsignatur"), value: String(format: "0x%04X", little)))
+        guard let headers = formats[little] ?? formats[big], let full = expand(headers: headers, data: Array(p[4...])) else {
+            frame.summary = String(localized: "Kompaktrahmen – Aufbau noch unbekannt (kommt mit dem nächsten vollständigen Rahmen)")
+            return
+        }
+        records(full, into: &frame)
+    }
+
+    /// Kopfbytes (DIF/DIFE/VIF/VIFE) aller Datensätze ohne die Werte; `nil`, wenn
+    /// der Aufbau nicht fest ist (Text variabler Länge, Herstellerdaten).
+    static func formatHeaders(_ p: [UInt8]) -> [UInt8]? {
+        var headers: [UInt8] = []
+        var i = 0
+        while i < p.count {
+            guard let (header, length) = recordHeader(p, at: i) else { return nil }
+            if header == [0x2F] { i += 1; continue }
+            headers += header
+            i += header.count + length
+            guard i <= p.count else { return nil }
+        }
+        return headers.isEmpty ? nil : headers
+    }
+
+    /// Volle Datensätze aus gelernten Köpfen und den Werten eines Kompaktrahmens.
+    static func expand(headers: [UInt8], data: [UInt8]) -> [UInt8]? {
+        var out: [UInt8] = []
+        var h = 0, d = 0
+        while h < headers.count {
+            guard let (header, length) = recordHeader(headers, at: h), d + length <= data.count else { return nil }
+            out += header + data[d..<(d + length)]
+            h += header.count
+            d += length
+        }
+        return out
+    }
+
+    /// Kopf eines Datensatzes ab `i` und die Länge seines Werts (fest, sonst `nil`).
+    private static func recordHeader(_ p: [UInt8], at start: Int) -> (header: [UInt8], length: Int)? {
+        var i = start
+        guard i < p.count else { return nil }
+        let dif = p[i]
+        if dif == 0x2F { return ([0x2F], 0) }
+        guard dif != 0x0F, dif != 0x1F else { return nil }
+        i += 1
+        var ext = dif & 0x80 != 0
+        while ext, i < p.count { ext = p[i] & 0x80 != 0; i += 1 }
+        guard i < p.count else { return nil }
+        let vif = p[i]
+        i += 1
+        if vif & 0x7F == 0x7C {
+            guard i < p.count else { return nil }
+            i += 1 + Int(p[i])
+        }
+        var vifExt = vif & 0x80 != 0
+        while vifExt, i < p.count { vifExt = p[i] & 0x80 != 0; i += 1 }
+        let lengths = [0, 1, 2, 3, 4, 4, 6, 8, 0, 1, 2, 3, 4, -1, 6, 0]
+        let length = lengths[Int(dif & 0x0F)]
+        guard length >= 0, i <= p.count else { return nil }
+        return (Array(p[start..<i]), length)
     }
 
     static func records(_ payload: [UInt8], into frame: inout SmartHomeFrame) {

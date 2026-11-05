@@ -290,17 +290,48 @@ struct MeshtasticTelemetry: Sendable, Equatable {
             if let current = environment.float(6) { readings.append(String(format: "%.0f mA", current)) }
             if let iaq = environment.varint(7) { readings.append("IAQ \(iaq)") }
             if let lux = environment.float(9) { readings.append(String(format: "%.0f lx", lux)) }
+            if let uv = environment.float(12) { readings.append(String(format: String(localized: "UV %.0f lx"), uv)) }
             if let wind = environment.float(14) { readings.append(String(format: String(localized: "Wind %.1f m/s"), wind)) }
-        } else if m?.bytes(4) != nil {
+            if let gust = environment.float(16) { readings.append(String(format: String(localized: "Böen %.1f m/s"), gust)) }
+            if let direction = environment.varint(13) { readings.append(String(localized: "aus \(direction)°")) }
+            if let rain = environment.float(19) { readings.append(String(format: String(localized: "Regen %.1f mm/h"), rain)) }
+            if let rain = environment.float(20) { readings.append(String(format: String(localized: "Regen %.1f mm/24 h"), rain)) }
+            if let radiation = environment.float(18) { readings.append(String(format: "%.2f µR/h", radiation)) }
+            if let distance = environment.float(8) { readings.append(String(format: String(localized: "Abstand %.0f mm"), distance)) }
+            if let weight = environment.float(15) { readings.append(String(format: "%.2f kg", weight)) }
+            if let moisture = environment.varint(21) { readings.append(String(localized: "Bodenfeuchte \(moisture) %")) }
+            if let soil = environment.float(22) { readings.append(String(format: String(localized: "Boden %.1f °C"), soil)) }
+        } else if let air = m?.bytes(4).flatMap(ProtobufMessage.init) {
             kind = String(localized: "Luftqualität")
-        } else if m?.bytes(5) != nil {
+            if let pm = air.varint(5) { readings.append("PM2,5 \(pm) µg/m³") }
+            if let pm = air.varint(6) { readings.append("PM10 \(pm) µg/m³") }
+            if let co2 = air.varint(13) { readings.append("CO₂ \(co2) ppm") }
+        } else if let power = m?.bytes(5).flatMap(ProtobufMessage.init) {
             kind = String(localized: "Strom")
-        } else if m?.bytes(6) != nil {
+            for channel in 0..<3 {
+                let volts = power.float(1 + 2 * channel), milliamps = power.float(2 + 2 * channel)
+                guard volts != nil || milliamps != nil else { continue }
+                let parts = [volts.map { String(format: "%.2f V", $0) }, milliamps.map { String(format: "%.0f mA", $0) }]
+                readings.append(String(localized: "Kanal \(channel + 1): ") + parts.compactMap { $0 }.joined(separator: " "))
+            }
+        } else if let stats = m?.bytes(6).flatMap(ProtobufMessage.init) {
             kind = String(localized: "Lokale Statistik")
-        } else if m?.bytes(7) != nil {
+            uptime = stats.varint(1).map { Int(clamping: $0) }
+            channelUtilization = stats.float(2).map(Double.init)
+            airUtilTx = stats.float(3).map(Double.init)
+            if let tx = stats.varint(4), let rx = stats.varint(5) {
+                readings.append(String(localized: "\(tx) gesendet, \(rx) empfangen") + (stats.varint(6).map { String(localized: ", \($0) fehlerhaft") } ?? ""))
+            }
+            if let online = stats.varint(7), let total = stats.varint(8) { readings.append(String(localized: "\(online) von \(total) Knoten aktiv")) }
+            if let relayed = stats.varint(10) { readings.append(String(localized: "\(relayed) weitergeleitet")) }
+        } else if let health = m?.bytes(7).flatMap(ProtobufMessage.init) {
             kind = String(localized: "Gesundheit")
-        } else if m?.bytes(8) != nil {
+            if let bpm = health.varint(1) { readings.append(String(localized: "Puls \(bpm)/min")) }
+            if let spo2 = health.varint(2) { readings.append("SpO₂ \(spo2) %") }
+            temperature = health.float(3).map(Double.init)
+        } else if let host = m?.bytes(8).flatMap(ProtobufMessage.init) {
             kind = "Host"
+            uptime = host.varint(1).map { Int(clamping: $0) }
         } else {
             kind = String(localized: "Telemetrie")
         }
@@ -315,11 +346,87 @@ struct MeshtasticTelemetry: Sendable, Equatable {
     }
 }
 
+/// Weg eines Pakets (`RouteDiscovery`, mesh.proto): Zwischenknoten hin und
+/// zurück, SNR je Sprung in Viertel-dB (−128 = unbekannt).
+struct MeshtasticRoute: Sendable, Equatable {
+    var towards: [UInt32]
+    var snrTowards: [Double?]
+    var back: [UInt32]
+    var snrBack: [Double?]
+
+    init(_ bytes: [UInt8]) {
+        let m = ProtobufMessage(bytes)
+        func snr(_ values: [Int32]) -> [Double?] { values.map { $0 == -128 ? nil : Double($0) / 4 } }
+        towards = m?.repeatedFixed32(1) ?? []
+        snrTowards = snr(m?.repeatedInt32(2) ?? [])
+        back = m?.repeatedFixed32(3) ?? []
+        snrBack = snr(m?.repeatedInt32(4) ?? [])
+    }
+
+    /// „!a → !b (6,5 dB) → Ziel (−3 dB)“ – Sprünge mit SNR, so weit gemeldet.
+    static func text(_ hops: [UInt32], snr: [Double?], to target: String) -> String {
+        let names = hops.map(Meshtastic.nodeName) + [target]
+        return names.enumerated().map { k, name in
+            guard k < snr.count, let value = snr[k] else { return name }
+            return name + String(format: " (%.1f dB)", value)
+        }.joined(separator: " → ")
+    }
+}
+
+/// Nachbarn eines Knotens mit SNR (NEIGHBORINFO_APP).
+struct MeshtasticNeighborInfo: Sendable, Equatable {
+    struct Neighbor: Sendable, Equatable {
+        var number: UInt32
+        var snr: Double?
+    }
+
+    var node: UInt32?
+    var neighbors: [Neighbor]
+
+    init(_ bytes: [UInt8]) {
+        let m = ProtobufMessage(bytes)
+        node = m?.varint(1).map { UInt32(truncatingIfNeeded: $0) }
+        neighbors = (m?.messages(4) ?? []).compactMap { n in
+            n.varint(1).map { Neighbor(number: UInt32(truncatingIfNeeded: $0), snr: n.float(2).map(Double.init)) }
+        }
+    }
+}
+
+/// Wegpunkt (WAYPOINT_APP).
+struct MeshtasticWaypoint: Sendable, Equatable {
+    var id: UInt32
+    var latitude: Double?
+    var longitude: Double?
+    var name: String?
+    var description: String?
+    var expires: Date?
+
+    init(_ bytes: [UInt8]) {
+        let m = ProtobufMessage(bytes)
+        id = m?.varint(1).map { UInt32(truncatingIfNeeded: $0) } ?? 0
+        latitude = m?.fixed32(2).map { Double(Int32(bitPattern: $0)) * 1e-7 }
+        longitude = m?.fixed32(3).map { Double(Int32(bitPattern: $0)) * 1e-7 }
+        expires = m?.varint(4).flatMap { $0 > 0 ? Date(timeIntervalSince1970: Double($0)) : nil }
+        name = m?.string(6).flatMap { $0.isEmpty ? nil : $0 }
+        description = m?.string(7).flatMap { $0.isEmpty ? nil : $0 }
+        if latitude == 0, longitude == 0 { latitude = nil; longitude = nil }
+    }
+}
+
 enum MeshtasticContent: Sendable, Equatable {
     case text(String)
     case position(MeshtasticPosition)
     case nodeInfo(MeshtasticUser)
     case telemetry(MeshtasticTelemetry)
+    /// Bestätigung bzw. Fehler (ROUTING_APP); `route` bei Weganfrage/-antwort.
+    case routing(error: Int?, route: MeshtasticRoute?)
+    case traceroute(MeshtasticRoute)
+    case neighbors(MeshtasticNeighborInfo)
+    case waypoint(MeshtasticWaypoint)
+    /// Reichweitentest und Melder (Bewegung, Tür …) senden Klartext.
+    case rangeTest(String)
+    case detection(String)
+    case paxcounter(wifi: Int, ble: Int)
     case other(portnum: Int, bytes: Int)
 
     init(portnum: Int, payload: [UInt8]) {
@@ -327,8 +434,43 @@ enum MeshtasticContent: Sendable, Equatable {
         case 1: self = .text(String(decoding: payload, as: UTF8.self))
         case 3: self = .position(MeshtasticPosition(payload))
         case 4: self = .nodeInfo(MeshtasticUser(payload))
+        case 5:
+            let m = ProtobufMessage(payload)
+            if let route = m?.bytes(1) ?? m?.bytes(2) {
+                self = .routing(error: nil, route: MeshtasticRoute(route))
+            } else {
+                self = .routing(error: m?.varint(3).map { Int(clamping: $0) } ?? 0, route: nil)
+            }
+        case 8: self = .waypoint(MeshtasticWaypoint(payload))
+        case 10: self = .detection(String(decoding: payload, as: UTF8.self))
+        case 34:
+            let m = ProtobufMessage(payload)
+            self = .paxcounter(wifi: Int(clamping: m?.varint(1) ?? 0), ble: Int(clamping: m?.varint(2) ?? 0))
+        case 66: self = .rangeTest(String(decoding: payload, as: UTF8.self))
         case 67: self = .telemetry(MeshtasticTelemetry(payload))
+        case 70: self = .traceroute(MeshtasticRoute(payload))
+        case 71: self = .neighbors(MeshtasticNeighborInfo(payload))
         default: self = .other(portnum: portnum, bytes: payload.count)
+        }
+    }
+
+    /// Fehlergrund einer Routing-Meldung (mesh.proto `Routing.Error`).
+    static func routingError(_ code: Int) -> String {
+        switch code {
+        case 0: String(localized: "Bestätigt")
+        case 1: String(localized: "Kein Weg zum Ziel")
+        case 2: String(localized: "Abgelehnt (NAK)")
+        case 3: String(localized: "Zeitüberschreitung")
+        case 5: String(localized: "Zu oft wiederholt")
+        case 6: String(localized: "Kanal unbekannt")
+        case 7: String(localized: "Zu groß")
+        case 8: String(localized: "Keine Antwort")
+        case 9: String(localized: "Sendezeitgrenze erreicht")
+        case 32: String(localized: "Ungültige Anfrage")
+        case 33: String(localized: "Nicht berechtigt")
+        case 34, 35: String(localized: "Verschlüsselung gescheitert")
+        case 38: String(localized: "Zu viele Anfragen")
+        default: String(localized: "Fehler \(code)")
         }
     }
 
@@ -345,6 +487,27 @@ enum MeshtasticContent: Sendable, Equatable {
             return [u.longName, u.shortName.map { "(\($0))" }, u.hardwareName].compactMap { $0 }.joined(separator: " ")
         case .telemetry(let t):
             return ([t.kind] + t.readings).joined(separator: " · ")
+        case let .routing(error, route):
+            if let route { return MeshtasticRoute.text(route.towards, snr: route.snrTowards, to: String(localized: "Ziel")) }
+            return Self.routingError(error ?? 0)
+        case .traceroute(let route):
+            var text = MeshtasticRoute.text(route.towards, snr: route.snrTowards, to: String(localized: "Ziel"))
+            if !route.back.isEmpty || !route.snrBack.isEmpty {
+                text += String(localized: " · zurück: ") + MeshtasticRoute.text(route.back, snr: route.snrBack, to: String(localized: "Start"))
+            }
+            return text
+        case .neighbors(let info):
+            guard !info.neighbors.isEmpty else { return String(localized: "Keine Nachbarn") }
+            return info.neighbors.map { n in
+                Meshtastic.nodeName(n.number) + (n.snr.map { String(format: " (%.1f dB)", $0) } ?? "")
+            }.joined(separator: ", ")
+        case .waypoint(let w):
+            let place = w.latitude.flatMap { lat in w.longitude.map { String(format: "%.5f, %.5f", lat, $0) } }
+            return [w.name, w.description, place].compactMap { $0 }.joined(separator: " · ")
+        case .rangeTest(let text), .detection(let text):
+            return text
+        case let .paxcounter(wifi, ble):
+            return String(localized: "\(wifi) WLAN-Geräte, \(ble) Bluetooth-Geräte")
         case .other(_, let bytes):
             return String(localized: "\(bytes) Byte")
         }
@@ -570,4 +733,43 @@ struct ProtobufMessage: Sendable {
     }
 
     func string(_ number: Int) -> String? { bytes(number).map { String(decoding: $0, as: UTF8.self) } }
+
+    /// Alle Teilnachrichten eines wiederholten Felds.
+    func messages(_ number: Int) -> [ProtobufMessage] {
+        fields.compactMap { field in
+            guard field.number == number, case .bytes(let v) = field.value else { return nil }
+            return ProtobufMessage(v)
+        }
+    }
+
+    /// Wiederholtes `fixed32`-Feld – gepackt (proto3-Vorgabe) oder einzeln.
+    func repeatedFixed32(_ number: Int) -> [UInt32] {
+        fields.filter { $0.number == number }.flatMap { field -> [UInt32] in
+            switch field.value {
+            case .fixed32(let v): return [v]
+            case .bytes(let b) where b.count % 4 == 0:
+                return stride(from: 0, to: b.count, by: 4).map { i in
+                    (0..<4).reduce(UInt32(0)) { $0 | UInt32(b[i + $1]) << UInt32(8 * $1) }
+                }
+            default: return []
+            }
+        }
+    }
+
+    /// Wiederholtes Varint-Feld (`int32`) – gepackt oder einzeln.
+    func repeatedInt32(_ number: Int) -> [Int32] {
+        fields.filter { $0.number == number }.flatMap { field -> [Int32] in
+            switch field.value {
+            case .varint(let v): return [Int32(truncatingIfNeeded: v)]
+            case .bytes(let b):
+                var out: [Int32] = [], value: UInt64 = 0, shift: UInt64 = 0
+                for byte in b {
+                    value |= UInt64(byte & 0x7F) << shift
+                    if byte & 0x80 == 0 { out.append(Int32(truncatingIfNeeded: value)); value = 0; shift = 0 } else { shift += 7 }
+                }
+                return out
+            default: return []
+            }
+        }
+    }
 }

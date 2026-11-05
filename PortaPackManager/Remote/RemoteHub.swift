@@ -685,7 +685,21 @@ final class RemoteHub {
         }
     }
 
+    /// Laufende Umschaltungen je Modus: Tippt der Nutzer schnell mehrmals, läuft
+    /// die Umschaltung nur einmal, die anderen Aufrufe warten auf ihr Ergebnis
+    /// (vorher je Tipp ein voller `stopAll` + Neustart, Review 05.11.2026).
+    private var activations: [Mode: Task<String?, Never>] = [:]
+
     func activate(_ mode: Mode?) async -> String? {
+        guard let mode else { return await performActivate(nil) }
+        if let running = activations[mode] { return await running.value }
+        let task = Task { await performActivate(mode) }
+        activations[mode] = task
+        defer { activations[mode] = nil }
+        return await task.value
+    }
+
+    private func performActivate(_ mode: Mode?) async -> String? {
         guard let session else { return String(localized: "Keine Sitzung") }
         // Während einer Firmware-Installation nie umschalten – `hackrf` mitten in
         // `upload`/`flash` ließe die Installation scheitern.
@@ -947,7 +961,8 @@ final class RemoteHub {
             let mode = Mode(rawValue: raw)
             if !raw.isEmpty, mode == nil { return .text(400, String(localized: "Unbekannter Empfänger")) }
             if let message = await activate(mode) { return .text(409, message) }
-            return .json(snapshotJSON(selected: nil))
+            // Antwort auf den Reiter beschränken (wie `/api/state?tab=`, Review 05.11.2026).
+            return .json(snapshotJSON(selected: nil, tab: raw.isEmpty ? request.query["tab"] : raw))
         case "/api/dab/play":
             guard let channel = request.query["ch"], let id = request.query["id"].flatMap({ UInt32($0) }),
                   let service = dab.ensembles.first(where: { $0.channel == channel })?.services.first(where: { $0.id == id })
@@ -956,13 +971,13 @@ final class RemoteHub {
                 if let message = await activate(.dab) { return .text(409, message) }
             }
             dab.play(service, on: channel)
-            return .json(snapshotJSON(selected: nil))
+            return .json(snapshotJSON(selected: nil, tab: Mode.dab.rawValue))
         case "/api/dab/scan":
             if !dab.running {
                 if let message = await activate(.dab) { return .text(409, message) }
             }
             dab.scan()
-            return .json(snapshotJSON(selected: nil))
+            return .json(snapshotJSON(selected: nil, tab: Mode.dab.rawValue))
         case "/audio.aac":
             return .stream(contentType: "audio/aac")
         case "/api/archive":
@@ -1007,17 +1022,17 @@ final class RemoteHub {
             let optimizer = GainOptimizer.shared(for: model)
             if request.query["cancel"] == "1" {
                 optimizer.cancel()
-                return .json(snapshotJSON(selected: nil))
+                return .json(snapshotJSON(selected: nil, tab: request.query["tab"]))
             }
             guard !optimizer.active else { return .text(409, String(localized: "Die Optimierung läuft schon.")) }
             guard let device = session?.hackRF, device.isReceiving(for: model) else {
                 return .text(409, String(localized: "Der HackRF empfängt gerade nicht für \(mode.title)."))
             }
             optimizer.run(model, device: device)
-            return .json(snapshotJSON(selected: nil))
+            return .json(snapshotJSON(selected: nil, tab: request.query["tab"]))
         case "/api/gain":
             if let auto = request.query["auto"] { AutoGain.shared.enabled = auto == "1" }
-            return .json(snapshotJSON(selected: nil))
+            return .json(snapshotJSON(selected: nil, tab: request.query["tab"]))
         case "/api/sondes": return await RemoteSondes.handle(request.query)
         case "/api/airports":
             return .json(await RemoteAirports.handle(request.query))
@@ -1278,6 +1293,13 @@ final class RemoteHub {
             var speedKmh: Int?
             var track: Double?
             var climbMs: Double?
+            var squawk: String?
+            /// Gemeldeter Notfall im Klartext (TC 28 oder Notfall-Squawk).
+            var emergency: String?
+            /// Eingestellte Höhe (Autopilot/FMS) in m.
+            var selectedAltitudeM: Int?
+            /// Meldet Bodenpositionen (rollt am Flughafen).
+            var ground: Bool?
             var age: Int
             var messages: Int
             /// `AircraftClass` – Kartensymbol auf dem Handy.
@@ -1307,8 +1329,12 @@ final class RemoteHub {
             var speedKn: Double?
             var course: Double?
             var heading: Double?
-            /// Feste Station: "base" (Basisstation) oder "aton" (Seezeichen) – Kartensymbol wie am Mac.
+            /// Feste Station: "base" (Basisstation), "aton" (Seezeichen) oder "sos"
+            /// (Notsender), "air" = Rettungsflugzeug – Kartensymbol wie am Mac.
             var fixed: String?
+            var altitudeM: Int?
+            /// Sicherheitstext (AIS 12/14) des Senders.
+            var message: String?
             var destination: String?
             var eta: String?
             var length: Int?
@@ -1327,6 +1353,10 @@ final class RemoteHub {
             var playingID: UInt32?
             var playing: String?
             var dynamicLabel: String
+            /// DL Plus: „Interpret – Titel“, Titel und Interpret einzeln.
+            var nowPlaying: String?
+            var title: String?
+            var artist: String?
             var scanning: Bool
             var scanProgress: Double
             var listeners: Int
@@ -1375,6 +1405,9 @@ final class RemoteHub {
                 altitudeM: plane.altitude.map { Int((Double($0) * 0.3048).rounded()) },
                 speedKmh: plane.groundSpeed.map { Int(($0 * 1.852).rounded()) },
                 track: plane.track, climbMs: plane.verticalRate.map { Double($0) * 0.00508 },
+                squawk: plane.squawkText, emergency: plane.emergency?.text,
+                selectedAltitudeM: plane.targetState?.selectedAltitude.map { Int((Double($0) * 0.3048).rounded()) },
+                ground: plane.onGround ? true : nil,
                 age: Int(now.timeIntervalSince(plane.lastSeen)), messages: plane.messages,
                 kind: AircraftClass.of(emitter: plane.emitter, info: info),
                 registration: info?.registration.nilIfEmpty, type: info?.typeText.nilIfEmpty,
@@ -1389,13 +1422,14 @@ final class RemoteHub {
             let isSelected = vessel.mmsi == selectedVessel
             let photo = isSelected && UserDefaults.standard.object(forKey: ShipPhotoLookup.enabledKey) as? Bool ?? true
                 ? ShipPhotoLookup.shared.photo(imo: vessel.imo) : nil
-            let kind = vessel.isBaseStation ? String(localized: "Basisstation") : vessel.isAidToNavigation ? String(localized: "Seezeichen")
-                : AISMessage.shipTypeText(vessel.shipType)
             return Snapshot.Vessel(
-                id: vessel.mmsi, name: vessel.name, callsign: vessel.callsign, type: kind,
+                id: vessel.mmsi, name: vessel.name, callsign: vessel.callsign, type: vessel.kindText,
                 status: AISMessage.statusText(vessel.status), lat: vessel.latitude, lon: vessel.longitude,
                 speedKn: vessel.speedKnots, course: vessel.courseDegrees, heading: vessel.displayHeading,
-                fixed: vessel.isBaseStation ? "base" : vessel.isAidToNavigation ? "aton" : nil,
+                fixed: vessel.beacon != nil ? "sos" : vessel.isSARAircraft ? "air"
+                    : vessel.weather != nil && vessel.shipType == nil ? "wx"
+                    : vessel.isBaseStation ? "base" : vessel.isAidToNavigation ? "aton" : nil,
+                altitudeM: vessel.altitudeMeters, message: vessel.safetyText ?? vessel.weather?.summary,
                 destination: vessel.destination?.nilIfEmpty, eta: vessel.eta?.text,
                 length: vessel.lengthMeters, beam: vessel.beamMeters, draught: vessel.draughtMeters, imo: vessel.imo,
                 age: Int(now.timeIntervalSince(vessel.lastSeen)),
@@ -1415,7 +1449,10 @@ final class RemoteHub {
             ais: .init(running: ais.running, messages: ais.messageCount, vessels: vessels),
             dab: .init(running: dab.running, channel: dab.channel.name, synchronized: dab.status.synchronized,
                        snr: dab.status.snr, playingID: dab.playingServiceID, playing: dab.playingLabel,
-                       dynamicLabel: dab.status.dynamicLabel, scanning: dab.scanning, scanProgress: dab.scanProgress,
+                       dynamicLabel: dab.status.dynamicLabel, nowPlaying: RadioTextPlus.nowPlaying(dab.status.dlPlus),
+                       title: dab.status.dlPlus.first { $0.type == RadioTextPlus.title }?.text,
+                       artist: dab.status.dlPlus.first { $0.type == RadioTextPlus.artist || $0.type == RadioTextPlus.band }?.text,
+                       scanning: dab.scanning, scanProgress: dab.scanProgress,
                        listeners: listeners, ensembles: ensembles),
             level: session?.hackRF.flatMap { device in
                 device.isReceiving ? device.inputLevels.map { .init(rms: $0.rmsDBFS, peak: $0.peakDBFS, clipped: $0.clipped) } : nil

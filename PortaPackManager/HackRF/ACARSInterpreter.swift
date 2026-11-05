@@ -32,10 +32,65 @@ extension ACARSMessage {
         case "ATN", "Q0", "SQ", "_d": return 3
         default: break
         }
-        let interpretation = self.interpretation
+        let interpretation = self.interpretation      // aus dem Zwischenspeicher, wenn `interpret()` lief
         if interpretation.latitude != nil { return 0 }
         if text.isEmpty && interpretation.summary.isEmpty { return 3 }
         return interpretation.opaque ? 2 : 1
+    }
+}
+
+/// METAR/TAF aus dem Freitext von Wettermeldungen (WMO FM 15/51, nur die
+/// Grundgruppen): Station, Zeit, Wind, Sicht, Wolken, Temperatur/Taupunkt, QNH.
+enum ACARSWeather {
+    struct Report: Equatable {
+        var summary: String
+        var rows: [ACARSInterpretation.Row]
+    }
+
+    static func metar(in text: String) -> Report? {
+        guard let match = text.firstMatch(of: /(?:METAR|SPECI)\s+(?:COR\s+)?([A-Z]{4})\s+(\d{2})(\d{2})(\d{2})Z\s+([^=\n]*)/) else { return nil }
+        let station = String(match.1)
+        let groups = match.5.split(separator: " ").map(String.init)
+        var rows: [ACARSInterpretation.Row] = [.init(String(localized: "Wetter von"), station),
+                                               .init(String(localized: "Beobachtet"), "\(match.2). \(match.3):\(match.4) UTC")]
+        var parts: [String] = []
+        for g in groups {
+            if let w = g.wholeMatch(of: /(\d{3}|VRB)(\d{2,3})(?:G(\d{2,3}))?(KT|MPS)/) {
+                let factor = w.4 == "MPS" ? 3.6 : 1.852
+                let speed = (Double(w.2) ?? 0) * factor
+                var text = w.1 == "VRB" ? String(format: String(localized: "Wind %.0f km/h wechselnd"), speed)
+                    : String(format: String(localized: "Wind %.0f km/h aus %@°"), speed, String(w.1))
+                if let gust = w.3.flatMap({ Double($0) }) { text += String(format: String(localized: ", Böen %.0f km/h"), gust * factor) }
+                rows.append(.init(String(localized: "Wind"), text)); parts.append(text)
+            } else if g == "CAVOK" {
+                rows.append(.init(String(localized: "Sicht"), String(localized: "über 10 km, keine Wolken unter 1500 m")))
+                parts.append("CAVOK")
+            } else if let v = g.wholeMatch(of: /(\d{4})/), let meters = Int(v.1) {
+                let text = meters >= 9999 ? String(localized: "über 10 km") : "\(meters) m"
+                rows.append(.init(String(localized: "Sicht"), text))
+            } else if let c = g.wholeMatch(of: /(FEW|SCT|BKN|OVC|VV)(\d{3})(CB|TCU)?/), let hundreds = Int(c.2) {
+                let names = ["FEW": String(localized: "wenige"), "SCT": String(localized: "aufgelockert"), "BKN": String(localized: "durchbrochen"),
+                             "OVC": String(localized: "bedeckt"), "VV": String(localized: "Vertikalsicht")]
+                let text = "\(names[String(c.1)] ?? String(c.1)) \(Int((Double(hundreds) * 30.48).rounded())) m" + (c.3.map { " \($0)" } ?? "")
+                rows.append(.init(String(localized: "Wolken"), text))
+            } else if let t = g.wholeMatch(of: /(M?)(\d{2})\/(M?)(\d{2})/), let temp = Int(t.2), let dew = Int(t.4) {
+                let celsius = t.1 == "M" ? -temp : temp, dewPoint = t.3 == "M" ? -dew : dew
+                rows.append(.init(String(localized: "Temperatur"), String(localized: "\(celsius) °C, Taupunkt \(dewPoint) °C")))
+                parts.append("\(celsius) °C")
+            } else if let q = g.wholeMatch(of: /Q(\d{4})/), let hPa = Int(q.1) {
+                rows.append(.init("QNH", "\(hPa) hPa")); parts.append("QNH \(hPa)")
+            } else if let a = g.wholeMatch(of: /A(\d{4})/), let inches = Double(a.1) {
+                let hPa = Int((inches / 100 * 33.8639).rounded())
+                rows.append(.init("QNH", "\(hPa) hPa")); parts.append("QNH \(hPa)")
+            }
+        }
+        return Report(summary: String(localized: "Wetter \(station): ") + parts.joined(separator: ", "), rows: rows)
+    }
+
+    /// TAF-Kopf: Station und Gültigkeit („TAF EDDH 041100Z 0412/0518 …“).
+    static func taf(in text: String) -> String? {
+        guard let match = text.firstMatch(of: /TAF\s+(?:AMD\s+|COR\s+)?([A-Z]{4})\s+\d{6}Z\s+(\d{2})(\d{2})\/(\d{2})(\d{2})/) else { return nil }
+        return String(localized: "Vorhersage \(String(match.1)) vom \(String(match.2)). \(String(match.3)) Uhr bis \(String(match.4)). \(String(match.5)) Uhr UTC")
     }
 }
 
@@ -48,7 +103,8 @@ enum ACARSInterpreter {
         case "Q0": r.summary = String(localized: "Verbindungstest")
         case "_d": r.summary = String(localized: "Quittung ohne Inhalt")
         case "SQ": squitter(text, into: &r)
-        case "QA", "QB", "QC", "QD", "QE", "QF": oooi(m, into: &r)
+        case "QA", "QB", "QC", "QD", "QE", "QF", "QG", "QH", "QK", "QL", "QM", "QN", "QP", "QQ", "QR", "QS", "QT":
+            oooi(m, into: &r)
         case "XID": r.summary = text
         case "H1": h1(m, into: &r)
         case "A6", "AA", "B6", "BA": arinc622(m, into: &r)
@@ -62,8 +118,17 @@ enum ACARSInterpreter {
             || m.text.contains(".CC1") || m.text.contains(".DR1") || m.text.contains(".DIS") {
             arinc622(m, into: &r)
         }
+        // Wetter (Labels 30/51/52/54 und Antworten auf Wetteranfragen): METAR/TAF im Text.
+        if r.summary.isEmpty, let weather = ACARSWeather.metar(in: text) {
+            r.summary = weather.summary
+            r.rows += weather.rows
+        }
+        if r.summary.isEmpty, let taf = ACARSWeather.taf(in: text) {
+            r.summary = taf
+        }
         if r.summary.isEmpty { generic(m, into: &r) }
-        if r.latitude == nil, let pos = position(in: text) {
+        // Der Squitter nennt die Lage der Bodenstation – keine Flugzeugposition.
+        if r.latitude == nil, m.label != "SQ", let pos = position(in: text) {
             r.latitude = pos.lat; r.longitude = pos.lon
             r.rows.append(.init(String(localized: "Position"), Self.coordinates(pos.lat, pos.lon)))
         }
@@ -117,12 +182,30 @@ enum ACARSInterpreter {
         r.opaque = text.contains("nicht entschlüsselt")
     }
 
-    /// Bodenstations-Squitter „02XSEDDHAHDL…“: Version, Dienst, Station (ICAO-Code).
+    /// Bodenstations-Squitter „02XSEDDHAHDL…“: Version, Dienst (S = SITA,
+    /// A = ARINC), Station (ICAO-Code); danach meist die Lage der Station
+    /// („5333N00959E“, Grad und Minuten) und die Frequenz („136975“).
     private static func squitter(_ text: String, into r: inout ACARSInterpretation) {
         r.summary = String(localized: "Squitter der Bodenstation")
-        if text.count >= 8 {
-            let t = Array(text)
-            r.rows.append(.init(String(localized: "Station"), String(t[4...7])))
+        guard text.count >= 8 else { return }
+        let t = Array(text)
+        r.rows.append(.init(String(localized: "Station"), String(t[4...7])))
+        switch t[3] {
+        case "S": r.rows.append(.init(String(localized: "Netz"), "SITA"))
+        case "A": r.rows.append(.init(String(localized: "Netz"), "ARINC"))
+        default: break
+        }
+        if let match = text.firstMatch(of: /(\d{2})(\d{2})([NS])(\d{3})(\d{2})([EW])/),
+           let latD = Double(match.1), let latM = Double(match.2), let lonD = Double(match.4), let lonM = Double(match.5),
+           latM < 60, lonM < 60 {
+            let lat = (latD + latM / 60) * (match.3 == "S" ? -1 : 1)
+            let lon = (lonD + lonM / 60) * (match.6 == "W" ? -1 : 1)
+            if abs(lat) <= 90, abs(lon) <= 180 {
+                r.rows.append(.init(String(localized: "Lage der Station"), Self.coordinates(lat, lon)))
+            }
+        }
+        if let match = text.firstMatch(of: /1(1[89]|2\d|3[0-6])(\d{3})/), let khz = Double(match.0) {
+            r.rows.append(.init(String(localized: "Frequenz"), String(format: "%.3f MHz", khz / 1000)))
         }
     }
 
@@ -130,7 +213,11 @@ enum ACARSInterpreter {
     /// sind meist erkennbar.
     private static func oooi(_ m: ACARSMessage, into r: inout ACARSInterpretation) {
         let names = ["QA": String(localized: "Gate verlassen (OUT)"), "QB": String(localized: "Abgehoben (OFF)"), "QC": String(localized: "Gelandet (ON)"),
-                     "QD": String(localized: "Am Gate (IN)"), "QE": String(localized: "OUT mit Kraftstoff"), "QF": String(localized: "OFF mit Kraftstoff")]
+                     "QD": String(localized: "Am Gate (IN)"), "QE": String(localized: "OUT mit Kraftstoff"), "QF": String(localized: "OFF mit Kraftstoff"),
+                     "QG": String(localized: "OUT und Rückkehr zum Gate"), "QH": String(localized: "Gate verlassen (OUT)"),
+                     "QK": String(localized: "Landemeldung"), "QL": String(localized: "Ankunftsmeldung"), "QM": String(localized: "Ankunftsinformation"),
+                     "QN": String(localized: "Ausweichflughafen"), "QP": String(localized: "Gate verlassen (OUT)"), "QQ": String(localized: "Abgehoben (OFF)"),
+                     "QR": String(localized: "Gelandet (ON)"), "QS": String(localized: "Am Gate (IN)"), "QT": String(localized: "OUT und Rückkehr zum Gate")]
         r.summary = names[m.label] ?? "OOOI"
         let airports = icaoAirports(in: m.text)
         if !airports.isEmpty { r.rows.append(.init(String(localized: "Flughäfen"), airports.joined(separator: " → "))) }
@@ -277,16 +364,21 @@ enum ACARSInterpreter {
 
     /// Positionen: „N53.80015 E009.850396“, „N5348.0E00951.0“, „53.80N 9.85E“,
     /// „N53123E009456“ (Grad + Minuten·10), auch mit Komma oder Leerzeichen.
+    /// Muster einmal übersetzt (Review 05.11.2026, U1: vorher je Aufruf neu).
+    private static let positionPatterns: [NSRegularExpression] = [
+        #"([NS])\s?(\d{1,2}\.\d+)[,\s]?([EW])\s?(\d{1,3}\.\d+)"#,                   // dezimal
+        #"([NS])(\d{2})(\d{2}\.\d+)[,\s]?([EW])(\d{3})(\d{2}\.\d+)"#,              // Grad + Minuten dezimal
+        #"([NS])(\d{2})(\d{3})[,\s]?([EW])(\d{3})(\d{3})"#,                        // Grad + Minuten·10
+        #"(\d{1,2}\.\d+)([NS])[,\s]?(\d{1,3}\.\d+)([EW])"#,
+    ].compactMap { try? NSRegularExpression(pattern: $0) }
+    private static let flightLevelPattern = try? NSRegularExpression(pattern: #"\bFL(\d{3})\b"#)
+    private static let airportPattern = try? NSRegularExpression(pattern: #"\b([EL][A-Z]{3}|K[A-Z]{3}|[BCDFGHMNOPRSTUVWYZ][A-Z]{3})\b"#)
+    private static let timePattern = try? NSRegularExpression(pattern: #"\b([01]\d|2[0-3])([0-5]\d)([0-5]\d)?\b"#)
+    private static let etaPattern = try? NSRegularExpression(pattern: #"ETA.{0,8}?(\d{4})(?!\d)"#)
+
     static func position(in text: String) -> (lat: Double, lon: Double)? {
-        let patterns = [
-            #"([NS])\s?(\d{1,2}\.\d+)[,\s]?([EW])\s?(\d{1,3}\.\d+)"#,                   // dezimal
-            #"([NS])(\d{2})(\d{2}\.\d+)[,\s]?([EW])(\d{3})(\d{2}\.\d+)"#,              // Grad + Minuten dezimal
-            #"([NS])(\d{2})(\d{3})[,\s]?([EW])(\d{3})(\d{3})"#,                        // Grad + Minuten·10
-            #"(\d{1,2}\.\d+)([NS])[,\s]?(\d{1,3}\.\d+)([EW])"#,
-        ]
-        for (index, pattern) in patterns.enumerated() {
-            guard let re = try? NSRegularExpression(pattern: pattern),
-                  let match = re.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)) else { continue }
+        for (index, re) in positionPatterns.enumerated() {
+            guard let match = re.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)) else { continue }
             func g(_ i: Int) -> String { Range(match.range(at: i), in: text).map { String(text[$0]) } ?? "" }
             var lat = 0.0, lon = 0.0, hemiLat = "N", hemiLon = "E"
             switch index {
@@ -302,7 +394,7 @@ enum ACARSInterpreter {
     }
 
     static func flightLevel(in text: String) -> Int? {
-        guard let re = try? NSRegularExpression(pattern: #"\bFL(\d{3})\b"#),
+        guard let re = flightLevelPattern,
               let match = re.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)),
               let range = Range(match.range(at: 1), in: text) else { return nil }
         return Int(text[range])
@@ -310,7 +402,7 @@ enum ACARSInterpreter {
 
     /// ICAO-Flughafencodes (vier Großbuchstaben, erster Buchstabe einer Region).
     static func icaoAirports(in text: String) -> [String] {
-        guard let re = try? NSRegularExpression(pattern: #"\b([EL][A-Z]{3}|K[A-Z]{3}|[BCDFGHMNOPRSTUVWYZ][A-Z]{3})\b"#) else { return [] }
+        guard let re = airportPattern else { return [] }
         var found: [String] = []
         for m in re.matches(in: text, range: NSRange(text.startIndex..., in: text)) {
             if let r = Range(m.range, in: text) {
@@ -324,7 +416,7 @@ enum ACARSInterpreter {
     }
 
     static func times(in text: String) -> [String] {
-        guard let re = try? NSRegularExpression(pattern: #"\b([01]\d|2[0-3])([0-5]\d)([0-5]\d)?\b"#) else { return [] }
+        guard let re = timePattern else { return [] }
         return re.matches(in: text, range: NSRange(text.startIndex..., in: text)).compactMap { m in
             Range(m.range, in: text).map { String(text[$0]) }
         }.prefix(3).map { $0.count == 6 ? hhmmss($0) + " UTC" : "\($0.prefix(2)):\($0.suffix(2)) UTC" }
@@ -332,7 +424,7 @@ enum ACARSInterpreter {
 
     static func etaTime(in text: String) -> String? {
         // „ETA 2127“, „ETA-30/2127“ (in 30 min / um 21:27): die letzte 4er-Gruppe nach ETA.
-        guard let re = try? NSRegularExpression(pattern: #"ETA.{0,8}?(\d{4})(?!\d)"#),
+        guard let re = etaPattern,
               let m = re.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)),
               let r = Range(m.range(at: 1), in: text) else { return nil }
         let t = text[r]

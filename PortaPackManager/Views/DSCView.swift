@@ -4,6 +4,7 @@ import SwiftUI
 /// Seefunk-Notruf (DSC) auf UKW-Kanal 70: Rufliste, Detailkarte, Karte für
 /// Rufe mit Position bzw. Gebiet.
 struct DSCView: View {
+    @StoredColumns("dsc.1") private var columns: TableColumnCustomization<DSCLogEntry>
     @Environment(DeviceSession.self) private var session
     @Bindable private var model = DSCModel.shared
     private var notifier: Notifier { .shared }
@@ -128,30 +129,30 @@ struct DSCView: View {
     // MARK: Liste
 
     private var table: some View {
-        Table(model.entries.sorted(by: order), selection: $selection, sortOrder: $order) {
+        Table(model.entries.sorted(by: order), selection: $selection, sortOrder: $order, columnCustomization: $columns) {
             TableColumn("Zeit", sortUsing: ColumnSort("zeit") { $0.last }) { entry in
                 Text(entry.last.formatted(date: .omitted, time: .standard)).monospacedDigit()
-            }.width(70)
+            }.width(min: 42, ideal: 70).customizationID("zeit")
             TableColumn("Art", sortUsing: ColumnSort("art", text: { $0.call.kindText })) { entry in
                 Label(entry.call.kindText, systemImage: entry.call.concernsDistress ? "sos" : "phone.arrow.up.right")
                     .foregroundStyle(Self.color(entry.call))
                     .fontWeight(entry.call.concernsDistress ? .bold : .regular)
-            }.width(min: 110, ideal: 140)
+            }.width(min: 110, ideal: 140).customizationID("art")
             TableColumn("Von", sortUsing: ColumnSort("von", text: { label($0) })) { entry in
                 Text(label(entry))
-            }.width(min: 100, ideal: 160)
+            }.width(min: 100, ideal: 160).customizationID("von")
             TableColumn("An", sortUsing: ColumnSort("an", text: { recipient($0.call) })) { entry in
                 Text(recipient(entry.call)).foregroundStyle(.secondary)
-            }.width(min: 80, ideal: 130)
+            }.width(min: 80, ideal: 130).customizationID("an")
             TableColumn("Inhalt", sortUsing: ColumnSort("inhalt", text: { summary($0.call) })) { entry in
                 Text(summary(entry.call))
-            }.width(min: 100, ideal: 200)
+            }.width(min: 100, ideal: 200).customizationID("inhalt")
             TableColumn("Position", sortUsing: ColumnSort("position", text: { $0.call.position?.text })) { entry in
                 Text(entry.call.position?.text ?? (entry.call.positionUnknown ? String(localized: "unbekannt") : "–")).font(.callout.monospacedDigit())
-            }.width(min: 80, ideal: 150)
+            }.width(min: 80, ideal: 150).customizationID("position")
             TableColumn("Wdh.", sortUsing: ColumnSort("wdh") { $0.repeats }) { entry in
                 Text("\(entry.repeats)").monospacedDigit()
-            }.width(40)
+            }.width(min: 28, ideal: 40).customizationID("wdh")
         }
         .contextMenu(forSelectionType: DSCLogEntry.ID.self) { ids in
             if let entry = model.entries.first(where: { ids.contains($0.id) }) {
@@ -197,11 +198,7 @@ struct DSCView: View {
                 ReceiverControls(model: model, device: session.hackRF)
             }
             Section(PanelSection.status) {
-                LabeledContent("Rufe", value: "\(model.entries.count)")
-                LabeledContent("Davon Notfall", value: "\(model.distressCount)")
-                LabeledContent("Korrigierte Zeichen", value: "\(model.correctedSymbols)")
-                    .help("Zeichen, die erst über die zweite Kopie (Zeitdiversität) oder das Prüfzeichen stimmten.")
-                LabeledContent("Kanal 70", value: String(format: "%.0f dBFS", model.signalDB))
+                DSCStatusRows(model: model)
             }
             Section(PanelSection.daten) {
                 CSVExportButton(fileName: "dsc-rufe", isEmpty: model.entries.isEmpty) { csvDocument() }
@@ -347,5 +344,20 @@ extension DSCView {
                          .text(e.call.position?.text ?? (e.call.positionUnknown ? String(localized: "unbekannt") : nil)),
                          .integer(e.repeats), .integer(e.corrected), .flag(e.call.isTest)]
                     })
+    }
+}
+
+/// Zähler und Pegel als eigene Ansicht: sie ändern sich mehrmals je Sekunde,
+/// und im Bedienfeld selbst gelesen zeichneten sie das ganze Formular neu –
+/// das Scrollen ruckelte (Review 05.11.2026).
+private struct DSCStatusRows: View {
+    let model: DSCModel
+
+    var body: some View {
+        LabeledContent("Rufe", value: "\(model.entries.count)")
+        LabeledContent("Davon Notfall", value: "\(model.distressCount)")
+        LabeledContent("Korrigierte Zeichen", value: "\(model.correctedSymbols)")
+            .help("Zeichen, die erst über die zweite Kopie (Zeitdiversität) oder das Prüfzeichen stimmten.")
+        LabeledContent("Kanal 70", value: String(format: "%.0f dBFS", model.signalDB))
     }
 }

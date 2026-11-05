@@ -34,11 +34,15 @@ enum WLANCRC32 {
 struct WLANFrame: Sendable, Equatable {
     enum Kind: Sendable, Equatable {
         case beacon, probeRequest, probeResponse, action, data, control, other
+        /// An- und Abmeldung (Verwaltungsrahmen 0–3, 10–12).
+        case associationRequest, associationResponse, authentication, deauthentication, disassociation
     }
 
     var type: Int
     var subtype: Int
     var kind: Kind
+    /// Zweites Byte der Rahmensteuerung (To DS, From DS, Wiederholung …).
+    var flags: UInt8 = 0
     /// Empfänger, Sender, BSSID (Verwaltungsrahmen).
     var address1: [UInt8]
     var address2: [UInt8]
@@ -73,6 +77,11 @@ struct WLANFrame: Sendable, Equatable {
         case (0, 4): kind = .probeRequest
         case (0, 5): kind = .probeResponse
         case (0, 13): kind = .action
+        case (0, 0), (0, 2): kind = .associationRequest
+        case (0, 1), (0, 3): kind = .associationResponse
+        case (0, 11): kind = .authentication
+        case (0, 12): kind = .deauthentication
+        case (0, 10): kind = .disassociation
         case (2, _): kind = .data
         default: kind = .other
         }
@@ -85,8 +94,41 @@ struct WLANFrame: Sendable, Equatable {
             if mpdu[1] & 0x80 != 0 { headerLength += 4 }
         }
         guard mpdu.count >= headerLength else { return nil }
-        return WLANFrame(type: type, subtype: subtype, kind: kind, address1: a1, address2: a2, address3: a3,
+        return WLANFrame(type: type, subtype: subtype, kind: kind, flags: mpdu[1], address1: a1, address2: a2, address3: a3,
                          sequence: sequence, body: Array(mpdu[headerLength...]))
+    }
+
+    /// Grund einer Ab- oder Ausbuchung (Deauth/Disassoc, 802.11 Tabelle 9-49).
+    var reasonCode: Int? {
+        guard kind == .deauthentication || kind == .disassociation, body.count >= 2 else { return nil }
+        return Int(body[0]) | Int(body[1]) << 8
+    }
+
+    /// Gerät und Access Point eines Rahmens, sofern eindeutig: Datenrahmen nach
+    /// To DS/From DS (Verteilnetz-Rahmen ohne beide Bits und WDS mit beiden
+    /// bleiben außen vor), Verwaltungsrahmen zur Anmeldung über die BSSID.
+    var association: (station: [UInt8], bssid: [UInt8])? {
+        let toDS = flags & 0x01 != 0, fromDS = flags & 0x02 != 0
+        let pair: ([UInt8], [UInt8])
+        switch kind {
+        case .data where toDS && !fromDS: pair = (address2, address1)
+        case .data where fromDS && !toDS: pair = (address1, address2)
+        case .associationRequest, .authentication: pair = (address2, address3)
+        case .associationResponse: pair = (address1, address3)
+        default: return nil
+        }
+        // Gruppenadressen (Bit 0 des ersten Bytes) sind kein Gerät.
+        guard let first = pair.0.first, first & 0x01 == 0, pair.0 != pair.1 else { return nil }
+        return pair
+    }
+
+    /// Element des Anmeldeassistenten WPS (0xDD 00:50:F2:04): TLVs mit 16-Bit-
+    /// Typ und -Länge, big-endian (Wi-Fi Simple Configuration 2.0).
+    var wps: WPSInfo? {
+        guard let element = elements.first(where: {
+            $0.id == 0xDD && $0.body.count >= 4 && Array($0.body[0..<4]) == [0x00, 0x50, 0xF2, 0x04]
+        }) else { return nil }
+        return WPSInfo(tlv: Array(element.body[4...]))
     }
 
     /// Informationselemente eines Beacons oder einer Probe-Antwort (nach
@@ -203,6 +245,68 @@ struct WLANFrame: Sendable, Equatable {
 
     static func mac(_ bytes: [UInt8]) -> String {
         bytes.map { String(format: "%02X", $0) }.joined(separator: ":")
+    }
+
+    /// Klartext eines häufigen Ab-/Ausbuchungsgrunds.
+    static func reasonText(_ code: Int) -> String {
+        switch code {
+        case 1: String(localized: "ohne Angabe")
+        case 2: String(localized: "Anmeldung abgelaufen")
+        case 3: String(localized: "Gerät verlässt das Netz")
+        case 4: String(localized: "Inaktivität")
+        case 5: String(localized: "Access Point überlastet")
+        case 6, 7: String(localized: "Rahmen ohne Anmeldung")
+        case 8: String(localized: "Gerät verlässt den Access Point")
+        case 15: String(localized: "Schlüsselaustausch abgelaufen")
+        case 23: String(localized: "Anmeldung (802.1X) gescheitert")
+        default: String(localized: "Grund \(code)")
+        }
+    }
+}
+
+/// Angaben aus dem WPS-Element: Router und Telefone nennen darin oft Hersteller,
+/// Modell und Gerätenamen im Klartext.
+struct WPSInfo: Sendable, Equatable {
+    var deviceName: String?
+    var manufacturer: String?
+    var model: String?
+    var modelNumber: String?
+    /// WPS-Zustand: `true` = eingerichtet (2), `false` = nicht eingerichtet (1).
+    var configured: Bool?
+
+    init?(tlv: [UInt8]) {
+        var i = 0
+        func text(_ value: ArraySlice<UInt8>) -> String? {
+            let string = String(decoding: value.filter { $0 >= 0x20 }, as: UTF8.self).trimmingCharacters(in: .whitespaces)
+            return string.isEmpty ? nil : string
+        }
+        while i + 4 <= tlv.count {
+            let type = Int(tlv[i]) << 8 | Int(tlv[i + 1]), length = Int(tlv[i + 2]) << 8 | Int(tlv[i + 3])
+            guard i + 4 + length <= tlv.count else { break }
+            let value = tlv[(i + 4)..<(i + 4 + length)]
+            switch type {
+            case 0x1011: deviceName = text(value)
+            case 0x1021: manufacturer = text(value)
+            case 0x1023: model = text(value)
+            case 0x1024: modelNumber = text(value)
+            case 0x1044 where length == 1: configured = value.first == 2
+            default: break
+            }
+            i += 4 + length
+        }
+        guard deviceName != nil || manufacturer != nil || model != nil || configured != nil else { return nil }
+    }
+
+    /// „Hersteller Modell Nummer“ bzw. der Gerätename.
+    var summary: String? {
+        let parts = [manufacturer, model, modelNumber].compactMap { $0 }
+        let device = parts.isEmpty ? nil : parts.joined(separator: " ")
+        switch (deviceName, device) {
+        case let (name?, device?) where !device.localizedCaseInsensitiveContains(name): return "\(name) (\(device))"
+        case let (_, device?): return device
+        case let (name?, nil): return name
+        default: return nil
+        }
     }
 }
 

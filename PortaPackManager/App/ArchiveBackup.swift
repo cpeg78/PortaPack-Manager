@@ -26,6 +26,7 @@ enum ArchiveBackup {
         static let adsb = "db:adsb"
         static let ais = "db:ais"
         static let sondes = "db:sonden"
+        static let acars = "db:acars"
         static let database = ArchiveDatabase.fileName
     }
 
@@ -41,7 +42,8 @@ enum ArchiveBackup {
     static func stats(root: URL, database: ArchiveDatabase = .shared) -> [ArchiveStat] {
         var result: [ArchiveStat] = []
         let summaries = try? database.sync { db in
-            (try db.sightingSummary(kind: .adsb), try db.sightingSummary(kind: .ais), try db.sondeSummary(), try db.airbandSummary())
+            (try db.sightingSummary(kind: .adsb), try db.sightingSummary(kind: .ais), try db.sondeSummary(), try db.airbandSummary(),
+             try db.acarsSummary())
         }
         func stat(_ id: String, _ summary: SQLiteConnection.Summary?) -> ArchiveStat {
             ArchiveStat(id: id, entries: summary?.entries ?? 0, distinct: summary?.distinct ?? 0, oldest: summary?.oldest, inDatabase: true)
@@ -49,6 +51,7 @@ enum ArchiveBackup {
         result.append(stat(Area.adsb, summaries?.0))
         result.append(stat(Area.ais, summaries?.1))
         result.append(stat(Area.sondes, summaries?.2))
+        result.append(stat(Area.acars, summaries?.4))
         var counted = Set<String>()
         for folder in knownFolders {
             let url = root.appendingPathComponent(folder, isDirectory: true)
@@ -185,8 +188,11 @@ enum ArchiveBackup {
         // Oberster Ordner ist der mit der Kennzeichnung.
         guard let markerURL = findMarker(in: staging) else { throw BackupError.notABackup }
         let top = markerURL.deletingLastPathComponent()
-        var result = try merge(from: top, into: root)
         let backupDB = top.appendingPathComponent(ArchiveDatabase.fileName)
+        // Datenbank zuerst prüfen: Dateien waren sonst schon kopiert, wenn sie sich
+        // als beschädigt erwies – halbe Rückspielung (Review 05.11.2026).
+        if fm.fileExists(atPath: backupDB.path) { _ = try ArchiveDatabase.inspectBackup(backupDB) }
+        var result = try merge(from: top, into: root)
         if fm.fileExists(atPath: backupDB.path) {
             result.imported += try database.merge(from: backupDB)
         }

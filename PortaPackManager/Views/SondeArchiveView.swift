@@ -5,6 +5,7 @@ import SwiftUI
 /// Sondenarchiv: alle bisher empfangenen Flüge aus den Meldungsprotokollen,
 /// mit Bahn auf der Karte und Verlauf.
 struct SondeArchiveView: View {
+    @StoredColumns("sondearchive.1") private var columns: TableColumnCustomization<SondeFlight>
     @AppStorage(ArchiveMaintenance.retentionKey) private var retention = 0
     @State private var flights: [SondeFlight] = []
     @State private var loading = true
@@ -95,34 +96,34 @@ struct SondeArchiveView: View {
     }
 
     private var table: some View {
-        Table(filtered, selection: $selection, sortOrder: $order) {
+        Table(filtered, selection: $selection, sortOrder: $order, columnCustomization: $columns) {
             TableColumn("Datum", sortUsing: ColumnSort("datum") { $0.first }) { f in
                 Text(f.first.formatted(.dateTime.day().month().year().hour().minute())).monospacedDigit()
-            }.width(min: 110, ideal: 130)
+            }.width(min: 110, ideal: 130).customizationID("datum")
             TableColumn("Seriennr.", sortUsing: ColumnSort("serie", text: { $0.serial })) { f in
                 Text(f.serial).font(.body.monospaced())
-            }.width(min: 80, ideal: 95)
-            TableColumn("Typ", sortUsing: ColumnSort("typ", text: { $0.type })) { Text($0.type) }.width(50)
+            }.width(min: 80, ideal: 95).customizationID("seriennr")
+            TableColumn("Typ", sortUsing: ColumnSort("typ", text: { $0.type })) { Text($0.type) }.width(min: 30, ideal: 50).customizationID("typ")
             TableColumn("Gipfel", sortUsing: ColumnSort("gipfel") { $0.peak?.altitude }) { f in
                 Text(f.peak?.altitude.map { "\(($0 / 1000).formatted(.number.precision(.fractionLength(1)))) km" } ?? "–").monospacedDigit()
                     .foregroundStyle(f.burst ? .primary : .secondary)
                     .help(f.burst ? "Geplatzt und im Sinkflug gehört" : "Nur im Aufstieg gehört")
-            }.width(60)
+            }.width(min: 36, ideal: 60).customizationID("gipfel")
             TableColumn("Dauer", sortUsing: ColumnSort("dauer") { $0.duration }) { f in
                 Text(Self.duration(f.duration)).monospacedDigit()
-            }.width(55)
+            }.width(min: 33, ideal: 55).customizationID("dauer")
             TableColumn("Strecke", sortUsing: ColumnSort("strecke") { $0.distanceKm }) { f in
                 Text(f.distanceKm.map { "\(($0).formatted(.number.precision(.fractionLength(0)))) km" } ?? "–").monospacedDigit()
-            }.width(60)
+            }.width(min: 36, ideal: 60).customizationID("strecke")
             TableColumn("Tiefst", sortUsing: ColumnSort("temp") { $0.minTemperature }) { f in
                 Text(f.minTemperature.map { "\(($0).formatted(.number.precision(.fractionLength(0)))) °C" } ?? "–").monospacedDigit()
-            }.width(55)
+            }.width(min: 33, ideal: 55).customizationID("tiefst")
             TableColumn("MHz", sortUsing: ColumnSort("mhz") { $0.frequencyMHz }) { f in
                 Text(f.frequencyMHz.map { "\(($0).formatted(.number.precision(.fractionLength(3))))" } ?? "–").monospacedDigit()
-            }.width(60)
+            }.width(min: 36, ideal: 60).customizationID("mhz")
             TableColumn("Meldungen", sortUsing: ColumnSort("meldungen") { $0.samples.count }) { f in
                 Text("\(f.samples.count)").monospacedDigit()
-            }.width(70)
+            }.width(min: 42, ideal: 70).customizationID("meldungen")
         }
         .contextMenu(forSelectionType: SondeFlight.ID.self) { ids in
             if let id = ids.first, let flight = flights.first(where: { $0.id == id }) {

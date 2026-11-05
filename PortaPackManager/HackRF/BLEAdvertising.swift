@@ -236,16 +236,63 @@ enum BLEInterpreter {
                 BLEReading(label: String(localized: "Pegel in 1 m"), value: "\(Int8(bitPattern: data[22])) dBm"),
             ])
         case 0x05: return Result(kind: "Apple AirDrop")
-        case 0x07: return Result(kind: "Apple AirPods/Beats")
+        case 0x07: return airPods(data)
         case 0x09: return Result(kind: String(localized: "Apple AirPlay-Ziel"))
         case 0x0A: return Result(kind: String(localized: "Apple AirPlay-Quelle"))
         case 0x0C: return Result(kind: "Apple Handoff")
         case 0x0D, 0x0E: return Result(kind: "Apple Hotspot")
         case 0x0F: return Result(kind: "Apple Nearby Action")
         case 0x10: return Result(kind: String(localized: "Apple-Gerät (Nearby Info)"))
-        case 0x12: return Result(kind: String(localized: "Apple „Wo ist?“ (AirTag o. ä.)"))
+        case 0x12:
+            // „Wo ist?“-Bake: Statusbyte Bits 6–7 = Akkustand (0 voll … 3 fast leer).
+            var readings: [BLEReading] = []
+            if data.count >= 3 {
+                let levels = [String(localized: "voll"), String(localized: "mittel"), String(localized: "schwach"), String(localized: "fast leer")]
+                readings.append(BLEReading(label: String(localized: "Akku"), value: levels[Int(data[2] >> 6)]))
+            }
+            return Result(kind: String(localized: "Apple „Wo ist?“ (AirTag o. ä.)"), readings: readings)
         default: return Result(kind: "Apple")
         }
+    }
+
+    /// AirPods/Beats („Proximity Pairing“, Typ 0x07; nach furiousMAC/continuity):
+    /// 01 · Modell (2) · Status · Akku beider Hörer (je ein Halbbyte, 0–10 = ×10 %,
+    /// 15 = unbekannt) · Ladeflags (hohes Halbbyte) und Etui-Akku (niedriges).
+    private static func airPods(_ d: [UInt8]) -> Result {
+        guard d.count >= 8, d[2] == 0x01 else { return Result(kind: "Apple AirPods/Beats") }
+        let models: [UInt16: String] = [
+            0x0220: "AirPods", 0x0F20: "AirPods (2. Gen.)", 0x1320: "AirPods (3. Gen.)", 0x1920: "AirPods 4",
+            0x0E20: "AirPods Pro", 0x1420: "AirPods Pro 2", 0x2420: "AirPods Pro 2 (USB-C)", 0x0A20: "AirPods Max",
+            0x0520: "BeatsX", 0x0620: "Beats Solo³", 0x0B20: "Powerbeats Pro", 0x0C20: "Beats Solo Pro",
+            0x1020: "Beats Flex", 0x1120: "Beats Studio Buds", 0x1220: "Beats Fit Pro",
+        ]
+        let model = UInt16(d[3]) << 8 | UInt16(d[4])
+        func level(_ nibble: UInt8) -> String? { nibble <= 10 ? "\(Int(nibble) * 10) %" : nil }
+        var readings: [BLEReading] = []
+        let pods = [level(d[6] >> 4), level(d[6] & 0x0F)].compactMap { $0 }
+        if !pods.isEmpty { readings.append(BLEReading(label: String(localized: "Hörer"), value: pods.joined(separator: " / "))) }
+        if let box = level(d[7] & 0x0F) { readings.append(BLEReading(label: String(localized: "Etui"), value: box)) }
+        if d[7] & 0x70 != 0 { readings.append(BLEReading(label: String(localized: "Lädt"), value: String(localized: "ja"))) }
+        return Result(kind: models[model] ?? "Apple AirPods/Beats", readings: readings)
+    }
+
+    /// SwitchBot (Dienstdaten 0xFD3D bzw. alt 0x0D00): Gerätezeichen im ersten
+    /// Byte; Thermometer (T, w, i): Akku, Temperatur (Ganzzahl + Zehntel, Bit 7 =
+    /// positiv), Feuchte – wie pySwitchbot.
+    static func switchBot(_ d: [UInt8]) -> Result {
+        guard let first = d.first else { return Result(kind: "SwitchBot") }
+        let names: [UInt8: String] = [
+            0x54: "SwitchBot Meter", 0x77: "SwitchBot Meter Plus", 0x69: "SwitchBot Outdoor Meter",
+            0x48: "SwitchBot Bot", 0x63: "SwitchBot Curtain", 0x64: String(localized: "SwitchBot Kontaktsensor"),
+            0x73: String(localized: "SwitchBot Bewegungsmelder"), 0x67: "SwitchBot Plug", 0x6F: "SwitchBot Lock",
+        ]
+        let type = first & 0x7F
+        let kind = names[type] ?? "SwitchBot"
+        guard [0x54, 0x77, 0x69].contains(type), d.count >= 6 else { return Result(kind: kind) }
+        let magnitude = Double(d[4] & 0x7F) + Double(d[3] & 0x0F) / 10
+        return Result(kind: kind, readings: [
+            temperature(d[4] & 0x80 != 0 ? magnitude : -magnitude), humidity(Double(d[5] & 0x7F)), battery(Int(d[2] & 0x7F)),
+        ])
     }
 
     /// RuuviTag, Datenformat 5 (RAWv2) und 3 (RAWv1).
@@ -292,6 +339,7 @@ enum BLEInterpreter {
         case 0x181A: return environmental(d)
         case 0xFCD2: return bthome(d)
         case 0xFEAA: return eddystone(d)
+        case 0xFD3D, 0x0D00: return switchBot(d)
         case 0x180F where d.count == 1: return Result(kind: nil, readings: [battery(Int(d[0]))])
         default: return serviceNames[uuid].map { Result(kind: $0) }
         }
@@ -325,7 +373,22 @@ enum BLEInterpreter {
         var index = 1
         while index < d.count {
             let id = d[index]
-            guard let object = bthomeObjects[id] else { break }
+            // Text (0x53) und Rohdaten (0x54): Länge im ersten Byte.
+            if id == 0x53 || id == 0x54, index + 1 < d.count {
+                let length = Int(d[index + 1])
+                guard index + 2 + length <= d.count else { break }
+                let bytes = Array(d[(index + 2)..<(index + 2 + length)])
+                readings.append(id == 0x53
+                    ? BLEReading(label: String(localized: "Text"), value: String(decoding: bytes, as: UTF8.self))
+                    : BLEReading(label: String(localized: "Rohdaten"), value: bytes.map { String(format: "%02X", $0) }.joined()))
+                index += 2 + length
+                continue
+            }
+            // Unbekannte Objekt-ID: Länge unbekannt, der Rest ist nicht lesbar – sagen statt verschweigen.
+            guard let object = bthomeObjects[id] else {
+                readings.append(BLEReading(label: String(localized: "Weitere Daten"), value: String(format: String(localized: "Objekt 0x%02X"), id)))
+                break
+            }
             guard index + 1 + object.size <= d.count else { break }
             var raw = 0
             for k in 0..<object.size { raw |= Int(d[index + 1 + k]) << (8 * k) }
@@ -333,7 +396,14 @@ enum BLEInterpreter {
             index += 1 + object.size
             guard !object.label.isEmpty else { continue }
             let value: String
-            if object.binary {
+            if id == 0x50 {
+                value = Date(timeIntervalSince1970: Double(raw)).formatted(date: .abbreviated, time: .standard)
+            } else if id == 0xF1 || id == 0xF2 {
+                // Firmware: Bytes vom höchsten zum niedrigsten, durch Punkte getrennt.
+                value = (0..<object.size).reversed().map { String(raw >> (8 * $0) & 0xFF) }.joined(separator: ".")
+            } else if id == 0xF0 {
+                value = String(format: "0x%04X", raw)
+            } else if object.binary {
                 value = raw != 0 ? String(localized: "ja") : String(localized: "nein")
             } else {
                 let scaled = Double(raw) * object.factor
@@ -390,6 +460,32 @@ enum BLEInterpreter {
             0x48: BTHomeObject(size: 2, label: String(localized: "Volumen"), unit: "ml"),
             0x49: BTHomeObject(size: 2, factor: 0.001, label: String(localized: "Durchfluss"), unit: "m³/h"),
             0x4A: BTHomeObject(size: 2, factor: 0.1, label: String(localized: "Spannung"), unit: "V"),
+            // BTHome v2, Stand 2024 (bthome.io/format).
+            0x07: BTHomeObject(size: 2, factor: 0.01, label: String(localized: "Gewicht"), unit: "lb"),
+            0x3C: BTHomeObject(size: 2, label: String(localized: "Dimmer")),
+            0x4B: BTHomeObject(size: 3, factor: 0.001, label: String(localized: "Gas"), unit: "m³"),
+            0x4C: BTHomeObject(size: 4, factor: 0.001, label: String(localized: "Gas"), unit: "m³"),
+            0x4D: BTHomeObject(size: 4, factor: 0.001, label: String(localized: "Energie"), unit: "kWh"),
+            0x4E: BTHomeObject(size: 4, factor: 0.001, label: String(localized: "Volumen"), unit: "l"),
+            0x4F: BTHomeObject(size: 4, factor: 0.001, label: String(localized: "Wasser"), unit: "l"),
+            0x50: BTHomeObject(size: 4, label: String(localized: "Zeitstempel")),
+            0x51: BTHomeObject(size: 2, factor: 0.001, label: String(localized: "Beschleunigung"), unit: "m/s²"),
+            0x52: BTHomeObject(size: 2, factor: 0.001, label: String(localized: "Drehrate"), unit: "°/s"),
+            0x55: BTHomeObject(size: 4, factor: 0.001, label: String(localized: "Füllmenge"), unit: "l"),
+            0x56: BTHomeObject(size: 2, label: String(localized: "Leitfähigkeit"), unit: "µS/cm"),
+            0x57: BTHomeObject(size: 1, label: String(localized: "Temperatur"), unit: "°C", signed: true),
+            0x58: BTHomeObject(size: 1, factor: 0.35, label: String(localized: "Temperatur"), unit: "°C", signed: true),
+            0x59: BTHomeObject(size: 1, label: String(localized: "Zähler"), signed: true),
+            0x5A: BTHomeObject(size: 2, label: String(localized: "Zähler"), signed: true),
+            0x5B: BTHomeObject(size: 4, label: String(localized: "Zähler"), signed: true),
+            0x5C: BTHomeObject(size: 4, factor: 0.01, label: String(localized: "Leistung"), unit: "W", signed: true),
+            0x5D: BTHomeObject(size: 2, factor: 0.001, label: String(localized: "Strom"), unit: "A", signed: true),
+            0x5E: BTHomeObject(size: 2, factor: 0.01, label: String(localized: "Windrichtung"), unit: "°"),
+            0x5F: BTHomeObject(size: 2, factor: 0.1, label: String(localized: "Niederschlag"), unit: "mm"),
+            0x60: BTHomeObject(size: 1, label: String(localized: "Kanal")),
+            0xF0: BTHomeObject(size: 2, label: String(localized: "Gerätetyp")),
+            0xF1: BTHomeObject(size: 4, label: "Firmware"),
+            0xF2: BTHomeObject(size: 3, label: "Firmware"),
         ]
         // Binärsensoren (je ein Byte).
         let binary: [UInt8: String] = [

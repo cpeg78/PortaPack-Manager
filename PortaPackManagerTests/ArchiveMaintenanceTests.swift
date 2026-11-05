@@ -66,7 +66,7 @@ struct ArchiveMaintenanceTests {
         #expect(Set(adsb.map(\.id)) == ["A-0", "A-1", "B-1"])
         #expect(adsb.first { $0.id == "A-1" }?.track == [[53.5, 10.0], [53.6, 10.1, 9000]])
         #expect(try db.database.sync { try $0.sightingDays(kind: .adsb) } == ["2026-10-28", "2026-10-27"])
-        #expect(SondeArchive.load(database: db.database).map(\.serial).sorted() == ["V3051090"])   // X1111111 hat nur eine Meldung
+        #expect(SondeArchive.load(database: db.database, minimum: 2).map(\.serial).sorted() == ["V3051090"])   // X1111111 hat nur eine Meldung
         #expect(SondeArchive.windowCount(database: db.database) == 1)
         #expect(AirbandLog(folder: root.appendingPathComponent("Flugfunk"), database: db.database).load().map(\.name) == ["Turm"])
 
@@ -133,9 +133,33 @@ struct ArchiveMaintenanceTests {
         let extra = "2026-10-28T10:47:05Z;RS41;X1111111;8;402.500;53.7;10.2;905;3.7;7.2;89;;;2.9"
         try db.database.sync { try $0.insertSondeRows(SondeArchive.parse(SondeLog.header + (Self.sondeLines + [extra]).joined(separator: "\n")), window: "w") }
         #expect(SondeArchive.delete(serial: "V3051090", database: db.database) == 2)
-        let flights = SondeArchive.load(database: db.database)
+        let flights = SondeArchive.load(database: db.database, minimum: 2)
         #expect(flights.map(\.serial) == ["X1111111"])
         #expect(flights.first?.samples.count == 2)
-        #expect(SondeArchive.recent(limit: 5, database: db.database).map(\.serial) == ["X1111111"])
+        #expect(SondeArchive.recent(limit: 5, database: db.database, minimum: 2).map(\.serial) == ["X1111111"])
+    }
+
+    @Test("Sondenarchiv: kurze Flüge fallen weg, sobald sie ruhen")
+    func shortSondeFlights() throws {
+        let db = TestDatabase()
+        defer { db.remove() }
+        let start = Date(timeIntervalSince1970: 1_793_000_000)
+        func rows(_ serial: String, count: Int, from: Date) -> [SondeArchive.Row] {
+            (0..<count).map { i in
+                SondeArchive.Row(serial: serial, type: "RS41", sample: SondeSample(
+                    date: from.addingTimeInterval(Double(i)), latitude: 53.6, longitude: 10.1, altitude: 500 + Double(i) * 5))
+            }
+        }
+        // Ein Zufallstreffer (3 Meldungen), ein ganzer Flug, ein kurzer, der gerade läuft.
+        let now = start.addingTimeInterval(12 * 3600)
+        try db.database.sync { db in
+            try db.insertSondeRows(rows("KURZ0001", count: 3, from: start)
+                + rows("LANG0001", count: SondeArchive.minimumSamples, from: start)
+                + rows("LIVE0001", count: 5, from: now.addingTimeInterval(-60)), window: "w")
+        }
+        #expect(SondeArchive.load(database: db.database).map(\.serial) == ["LANG0001"])
+        #expect(SondeArchive.recent(limit: 5, database: db.database).map(\.serial) == ["LANG0001"])
+        #expect(ArchiveMaintenance.pruneShortSondeFlights(database: db.database, now: now) == 3)
+        #expect(SondeArchive.load(database: db.database, minimum: 1).map(\.serial) == ["LIVE0001", "LANG0001"])
     }
 }

@@ -1,6 +1,7 @@
 import SwiftUI
 
 struct PagerView: View {
+    @StoredColumns("pager.1") private var columns: TableColumnCustomization<PagerMessage>
     @Environment(DeviceSession.self) private var session
     /// Lebt im `ReceiverStore` – überlebt den Seitenwechsel samt laufendem Empfang.
     @Bindable private var model = ReceiverStore.shared.pager
@@ -36,16 +37,16 @@ struct PagerView: View {
     }
 
     private var table: some View {
-        Table(filtered.sorted(by: order), selection: $selection, sortOrder: $order) {
+        Table(filtered.sorted(by: order), selection: $selection, sortOrder: $order, columnCustomization: $columns) {
             TableColumn("Zeit", sortUsing: ColumnSort("zeit") { $0.date }) {
                 Text($0.date, format: .dateTime.hour().minute().second()).monospacedDigit()
-            }.width(70)
+            }.width(min: 42, ideal: 70).customizationID("zeit")
             TableColumn("RIC", sortUsing: ColumnSort("ric") { Int($0.ric) }) {
                 Text(String($0.ric)).font(.body.monospaced())
-            }.width(min: 60, ideal: 75)
-            TableColumn("Fkt.", sortUsing: ColumnSort("funktion", text: { $0.functionLetter })) { Text($0.functionLetter) }.width(32)
-            TableColumn("Bd", sortUsing: ColumnSort("baud") { $0.bitRate }) { Text("\($0.bitRate)").monospacedDigit() }.width(42)
-            TableColumn("Art", sortUsing: ColumnSort("art", text: { $0.kind.title })) { Text($0.kind.title) }.width(60)
+            }.width(min: 60, ideal: 75).customizationID("ric")
+            TableColumn("Fkt.", sortUsing: ColumnSort("funktion", text: { $0.functionLetter })) { Text($0.functionLetter) }.width(min: 28, ideal: 32).customizationID("fkt")
+            TableColumn("Bd", sortUsing: ColumnSort("baud") { $0.bitRate }) { Text("\($0.bitRate)").monospacedDigit() }.width(min: 28, ideal: 42).customizationID("bd")
+            TableColumn("Art", sortUsing: ColumnSort("art", text: { $0.kindTitle })) { Text($0.kindTitle) }.width(min: 36, ideal: 60).customizationID("art")
             TableColumn("Inhalt") { message in
                 HStack(spacing: 4) {
                     if message.incomplete {
@@ -59,10 +60,10 @@ struct PagerView: View {
                     Text(message.text(german: germanCharset).replacingOccurrences(of: "\n", with: " ⏎ "))
                         .lineLimit(1)
                 }
-            }
+            }.customizationID("inhalt")
             TableColumn("Korr.", sortUsing: ColumnSort("korrektur") { $0.correctedBits }) {
                 Text($0.correctedBits == 0 ? "–" : "\($0.correctedBits)").monospacedDigit().foregroundStyle(.secondary)
-            }.width(40)
+            }.width(min: 28, ideal: 40).customizationID("korr")
         }
         .contextMenu(forSelectionType: PagerMessage.ID.self) { ids in
             if let message = model.messages.first(where: { ids.contains($0.id) }) {
@@ -84,7 +85,7 @@ struct PagerView: View {
         ScrollView {
             if let id = selection, let message = model.messages.first(where: { $0.id == id }) {
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("RIC \(message.ric) · Funktion \(message.functionLetter) · \(message.bitRate) Bd · \(message.kind.title)")
+                    Text("RIC \(message.ric) · Funktion \(message.functionLetter) · \(message.bitRate) Bd · \(message.kindTitle)")
                         .font(.caption).foregroundStyle(.secondary)
                     Text(message.kind == .tone ? String(localized: "(Nur-Ton-Ruf ohne Inhalt)") : message.text(german: germanCharset))
                         .font(.body.monospaced())
@@ -115,7 +116,7 @@ struct PagerView: View {
                 // DAPNET ist der Normalfall – die Frequenz von Hand nur für Fortgeschrittene.
                 LabeledContent("Frequenz", value: abs(frequencyMHz - PagerModel.dapnetMHz) < 0.0001
                                ? String(localized: "DAPNET (439,9875 MHz)") : String(format: "%.4f MHz", frequencyMHz))
-                DisclosureGroup("Andere Frequenz") {
+                FoldOut("Andere Frequenz") {
                     LabeledContent("MHz") {
                         FrequencyField(mhz: frequencyMHz, decimals: 4) {
                             frequencyMHz = $0
@@ -136,10 +137,7 @@ struct PagerView: View {
                 ReceiverControls(model: model, device: session.hackRF)
             }
             Section(PanelSection.status) {
-                LabeledContent("Nachrichten", value: "\(model.messageCount)")
-                LabeledContent("Synchron", value: model.lockedRates.isEmpty ? "–" : model.lockedRates.map { "\($0) Bd" }.joined(separator: ", "))
-                    .help("Übertragungsgeschwindigkeit (Baud), auf die der Empfänger gerade eingerastet ist.")
-                LabeledContent("Kanalpegel", value: String(format: "%.0f dBFS", model.signalDB))
+                PagerStatusRows(model: model)
             }
             FrequencyMemorySection(page: .pager, currentMHz: frequencyMHz) { entry in
                 frequencyMHz = entry.mhz
@@ -171,8 +169,22 @@ extension PagerView {
     func csvDocument() -> CSVDocument {
         CSVDocument(header: ["zeit", "ric", "funktion", "baud", "art", "inhalt", "korrigierte_bits", "unvollstaendig", "ric_unsicher"],
                     rows: model.messages.map { m in
-                        [.date(m.date), .integer(Int(m.ric)), .text(m.functionLetter), .integer(m.bitRate), .text(m.kind.title),
+                        [.date(m.date), .integer(Int(m.ric)), .text(m.functionLetter), .integer(m.bitRate), .text(m.kindTitle),
                          .text(m.text(german: germanCharset)), .integer(m.correctedBits), .flag(m.incomplete), .flag(m.uncertain)]
                     })
+    }
+}
+
+/// Zähler und Pegel als eigene Ansicht: sie ändern sich mehrmals je Sekunde,
+/// und im Bedienfeld selbst gelesen zeichneten sie das ganze Formular neu –
+/// das Scrollen ruckelte (Review 05.11.2026).
+private struct PagerStatusRows: View {
+    let model: PagerModel
+
+    var body: some View {
+        LabeledContent("Nachrichten", value: "\(model.messageCount)")
+        LabeledContent("Synchron", value: model.lockedRates.isEmpty ? "–" : model.lockedRates.map { "\($0) Bd" }.joined(separator: ", "))
+            .help("Übertragungsgeschwindigkeit (Baud), auf die der Empfänger gerade eingerastet ist.")
+        LabeledContent("Kanalpegel", value: String(format: "%.0f dBFS", model.signalDB))
     }
 }

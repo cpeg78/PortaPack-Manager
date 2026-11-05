@@ -20,9 +20,13 @@ enum FirmwareImage {
         case tooSmall(Int)
         case tooLarge(size: Int, capacity: Int)
         case implausibleVectorTable(String)
+        /// Gerät meldet eine andere Hardware als die gewählte (Board-ID vs. Typ).
+        case boardMismatch(reported: String, chosen: String)
 
         var errorDescription: String? {
             switch self {
+            case let .boardMismatch(reported, chosen):
+                String(localized: "Das Gerät meldet „\(reported)“, gewählt ist „\(chosen)“. Eine Firmware für die falsche Hardware würde das Gerät unbrauchbar machen – es wurde nichts geschrieben. Gerätetyp oben prüfen.")
             case let .tooSmall(size):
                 String(localized: "Die Firmware-Datei ist mit \(size) Bytes zu klein (mindestens \(FirmwareImage.minimumSize / 1024) KiB) – vermutlich abgeschnitten. Es wurde nichts geschrieben.")
             case let .tooLarge(size, capacity):
@@ -40,6 +44,19 @@ enum FirmwareImage {
         0x1008_0000...0x1009_2000,   // lokales SRAM 72 KiB
         0x2000_0000...0x2001_0000,   // AHB-SRAM 64 KiB
     ]
+
+    /// Passt der gewählte Gerätetyp zur Board-ID des HackRF? `nil` bei unbekannter
+    /// ID (nicht blockieren), sonst die Antwort. Board-ID 2/4 = HackRF One
+    /// (alt/neu), 5 = HackRF Pro. Im Rettungsweg stammt der Typ aus der
+    /// Nutzerwahl – nur die Kapazität zu prüfen ließ ein One-Abbild (1 MiB) in
+    /// einen Pro (4 MiB) schreiben (Review 05.11.2026).
+    static func boardMatches(boardID: UInt8, type: DeviceType) -> Bool? {
+        switch boardID {
+        case 2, 4: type == .hackrf
+        case 5: type == .hpro
+        default: nil
+        }
+    }
 
     /// Prüft Größe und Vektortabelle. `capacity` = Größe des SPI-Flashs.
     static func validate(_ image: Data, capacity: Int? = nil) throws {

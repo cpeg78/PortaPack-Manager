@@ -175,6 +175,28 @@ struct ZigbeeTests {
         #expect(ZCL.clusterCommand(cluster: 0x0102, command: 0x05, payload: [40]) == "Rollladen auf 40 % zu")
     }
 
+    @Test("Zähler und Strommessung mit den Faktoren des Geräts, Aqara-Cluster 0xFCC0")
+    func zclFactors() throws {
+        // Leseantwort 0x0B04: Spannung 0x0505 = 2301, Divisor 0x0601 = 10, Multiplikator 0x0600 = 1.
+        let read: [UInt8] = [0x18, 0x21, 0x01,
+                             0x05, 0x05, 0x00, 0x21, 0xFD, 0x08,     // RMS-Spannung uint16 2301
+                             0x00, 0x06, 0x00, 0x21, 0x01, 0x00,     // Multiplikator 1
+                             0x01, 0x06, 0x00, 0x21, 0x0A, 0x00]     // Divisor 10
+        let message = try #require(ZCLMessage.parse(read, cluster: 0x0B04))
+        #expect(message.readings == ["2301 V"])                       // ohne Faktoren wie bisher
+        let factors = ZCL.factors(in: message.attributes, cluster: 0x0B04)
+        #expect(factors.count == 2)
+        #expect(message.readings(cluster: 0x0B04, factors: factors) == ["230.1 V"])
+        // Zähler: Summe 123456 bei Divisor 1000 → 123,456 kWh; Leistung 1500 bei Divisor 1000 → 1,5 kW.
+        let meter: [UInt16: Int64] = [0x0302: 1000]
+        let meterFactors = Dictionary(uniqueKeysWithValues: meter.map { (ZCL.factorKey(cluster: 0x0702, attribute: $0.key), $0.value) })
+        #expect(ZCL.describe(cluster: 0x0702, (0x0000, .int(123_456)), factors: meterFactors) == "Zähler 123.456 kWh")
+        #expect(ZCL.describe(cluster: 0x0702, (0x0400, .int(1500)), factors: meterFactors) == "1500 W")
+        // Aqara: derselbe TLV-Block wie 0xFF01, als 0x00F7 im Herstellercluster.
+        let xiaomi: [UInt8] = [0x01, 0x21, 0x64, 0x0B, 0x03, 0x28, 0x19]
+        #expect(ZCL.describe(cluster: 0xFCC0, (0x00F7, .raw(xiaomi))) == "Batterie 2.92 V, Gerät 25 °C")
+    }
+
     @Test("Netzwerkschlüssel aus dem Transport-Key gewinnen (Beitritt)")
     func recoverNetworkKey() throws {
         let tclk = ZigbeeAPSSecurity.defaultTrustCenterLinkKey

@@ -466,7 +466,9 @@ struct FirmwareView: View {
     }
 
     private var canInstall: Bool {
-        guard selectedSource != nil, !session.busy else { return false }
+        // `progress` ist beobachtet (`isRunning` nicht): sonst stand die
+        // Installation minutenlang hinter der laufenden Übertragung (Review 05.11.2026).
+        guard selectedSource != nil, !session.busy, SDTransfer.shared.progress == nil else { return false }
         // Auch eine lokale Datei braucht den Typ – für die Prüfung der Abbildgröße.
         guard deviceType != nil else { return false }
         switch method {

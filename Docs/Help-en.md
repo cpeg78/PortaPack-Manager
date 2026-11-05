@@ -95,6 +95,12 @@ arrows on tracks thin out as you zoom out and come back as you zoom in. The map
 tiles need an internet connection; only the visible map area goes to
 OpenStreetMap, never received data.
 
+### Tables
+
+Click a column header to sort. **Right-click a column header** to hide or show
+columns; drag a header to move a column and its divider to resize it. The app
+remembers this per table. Spare width is shared among all columns.
+
 ### Keyboard and Input
 
 - **Space** starts and stops reception on every receiver page (Radio and DAB+:
@@ -216,7 +222,8 @@ that's normal.
 
 FM with **station names, radio text (RDS)** and stereo, plus AM, narrowband
 FM (e.g. airband 118–137 MHz in AM) and, for amateur radio, **SSB (USB/LSB)** and
-**Morse (CW)**.
+**Morse (CW)**. If a station tags artist and title (RadioText+),
+“♪ Artist – Title” replaces the radio text.
 
 - **Play/Stop** at the top of the Controls panel (space bar).
 - Change the frequency in the large display on the left: digits with the scroll
@@ -259,6 +266,15 @@ Digital radio in top quality, with radio text (title, artist).
 - Above the list, choose **By Ensemble** or **By Name**.
 - The status line tells you how good reception is; individual values are under
   “Status”.
+- If the station tags artist and title (DL Plus), “♪ Artist – Title” appears
+  above the radio text – on the phone too, including its lock screen.
+- If the station sends pictures (slideshow: logo, cover art, news image), they
+  appear in the control panel below the station name.
+- If the station reports where else the programme runs, “Also in:” (other DAB
+  ensembles with channel) and “Also on FM:” with the frequencies appear below.
+- If the ensemble carries a programme guide, the **Programme** section shows
+  the current show (with description) and the next ones. It fills after one or
+  two minutes – the guide is sent in a loop.
 - **Record audio** (Data & Export) records the current station in stereo; the
   file name contains station and time.
 
@@ -305,6 +321,14 @@ route and photo.
 - **Archive …** – all sightings per day or across all days, with track and
   photo, exportable as CSV. Click a column header to sort.
 - For distance and bearing, the app needs your location (Settings ▸ Location).
+- **Squawk and emergency:** the “Squawk” column shows the transponder code.
+  If an aircraft reports an emergency – or sends 7700 (emergency), 7600
+  (radio failure) or 7500 (hijack) – it is shown in red and the app sends a
+  notification (can be switched off under Settings ▸ Notifications).
+- If an aircraft sends what its **autopilot** is flying, the info card shows
+  selected altitude, selected heading, the pressure setting (QNH) and the
+  active modes (LNAV, VNAV, approach …), plus ADS-B version and how accurate
+  its position is.
 
 Range: indoors often just a few kilometers, with an outdoor antenna 100 km and
 more.
@@ -329,6 +353,9 @@ times, controller clearances (CPDLC).
 - Under **Display ▸ Sorting**, **Important First** moves controller messages
   and positions to the top, **By Aircraft** groups the messages of one
   aircraft. Filters hide empty acknowledgements and ATN traffic.
+- All messages go into the **archive**. With **Search the archive too**, the
+  search field under “Display” also finds older ones (gray, with date) – by
+  words in the text, registration or flight number.
 
 <a id="ais"></a>
 ## Ships (AIS)
@@ -340,6 +367,12 @@ Ships on the map with name, type, destination, arrival time and photo.
 - Turn tracks on under “Display”, photos from the web (Wikimedia Commons) under
   **Settings ▸ Online Services**.
 - **Archive …** works like for aircraft.
+- **Rescue aircraft** (SAR) appear with an aircraft symbol and altitude,
+  **emergency beacons** (AIS-SART, man overboard, EPIRB) with an SOS symbol. If
+  a beacon sends “active” instead of “test”, it is shown in red and the app
+  sends a notification (Settings ▸ Notifications ▸ “Distress at sea”).
+- **Safety messages** (plain-text warnings, to all or to one ship) appear in
+  the side panel as soon as one arrives.
 
 <a id="aprs"></a>
 ## Radio Amateurs (APRS)
@@ -424,7 +457,20 @@ itself and listens to up to four sondes at once.
   Schedule** catch the balloons automatically.
 - **History** below the map and list: altitude, climb rate, temperature and
   humidity of the selected sonde over time, plus the **Profile** (temperature
-  and humidity over altitude, ascent only).
+  and humidity over altitude, ascent only) and the **Wind**: the sonde drifts
+  with the wind, so its speed and course show how fast and from where it blows
+  at each altitude. The wind profile is also shown in Remote Access.
+- **Whatever else the sonde reports** appears in the list as soon as it
+  arrives – for sondes that don't send it, the field stays empty: **pressure**
+  (only the RS41-SGP has a pressure sensor), number of **GPS satellites**, the
+  exact **model**, a **shutdown countdown** (some sondes switch off after a set
+  time) and **extra instruments** such as ozonesondes. Hover over “More” for
+  all details (firmware, configured frequency, humidity sensor temperature …).
+  The history then adds a pressure chart and the profile the **ozone cell
+  current** over altitude; the header shows what percentage of frames you
+  received. **Humidity** uses the manufacturer's method (with the temperature
+  of the heated sensor and the pressure) after about a minute; before that it
+  is an approximation.
 - **Landing estimate** roughly shows where the balloon will come down during
   descent. For recovery, the predictions on SondeHub are more accurate.
 - **Archive …**: all flights received so far with peak altitude, duration and
@@ -432,7 +478,9 @@ itself and listens to up to four sondes at once.
   SondeHub” opens it there. **Delete** (button, right-click or the Delete key)
   removes a flight after asking; a flight that is still being received can only
   be deleted afterwards. Every report recorded by the Reception Schedule goes
-  into the archive.
+  into the archive. Flights with fewer than 100 reports (a sonde heard only
+  briefly at the edge of range) are hidden and deleted once nothing has been
+  heard from them for six hours.
 - If you know the frequency of a sonde the scan doesn't find, you can **pin**
   it under “Channels”.
 - If a constant interferer at your location keeps taking a scan slot, add it in
@@ -477,6 +525,9 @@ devices on 433 and 868 MHz. Most of them transmit every 30–60 seconds.
   then **Start**.
 - Under **Display** you can search by model, ID or value, sort, and hide
   **Tire pressure (TPMS)** – the sensors of passing cars (hidden at first).
+  Pressure and temperature are shown for sensors in the Toyota format (Toyota,
+  Lexus and others); other makers encode their values differently, so you only
+  see the ID and raw data.
 
 <a id="ble"></a>
 ## Bluetooth Devices
@@ -529,6 +580,11 @@ management frames for Wireshark.
 - Choose the **mode** at the top: measure occupancy or capture frames, then
   **Start**.
 - Save captured frames under “Data & Export” with **Save PCAP …**.
+- In **Frames** mode, the device list shows which network a device is
+  connected to and – where routers or phones reveal it via WPS – maker, model
+  or device name. “Disconnections” lists the latest deauth and disassoc frames
+  with their reason; if many arrive in a short time, the page warns of a
+  **deauth attack**.
 - **Search Networks** (section “Networks (Mac Wi-Fi)”) queries the Mac's Wi-Fi
   and works even without a PortaPack.
 
@@ -549,12 +605,20 @@ public default channel is decrypted, your own channels with their key; direct
 messages stay private. Set region, preset, key and frequency at the top under
 **Channel**.
 
+Besides text and positions, the app shows what the nodes send otherwise:
+readings (battery, weather, air quality, power, statistics), waypoints (as a
+pin on the map), range tests, traceroutes with the signal per hop and a node's
+neighbors – as lines between the nodes on the map.
+
 <a id="lorawan"></a>
 ## LoRaWAN Network
 
 Sensors on LoRaWAN (e.g. The Things Network) on 868 MHz. The app listens to all
 spreading factors at once. Only **your own** devices are readable, whose
-session keys (ABP) you store under “Data & Export”.
+session keys (DevAddr, NwkSKey, AppSKey) you store under “Data & Export”. For
+devices that join via OTAA you find them in your network server after the join
+(on TTN under “Session information”); after a new join you have to enter them
+again.
 
 <a id="smartHome868"></a>
 ## Smart Home 868 MHz
@@ -627,6 +691,9 @@ them – if several talk at once, the loudest.
 - **Squelch:** the app learns each channel's noise by itself; the slider sets
   how far above it a signal must be. Lower = more sensitive, but more false
   alarms.
+- **Noise reduction** (Medium, Strong, Off): learns the noise in speech pauses
+  and removes it. “Strong” helps with very noisy transmissions; voices then
+  sound a little thinner. Recordings and transcripts stay unprocessed.
 - **Span:** the app listens to 8 MHz at once. If your channels are spread
   further apart, turn on “Wide span (16 MHz)” before starting (needs more
   processing power). It is only used when your list really doesn’t fit into
@@ -781,7 +848,9 @@ and small satellites send **telemetry**.
 | PCSAT (NO-44) | 145.827 MHz | APRS packets, only at times |
 | GRBBeta | 436.785 MHz | Telemetry |
 
-For the ISS, the app listens to SSTV and APRS at once. Under **Custom
+For the ISS, the app listens to SSTV and APRS at once. It decodes APRS
+packets like the APRS page does; stations sending their position via the
+satellite appear below under **Map** – often hundreds of kilometers away. Under **Custom
 Satellite** you can add more (catalog number, frequency, mode).
 
 ### ISS SSTV Images

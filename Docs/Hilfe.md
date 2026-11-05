@@ -96,6 +96,13 @@ Herauszoomen weniger und beim Hineinzoomen wieder mehr. Für die Kacheln braucht
 Mac eine Internetverbindung; dabei geht nur der Kartenausschnitt an
 OpenStreetMap, nie empfangene Daten.
 
+### Tabellen
+
+Ein Klick auf einen Spaltenkopf sortiert. Mit einem **Rechtsklick auf den
+Spaltenkopf** blendest du Spalten aus und wieder ein; Spalten lassen sich am
+Kopf verschieben und an der Trennlinie verbreitern. Die App merkt sich das je
+Tabelle. Freier Platz verteilt sich auf alle Spalten.
+
 ### Tastatur und Eingaben
 
 - **Leertaste** startet und stoppt den Empfang auf jeder Empfängerseite (bei Radio
@@ -218,7 +225,8 @@ das ist normal.
 
 UKW mit **Sendernamen, Radiotext (RDS)** und Stereo, dazu AM, Schmalband-FM
 (z. B. Flugfunk 118–137 MHz in AM) und für den Amateurfunk **SSB (USB/LSB)** und
-**Morsen (CW)**.
+**Morsen (CW)**. Markiert ein Sender Interpret und Titel (RadioText+), steht
+„♪ Interpret – Titel“ statt des Radiotexts da.
 
 - **Abspielen/Stopp** oben im Bedienfeld (Leertaste).
 - Frequenz links in der großen Anzeige verstellen: Ziffern mit Mausrad oder
@@ -262,6 +270,15 @@ Digitalradio in bester Qualität, mit Radiotext (Titel, Interpret).
 - Über der Liste wählst du **Nach Ensemble** oder **Nach Name**.
 - Die Statuszeile sagt, wie gut der Empfang ist; Einzelwerte stehen unter
   „Status“.
+- Markiert der Sender Interpret und Titel (DL Plus), steht „♪ Interpret – Titel“
+  über dem Radiotext – auch am Handy und in dessen Sperrbildschirm.
+- Schickt der Sender Bilder mit (Diashow: Senderlogo, Cover, Nachrichtenbild),
+  erscheinen sie im Bedienfeld unter dem Sendernamen.
+- Meldet der Sender, wo das Programm sonst noch läuft, steht darunter „Auch in:“
+  (andere DAB-Ensembles mit Kanal) und „Auch auf UKW:“ mit den Frequenzen.
+- Sendet das Ensemble einen Programmführer, zeigt der Abschnitt **Programm**
+  die laufende Sendung (mit Beschreibung) und die nächsten. Er füllt sich nach
+  ein bis zwei Minuten – der Führer läuft in einer Schleife.
 - **Ton aufnehmen** (Daten & Export) nimmt den laufenden Sender in Stereo auf;
   der Dateiname nennt Sender und Zeit.
 
@@ -310,6 +327,14 @@ Fluggesellschaft, Strecke und Foto.
   als CSV exportierbar. Ein Klick auf einen Spaltenkopf sortiert.
 - Für Entfernung und Richtung braucht die App deinen Standort (Einstellungen ▸
   Standort).
+- **Squawk und Notfall:** Die Spalte „Squawk“ zeigt den Transpondercode.
+  Meldet ein Flugzeug einen Notfall – oder sendet es 7700 (Notfall), 7600
+  (Funkausfall) oder 7500 (Entführung) –, steht er rot da und die App schickt
+  eine Mitteilung (abschaltbar unter Einstellungen ▸ Benachrichtigungen).
+- Sendet ein Flugzeug, was sein **Autopilot** ansteuert, zeigt die Infokarte
+  Sollhöhe, Sollkurs, eingestellten Luftdruck (QNH) und die aktiven
+  Betriebsarten (LNAV, VNAV, Anflug …), dazu ADS-B-Version und wie genau seine
+  Position ist.
 
 Reichweite: drinnen oft nur wenige Kilometer, mit Antenne draußen 100 km und
 mehr.
@@ -334,6 +359,9 @@ Abflugzeiten, Lotsenfreigaben (CPDLC).
 - Unter **Anzeige ▸ Sortierung** stellt **Wichtige zuerst** Lotsenmeldungen und
   Positionen nach oben, **Nach Flugzeug** fasst die Meldungen einer Maschine
   zusammen. Filter blenden leere Quittungen und ATN-Verkehr aus.
+- Alle Meldungen landen im **Archiv**. Das Suchfeld unter „Anzeige“ findet
+  mit **Auch im Archiv suchen** auch ältere (grau, mit Datum) – nach Wörtern
+  im Text, Kennzeichen oder Flugnummer.
 
 <a id="ais"></a>
 ## Schiffe (AIS)
@@ -345,6 +373,12 @@ Schiffe mit Name, Typ, Ziel, Ankunftszeit und Foto auf der Karte.
 - Spuren schaltest du unter „Anzeige“, Fotos aus dem Netz (Wikimedia Commons)
   unter **Einstellungen ▸ Online-Dienste**.
 - **Archiv …** wie bei den Flugzeugen.
+- **Rettungsflugzeuge** (SAR) erscheinen mit Flugzeugsymbol und Höhe,
+  **Notsender** (AIS-SART, Mensch über Bord, EPIRB) mit SOS-Symbol. Sendet ein
+  Notsender „aktiv“ statt „Test“, steht er rot in der Liste und die App schickt
+  eine Mitteilung (Einstellungen ▸ Benachrichtigungen ▸ „Seenotruf“).
+- **Sicherheitsmeldungen** (Warnungen im Klartext, an alle oder an ein Schiff)
+  stehen im Bedienfeld, sobald eine ankommt.
 
 <a id="aprs"></a>
 ## Funkamateure (APRS)
@@ -429,7 +463,20 @@ Sonden gleichzeitig.
   Ballons automatisch ab.
 - **Verlauf** unter Karte und Liste: Höhe, Steigen, Temperatur und Feuchte der
   gewählten Sonde über die Zeit, dazu das **Profil** (Temperatur und Feuchte
-  über der Höhe, nur im Aufstieg).
+  über der Höhe, nur im Aufstieg) und der **Wind**: Die Sonde treibt mit dem
+  Wind, ihre Geschwindigkeit und ihr Kurs zeigen also, wie schnell und woher
+  er in jeder Höhe weht. Das Windprofil steht auch im Fernzugriff.
+- **Was die Sonde sonst noch meldet**, steht in der Liste, sobald es ankommt –
+  bei Sonden, die es nicht senden, bleibt das Feld leer: **Druck** (nur die
+  RS41-SGP hat einen Drucksensor), Zahl der **GPS-Satelliten**, das genaue
+  **Modell**, ein **Abschalt-Countdown** (manche Sonden schalten sich nach
+  einer eingestellten Zeit ab) und **Zusatzinstrumente** wie Ozonsonden. Fahr
+  mit der Maus über „Weiteres“ für alle Angaben (Firmware, eingestellte
+  Frequenz, Temperatur des Feuchtesensors …). Im Verlauf kommen dann ein
+  Druckdiagramm und im Profil der **Ozon-Zellstrom** über der Höhe dazu;
+  oben steht, wie viel Prozent der Rahmen du gehört hast. Die **Feuchte**
+  rechnet nach etwa einer Minute nach dem Verfahren des Herstellers (mit der
+  Temperatur des beheizten Sensors und dem Druck), vorher ist sie eine Näherung.
 - **Landeschätzung** zeigt im Sinkflug grob, wo der Ballon herunterkommt. Für
   die Bergung sind die Vorhersagen auf SondeHub genauer.
 - **Archiv …**: alle bisher empfangenen Flüge mit Gipfelhöhe, Dauer und
@@ -437,7 +484,9 @@ Sonden gleichzeitig.
   Flug, „Auf SondeHub“ öffnet ihn dort. **Löschen** (Knopf, Rechtsklick oder
   Entf) entfernt einen Flug nach Rückfrage; ein Flug, der gerade noch empfangen
   wird, lässt sich erst danach löschen. Ins Archiv kommt jede Meldung, die der
-  Empfangsplan aufnimmt.
+  Empfangsplan aufnimmt. Flüge mit weniger als 100 Meldungen (eine Sonde, die
+  nur kurz am Rand der Reichweite zu hören war) zeigt das Archiv nicht und
+  löscht sie, sobald sechs Stunden nichts mehr von ihnen kam.
 - Kennst du die Frequenz einer Sonde, die die Suche nicht findet, kannst du sie
   unter „Kanäle“ **festhalten**.
 - Belegt ein Dauerstörer an deinem Standort immer wieder einen Suchplatz, trag
@@ -480,7 +529,9 @@ und 868 MHz. Die meisten senden alle 30–60 Sekunden.
 - Oben im Bedienfeld das **Band** wählen (433,92 oder 868,30 MHz), **Start**.
 - Unter **Anzeige** suchst du nach Modell, ID oder Wert, sortierst und blendest
   **Reifendruck (TPMS)** aus – die Sensoren vorbeifahrender Autos (anfangs
-  ausgeblendet).
+  ausgeblendet). Druck und Temperatur zeigt die App bei Sensoren im
+  Toyota-Format (u. a. Toyota, Lexus); andere Hersteller verschlüsseln ihre
+  Werte unterschiedlich, dort siehst du nur Kennung und Rohdaten.
 
 <a id="ble"></a>
 ## Bluetooth-Geräte
@@ -535,6 +586,11 @@ Verwaltungsrahmen für Wireshark.
   **Start**.
 - Mitgeschnittene Rahmen sicherst du unter „Daten & Export“ mit **PCAP
   sichern …**.
+- Im Modus **Rahmen** zeigt die Geräteliste, mit welchem Netz ein Gerät
+  verbunden ist, und – wo Router oder Telefone es per WPS verraten – Hersteller,
+  Modell oder Gerätename. Unter „Abmeldungen“ stehen die letzten Deauth- und
+  Disassoc-Rahmen samt Grund; kommen viele in kurzer Zeit, warnt die Seite vor
+  einem **Deauth-Angriff**.
 - **Netze suchen** (Abschnitt „Netze (WLAN des Mac)“) fragt das WLAN des Mac ab
   und geht auch ohne PortaPack.
 
@@ -555,12 +611,20 @@ Nachrichten und Positionen aus dem Meshtastic-Netz (869,525 MHz, LongFast). Der
 Direktnachrichten bleiben privat. Region, Voreinstellung, Schlüssel und Frequenz
 stellst du oben unter **Kanal** ein.
 
+Neben Text und Positionen zeigt die App, was die Knoten sonst senden:
+Messwerte (Akku, Wetter, Luftqualität, Strom, Statistik), Wegpunkte (als Nadel
+auf der Karte), Reichweitentests, Traceroutes mit dem Signal je Sprung und die
+Nachbarn eines Knotens – als Linien zwischen den Knoten auf der Karte.
+
 <a id="lorawan"></a>
 ## Funknetz LoRaWAN
 
 Sensoren im LoRaWAN (z. B. The Things Network) auf 868 MHz. Die App hört alle
 Spreizfaktoren gleichzeitig. Lesbar sind nur **deine eigenen** Geräte, deren
-Sitzungsschlüssel (ABP) du unter „Daten & Export“ hinterlegst.
+Sitzungsschlüssel (DevAddr, NwkSKey, AppSKey) du unter „Daten & Export“
+hinterlegst. Bei Geräten mit OTAA-Anmeldung findest du sie nach dem Beitritt
+in deinem Netzserver (bei TTN unter „Session information“); tritt das Gerät
+neu bei, musst du sie neu eintragen.
 
 <a id="smartHome868"></a>
 ## Smart Home 868 MHz
@@ -631,6 +695,10 @@ hörst du ihn – bei mehreren gleichzeitig den lautesten.
 - **Rauschsperre:** Die App lernt das Rauschen jedes Kanals selbst; der Regler
   sagt, wie weit ein Signal darüber liegen muss. Kleiner = empfindlicher, aber
   öfter Fehlalarm.
+- **Rauschminderung** (Mittel, Stark, Aus): lernt das Rauschen in den
+  Sprechpausen und zieht es ab. Bei sehr verrauschten Sprüchen hilft „Stark“;
+  Stimmen klingen dann etwas dünner. Mitschnitte und Abschriften bleiben
+  unbearbeitet.
 - **Ausschnitt:** Die App hört 8 MHz auf einmal. Liegen deine Kanäle weiter
   auseinander, schalte vor dem Start „Breiter Ausschnitt (16 MHz)“ ein (braucht
   mehr Rechenleistung). Genutzt wird er nur, wenn deine Liste wirklich nicht in
@@ -783,7 +851,9 @@ weiter, kleine Satelliten schicken **Telemetrie**.
 | PCSAT (NO-44) | 145,827 MHz | APRS-Pakete, nur zeitweise |
 | GRBBeta | 436,785 MHz | Telemetrie |
 
-Bei der ISS hört die App SSTV und APRS gleichzeitig. Unter **Eigener Satellit**
+Bei der ISS hört die App SSTV und APRS gleichzeitig. APRS-Pakete deutet sie
+wie auf der APRS-Seite; wer seine Position über den Satelliten sendet, steht
+unten unter **Karte** – oft Hunderte Kilometer entfernt. Unter **Eigener Satellit**
 trägst du weitere ein (Katalognummer, Frequenz, Betriebsart).
 
 ### SSTV-Bilder der ISS

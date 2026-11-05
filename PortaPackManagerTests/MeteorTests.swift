@@ -8,6 +8,18 @@ struct MeteorTests {
 
     // MARK: Kodierung
 
+    @Test("Bordzeit: UTC oder Moskauer Zeit, je nachdem, was zur Empfangszeit passt")
+    func onboardTime() {
+        let reception = Date(timeIntervalSince1970: 1_793_820_900)   // 2026-11-04 19:35 UTC
+        // Bordzeit 19:30 (UTC) → 19:30 UTC.
+        #expect(MeteorTime.utc(secondOfDay: 19.5 * 3600, near: reception) == reception.addingTimeInterval(-300))
+        // Bordzeit 22:30 (Moskau) → 19:30 UTC.
+        #expect(MeteorTime.utc(secondOfDay: 22.5 * 3600, near: reception) == reception.addingTimeInterval(-300))
+        // Kurz nach Mitternacht Moskauer Zeit: 00:10 → 21:10 UTC am Vortag.
+        let late = Date(timeIntervalSince1970: 1_793_826_000 + 6000)   // 21:00 + 1:40 = 22:40 UTC
+        #expect(abs(MeteorTime.utc(secondOfDay: 1.6667 * 3600, near: late).timeIntervalSince(late)) < 3600)
+    }
+
     @Test("CCSDS-Pseudozufallsfolge beginnt mit FF 48 0E C0 9A")
     func randomizer() {
         #expect(Array(MeteorRandomizer.sequence.prefix(8)) == [0xFF, 0x48, 0x0E, 0xC0, 0x9A, 0x0D, 0x70, 0xBC])

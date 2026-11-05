@@ -8,6 +8,7 @@ import SwiftUI
 /// HackRF-Modus. Der Monitor (`OccupancyMonitor.shared`) läuft weiter, wenn
 /// man die Seite verlässt, und pausiert, wenn eine andere Seite den HackRF nimmt.
 struct OccupancyView: View {
+    @StoredColumns("occupancy.1") private var columns: TableColumnCustomization<OccupancyAnalysis.ActiveFrequency>
     @Environment(DeviceSession.self) private var session
     @Bindable private var monitor = ReceiverStore.shared.occupancy
     @State private var heat = OccupancyHeatmapState()
@@ -62,19 +63,19 @@ struct OccupancyView: View {
     // MARK: Liste der aktivsten Frequenzen
 
     private var activeList: some View {
-        Table(monitor.active, selection: $tableSelection) {
+        Table(monitor.active, selection: $tableSelection, columnCustomization: $columns) {
             TableColumn("Frequenz") { (a: OccupancyAnalysis.ActiveFrequency) in
                 Text(String(format: "%.4f MHz", a.mhz)).monospacedDigit()
-            }.width(min: 90, ideal: 110)
+            }.width(min: 90, ideal: 110).customizationID("frequenz")
             TableColumn("Belegung") { (a: OccupancyAnalysis.ActiveFrequency) in
                 Text(OccupancyFormat.percent(a.occupancy)).monospacedDigit()
-            }.width(min: 60, ideal: 70)
+            }.width(min: 60, ideal: 70).customizationID("belegung")
             TableColumn("Spitze") { (a: OccupancyAnalysis.ActiveFrequency) in
                 Text(String(format: "+%.0f dB", a.peakAboveFloorDB)).monospacedDigit()
-            }.width(min: 50, ideal: 60)
+            }.width(min: 50, ideal: 60).customizationID("spitze")
             TableColumn("Zuletzt aktiv") { (a: OccupancyAnalysis.ActiveFrequency) in
                 Text(OccupancyFormat.episodes(a.episodes)).lineLimit(1).help(OccupancyFormat.episodes(a.episodes, all: true))
-            }
+            }.customizationID("zuletzt-aktiv")
             TableColumn("") { (a: OccupancyAnalysis.ActiveFrequency) in
                 Button {
                     openRadio(a.mhz)
@@ -84,7 +85,7 @@ struct OccupancyView: View {
                 .buttonStyle(.borderless)
                 .help("Im Radio anhören (pausiert den Monitor)")
                 .accessibilityLabel("Im Radio anhören")
-            }.width(24)
+            }.width(min: 28, ideal: 24).customizationID("spalte")
         }
         .contextMenu(forSelectionType: Int.self) { items in
             if let bin = items.first, let a = monitor.active.first(where: { $0.bin == bin }) {
@@ -182,26 +183,6 @@ struct OccupancyView: View {
         }
     }
 
-    @ViewBuilder private var statusText: some View {
-        if monitor.running {
-            let since = monitor.startedAt?.formatted(date: .omitted, time: .shortened) ?? "–"
-            Group {
-                if let window = monitor.currentWindowMHz {
-                    Text("Läuft seit \(since) · \(monitor.visits) Messungen · Fenster \(window, format: .number.precision(.fractionLength(1))) MHz")
-                } else {
-                    Text("Läuft seit \(since) · \(monitor.visits) Messungen")
-                }
-            }
-            .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
-        } else if let reason = monitor.pausedReason {
-            Label(reason, systemImage: "pause.circle.fill")
-                .font(.callout).foregroundStyle(.orange)
-        }
-        if let hint = monitor.settingsHint, !monitor.running {
-            Text(hint).font(.caption).foregroundStyle(.secondary)
-        }
-    }
-
     private var bandSection: some View {
         Section("Band") {
             Menu {
@@ -258,19 +239,7 @@ struct OccupancyView: View {
     /// Laufzeit, Pause und die geladene Aufzeichnung – nur Anzeigen.
     private var statusSection: some View {
         Section(PanelSection.status) {
-            statusText
-            if let rec = monitor.recording {
-                LabeledContent("Aufzeichnung", value: rec.name)
-                if let first = rec.slices.first, let last = rec.slices.last {
-                    LabeledContent("Zeitraum") {
-                        Text("\(first.start.formatted(date: .abbreviated, time: .shortened)) – \(last.start.formatted(date: .omitted, time: .shortened))")
-                            .font(.caption)
-                    }
-                    LabeledContent("Zeitscheiben", value: "\(rec.slices.count)")
-                }
-            } else if !monitor.running {
-                Text("Keine Aufzeichnung geladen.").font(.caption).foregroundStyle(.secondary)
-            }
+            OccupancyStatusRows(monitor: monitor)
         }
     }
 
@@ -944,5 +913,48 @@ enum OccupancyExport {
         return await Task.detached(priority: .userInitiated) {
             page.image.flatMap { NSBitmapImageRep(cgImage: $0).representation(using: .png, properties: [:]) }
         }.value
+    }
+}
+
+/// Zähler und Pegel als eigene Ansicht: sie ändern sich mehrmals je Sekunde,
+/// und im Bedienfeld selbst gelesen zeichneten sie das ganze Formular neu –
+/// das Scrollen ruckelte (Review 05.11.2026).
+private struct OccupancyStatusRows: View {
+    let monitor: OccupancyMonitor
+
+    var body: some View {
+        statusText
+        if let rec = monitor.recording {
+            LabeledContent("Aufzeichnung", value: rec.name)
+            if let first = rec.slices.first, let last = rec.slices.last {
+                LabeledContent("Zeitraum") {
+                    Text("\(first.start.formatted(date: .abbreviated, time: .shortened)) – \(last.start.formatted(date: .omitted, time: .shortened))")
+                        .font(.caption)
+                }
+                LabeledContent("Zeitscheiben", value: "\(rec.slices.count)")
+            }
+        } else if !monitor.running {
+            Text("Keine Aufzeichnung geladen.").font(.caption).foregroundStyle(.secondary)
+        }
+    }
+
+    @ViewBuilder private var statusText: some View {
+        if monitor.running {
+            let since = monitor.startedAt?.formatted(date: .omitted, time: .shortened) ?? "–"
+            Group {
+                if let window = monitor.currentWindowMHz {
+                    Text("Läuft seit \(since) · \(monitor.visits) Messungen · Fenster \(window, format: .number.precision(.fractionLength(1))) MHz")
+                } else {
+                    Text("Läuft seit \(since) · \(monitor.visits) Messungen")
+                }
+            }
+            .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+        } else if let reason = monitor.pausedReason {
+            Label(reason, systemImage: "pause.circle.fill")
+                .font(.callout).foregroundStyle(.orange)
+        }
+        if let hint = monitor.settingsHint, !monitor.running {
+            Text(hint).font(.caption).foregroundStyle(.secondary)
+        }
     }
 }

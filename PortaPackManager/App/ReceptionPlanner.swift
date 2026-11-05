@@ -305,7 +305,24 @@ final class ReceptionPlanner {
     /// `resumePrevious: false`: Die Umschalt-Rückfrage startet gleich danach einen
     /// anderen Empfänger, den der Plan sonst ≤ 10 s später wieder hinauswarf
     /// (Review 29.10.2026).
+    /// Sondenfenster in der Horchpause (Gerät zurückgegeben, in ≤ 5 min geht es
+    /// weiter): für die Umschalt-Rückfrage so gut wie ein laufender Termin – sonst
+    /// nahm der Plan einem Nutzerstart das Gerät ohne Rückfrage wieder ab
+    /// (Review 05.11.2026).
+    var probePausedJob: Job? {
+        guard active == nil, let pause = sondeProbePause, Date() < pause.until else { return nil }
+        return upcoming.first { $0.id == pause.id }
+    }
+
     func skipActive(resumePrevious: Bool = true) async {
+        if active == nil, let job = probePausedJob {
+            // Rückfrage während der Horchpause: Fenster überspringen, nicht fortsetzen.
+            sondeProbePause = nil
+            if !resumePrevious { resume = nil }
+            skipped[job.id] = max(Date(), job.end)
+            Self.log.notice("\(job.title, privacy: .public) in der Horchpause übersprungen")
+            return
+        }
         guard let job = active else { return }
         if !resumePrevious { resume = nil }
         skip(job.id)
@@ -506,6 +523,15 @@ final class ReceptionPlanner {
                 // Termin beenden, aber nicht überspringen – nach dem Wiederverbinden
                 // beginnt er neu, und danach kommt ADS-B/AIS wie geplant zurück.
                 await finish(job, note: String(localized: "Gerät getrennt"))
+            } else if lostTicks >= 3, let device = session?.hackRF, device.isUnusable {
+                // Stopp scheiterte, Gerät antwortet nicht mehr: kein Umschalten – nach
+                // dem Neuverbinden beginnt der Termin neu (Review 05.11.2026).
+                await finish(job, note: String(localized: "Gerät reagiert nicht"))
+            } else if lostTicks >= 3, let device = session?.hackRF, device.currentOwner == nil, device.burstOwner == nil {
+                // Niemand hat den Strom – kein bewusstes Umschalten, sondern abgerissen:
+                // neu beginnen, `resume` behalten.
+                lostTicks = 0
+                await finish(job, note: String(localized: "Empfang abgerissen, wird neu gestartet"))
             } else if lostTicks >= 3 {
                 // Jemand hat bewusst umgeschaltet – das gilt, nichts zurückholen.
                 resume = nil
@@ -879,22 +905,44 @@ final class ReceptionPlanner {
         }
     }
 
+    private var predictionGeneration = 0
+
+    /// SGP4 für 48,5 h je Satellit (≈ 8 000 Propagationen) läuft abseits des Main
+    /// Actors; ein jüngerer Aufruf macht das Ergebnis eines älteren ungültig
+    /// (Review 05.11.2026 – vorher 50–200 ms Hänger alle 30 min).
     private func predict() {
         lastPrediction = Date()
         guard let station = Self.home else { passes = []; amateurPasses = []; return }
+        predictionGeneration &+= 1
+        let generation = predictionGeneration
+        let tles = tles, amateurTLEs = amateurTLEs
+        let amateurs = amateurSelection.compactMap(AmateurSatellite.lookup)
+        Task { [weak self] in
+            let (weather, amateur) = await Task.detached(priority: .utility) {
+                Self.computePasses(station: station, tles: tles, amateurTLEs: amateurTLEs, amateurs: amateurs)
+            }.value
+            guard let self, generation == self.predictionGeneration else { return }
+            self.passes = weather
+            self.amateurPasses = amateur
+        }
+    }
+
+    nonisolated static func computePasses(station: GroundStation, tles: [Int: TLE], amateurTLEs: [Int: TLE],
+                                          amateurs: [AmateurSatellite]) -> (weather: [SatellitePass], amateur: [SatellitePass]) {
         let from = Date().addingTimeInterval(-1800)
-        passes = WeatherSatellite.all.flatMap { satellite in
+        let weather = WeatherSatellite.all.flatMap { satellite in
             tles[satellite.id].map { PassPredictor.passes(satellite, tle: $0, station: station, from: from, hours: 48.5, minElevation: 10) } ?? []
         }
         .filter { $0.end > Date() }
         .sorted { $0.start < $1.start }
-        amateurPasses = amateurSelection.compactMap(AmateurSatellite.lookup).flatMap { satellite in
+        let amateur = amateurs.flatMap { satellite in
             amateurTLEs[satellite.id].map {
                 PassPredictor.passes(satellite.passTarget, tle: $0, station: station, from: from, hours: 48.5, minElevation: 10)
             } ?? []
         }
         .filter { $0.end > Date() }
         .sorted { $0.start < $1.start }
+        return (weather, amateur)
     }
 
     /// Rechnet die Flugbahnen für das nächste Sondenfenster, sobald es in

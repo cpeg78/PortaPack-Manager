@@ -106,13 +106,15 @@
       if (name === 'markerPane') return;
       map.createPane(name).style.zIndex = PANES[key][1];
     });
-    L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
-      maxZoom: 19,
-      attribution: '<a href="https://www.openstreetmap.org/copyright">© OpenStreetMap</a>'
-    }).on('tileerror', function (e) {
-      // Nur die ersten Fehler melden (offline wären es sonst Hunderte).
-      if (tileErrors++ < 3) post({ type: 'error', message: 'Kachel nicht geladen: ' + (e.tile && e.tile.src) });
-    }).addTo(map);
+    map.attributionControl.addAttribution('<a href="https://www.openstreetmap.org/copyright">© OpenStreetMap</a>');
+    if (options.tiles !== false) {
+      L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
+        maxZoom: 19
+      }).on('tileerror', function (e) {
+        // Nur die ersten Fehler melden (offline wären es sonst Hunderte).
+        if (tileErrors++ < 3) post({ type: 'error', message: 'Kachel nicht geladen: ' + (e.tile && e.tile.src) });
+      }).addTo(map);
+    }
     map.attributionControl.setPrefix(false);
     L.control.scale({ position: 'bottomright', imperial: false }).addTo(map);
     L.control.zoom({ position: 'bottomright', zoomInTitle: options.zoomInTitle || '+', zoomOutTitle: options.zoomOutTitle || '−' }).addTo(map);

@@ -1,6 +1,8 @@
 import SwiftUI
 
 struct SensorView: View {
+    @StoredColumns("sensor.2") private var columns2: TableColumnCustomization<SensorPacket>
+    @StoredColumns("sensor.1") private var columns: TableColumnCustomization<SensorDevice>
     @Environment(DeviceSession.self) private var session
     /// Geteilt mit dem Fernzugriff (`RemoteHub.sensors`).
     @Bindable private var model = RemoteHub.shared.sensors
@@ -94,32 +96,32 @@ struct SensorView: View {
     }
 
     private var sensorTable: some View {
-        Table(of: SensorDevice.self, selection: $selectedSensor, sortOrder: $sensorOrder) {
+        Table(of: SensorDevice.self, selection: $selectedSensor, sortOrder: $sensorOrder, columnCustomization: $columns) {
             // Mehr als zehn Spalten nur in Gruppen
             Group {
-            TableColumn("Modell", sortUsing: ColumnSort("modell", text: { $0.latest.model })) { (sensor: SensorDevice) in Text(sensor.latest.model) }
-            TableColumn("ID", sortUsing: ColumnSort("id", text: { $0.latest.id })) { (sensor: SensorDevice) in Text(sensor.latest.id).font(.body.monospaced()) }.width(70)
-            TableColumn("Kanal", sortUsing: ColumnSort("kanal") { $0.latest.channel }) { (sensor: SensorDevice) in Text(sensor.latest.channel.map(String.init) ?? "–") }.width(45)
+            TableColumn("Modell", sortUsing: ColumnSort("modell", text: { $0.latest.model })) { (sensor: SensorDevice) in Text(sensor.latest.model) }.customizationID("modell")
+            TableColumn("ID", sortUsing: ColumnSort("id", text: { $0.latest.id })) { (sensor: SensorDevice) in Text(sensor.latest.id).font(.body.monospaced()) }.width(min: 42, ideal: 70).customizationID("id")
+            TableColumn("Kanal", sortUsing: ColumnSort("kanal") { $0.latest.channel }) { (sensor: SensorDevice) in Text(sensor.latest.channel.map(String.init) ?? "–") }.width(min: 28, ideal: 45).customizationID("kanal")
             TableColumn("Temperatur", sortUsing: ColumnSort("temperatur") { $0.latest.temperatureC }) { (sensor: SensorDevice) in
                 Text(sensor.latest.temperatureC.map { String(format: "%.1f °C", $0) } ?? "–").monospacedDigit()
-            }.width(80)
+            }.width(min: 48, ideal: 80).customizationID("temperatur")
             TableColumn("Feuchte", sortUsing: ColumnSort("feuchte") { $0.latest.humidity }) { (sensor: SensorDevice) in
                 Text(sensor.latest.humidity.map { "\($0) %" } ?? "–").monospacedDigit()
-            }.width(60)
-            TableColumn("Wind", sortUsing: ColumnSort("wind") { $0.latest.windAverageMS ?? $0.latest.windGustMS }) { (sensor: SensorDevice) in Text(wind(sensor.latest)).monospacedDigit() }.width(120)
+            }.width(min: 36, ideal: 60).customizationID("feuchte")
+            TableColumn("Wind", sortUsing: ColumnSort("wind") { $0.latest.windAverageMS ?? $0.latest.windGustMS }) { (sensor: SensorDevice) in Text(wind(sensor.latest)).monospacedDigit() }.width(min: 72, ideal: 120).customizationID("wind")
             TableColumn("Regen", sortUsing: ColumnSort("regen") { $0.latest.rainMM }) { (sensor: SensorDevice) in
                 Text(sensor.latest.rainMM.map { String(format: "%.1f mm", $0) } ?? "–").monospacedDigit()
-            }.width(70)
+            }.width(min: 42, ideal: 70).customizationID("regen")
             }
             Group {
-            TableColumn("Weitere", sortUsing: ColumnSort("weitere", text: { more($0.latest) })) { (sensor: SensorDevice) in Text(more(sensor.latest)).foregroundStyle(.secondary) }
-            TableColumn("Batterie", sortUsing: ColumnSort("batterie") { $0.latest.batteryOK.map { $0 ? 1 : 0 } }) { (sensor: SensorDevice) in battery(sensor.latest.batteryOK) }.width(55)
+            TableColumn("Weitere", sortUsing: ColumnSort("weitere", text: { more($0.latest) })) { (sensor: SensorDevice) in Text(more(sensor.latest)).foregroundStyle(.secondary) }.customizationID("weitere")
+            TableColumn("Batterie", sortUsing: ColumnSort("batterie") { $0.latest.batteryOK.map { $0 ? 1 : 0 } }) { (sensor: SensorDevice) in battery(sensor.latest.batteryOK) }.width(min: 33, ideal: 55).customizationID("batterie")
             TableColumn("Pegel", sortUsing: ColumnSort("pegel") { $0.snrDB }) { (sensor: SensorDevice) in
                 Text(String(format: "%.0f dB", sensor.snrDB)).monospacedDigit()
                     .help(String(format: String(localized: "%.1f dBFS, Störabstand %.1f dB, Ablage %+.0f kHz"), sensor.rssiDB, sensor.snrDB, sensor.offsetKHz))
-            }.width(50)
-            TableColumn("Zuletzt", sortUsing: ColumnSort("zuletzt") { $0.lastSeen }) { (sensor: SensorDevice) in Text(sensor.lastSeen, style: .relative).foregroundStyle(.secondary) }.width(90)
-            TableColumn("Anzahl", sortUsing: ColumnSort("anzahl") { $0.count }) { (sensor: SensorDevice) in Text("\(sensor.count)").monospacedDigit() }.width(50)
+            }.width(min: 30, ideal: 50).customizationID("pegel")
+            TableColumn("Zuletzt", sortUsing: ColumnSort("zuletzt") { $0.lastSeen }) { (sensor: SensorDevice) in Text(sensor.lastSeen, style: .relative).foregroundStyle(.secondary) }.width(min: 54, ideal: 90).customizationID("zuletzt")
+            TableColumn("Anzahl", sortUsing: ColumnSort("anzahl") { $0.count }) { (sensor: SensorDevice) in Text("\(sensor.count)").monospacedDigit() }.width(min: 30, ideal: 50).customizationID("anzahl")
             }
         } rows: {
             ForEach(visibleSensors.sorted(by: sensorOrder)) { TableRow($0) }
@@ -146,17 +148,17 @@ struct SensorView: View {
     }
 
     private var packetTable: some View {
-        Table(visiblePackets.sorted(by: packetOrder), selection: $selectedPacket, sortOrder: $packetOrder) {
-            TableColumn("Zeit", sortUsing: ColumnSort("zeit") { $0.id }) { Text($0.train.date, format: .dateTime.hour().minute().second()).monospacedDigit() }.width(65)
-            TableColumn("Art", sortUsing: ColumnSort("art", text: { $0.train.modulation.rawValue })) { Text($0.train.modulation.rawValue) }.width(35)
-            TableColumn("Pulse", sortUsing: ColumnSort("pulse") { $0.train.count }) { Text("\($0.train.count)").monospacedDigit() }.width(45)
+        Table(visiblePackets.sorted(by: packetOrder), selection: $selectedPacket, sortOrder: $packetOrder, columnCustomization: $columns2) {
+            TableColumn("Zeit", sortUsing: ColumnSort("zeit") { $0.id }) { Text($0.train.date, format: .dateTime.hour().minute().second()).monospacedDigit() }.width(min: 39, ideal: 65).customizationID("zeit")
+            TableColumn("Art", sortUsing: ColumnSort("art", text: { $0.train.modulation.rawValue })) { Text($0.train.modulation.rawValue) }.width(min: 28, ideal: 35).customizationID("art")
+            TableColumn("Pulse", sortUsing: ColumnSort("pulse") { $0.train.count }) { Text("\($0.train.count)").monospacedDigit() }.width(min: 28, ideal: 45).customizationID("pulse")
             TableColumn("Inhalt", sortUsing: ColumnSort("inhalt", text: { $0.readings.first.map { "\($0.model) \($0.id)" } ?? $0.analysis.coding.title })) { packet in
                 if let reading = packet.readings.first {
                     Text("\(reading.model) \(reading.id)").fontWeight(.medium)
                 } else {
                     Text(packet.analysis.coding.title).foregroundStyle(.secondary)
                 }
-            }
+            }.customizationID("inhalt")
         }
         .overlay {
             if visiblePackets.isEmpty {
@@ -280,12 +282,7 @@ struct SensorView: View {
                 ReceiverControls(model: model, device: session.hackRF)
             }
             Section(PanelSection.status) {
-                LabeledContent("Sensoren", value: "\(model.sensors.count)")
-                LabeledContent("Rahmen", value: "\(model.packetCount)")
-                LabeledContent("Davon erkannt", value: "\(model.decodedCount)")
-                if model.running {
-                    LabeledContent("Rauschen", value: String(format: "%.1f dBFS", model.noiseDB))
-                }
+                SensorStatusRows(model: model)
             }
             FrequencyMemorySection(page: .sensors, currentMHz: model.frequencyMHz) { model.tune(to: $0.mhz) }
             Section(PanelSection.anzeige) {
@@ -358,5 +355,21 @@ extension SensorView {
                                 .number(s.frequencyMHz, digits: 3), .number(s.rssiDB), .number(s.snrDB), .integer(s.count),
                                 .date(s.firstSeen), .date(s.lastSeen), .text(r.integrity)]
                     })
+    }
+}
+
+/// Zähler und Pegel als eigene Ansicht: sie ändern sich mehrmals je Sekunde,
+/// und im Bedienfeld selbst gelesen zeichneten sie das ganze Formular neu –
+/// das Scrollen ruckelte (Review 05.11.2026).
+private struct SensorStatusRows: View {
+    let model: SensorModel
+
+    var body: some View {
+        LabeledContent("Sensoren", value: "\(model.sensors.count)")
+        LabeledContent("Rahmen", value: "\(model.packetCount)")
+        LabeledContent("Davon erkannt", value: "\(model.decodedCount)")
+        if model.running {
+            LabeledContent("Rauschen", value: String(format: "%.1f dBFS", model.noiseDB))
+        }
     }
 }

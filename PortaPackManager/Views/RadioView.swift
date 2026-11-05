@@ -155,18 +155,7 @@ struct RadioView: View {
                 ReceiverControls(model: model, device: session.hackRF)
             }
             Section(PanelSection.status) {
-                LabeledContent("Signal", value: model.signalDB.formatted(.number.precision(.fractionLength(0))) + " dBFS")
-                    .monospacedDigit()
-                if model.running, model.mode.usesSquelch, model.squelchDB > 0 {
-                    Label(model.squelchOpen ? "Rauschsperre offen – Signal \(Int(model.channelAboveFloorDB.rounded())) dB über dem Rauschen"
-                                            : "Rauschsperre zu – Kanal \(Int(model.channelAboveFloorDB.rounded())) dB über dem Rauschen",
-                          systemImage: model.squelchOpen ? "speaker.wave.2.fill" : "speaker.slash")
-                        .font(.caption).foregroundStyle(model.squelchOpen ? .green : .secondary)
-                }
-                if model.running && model.mode == .wfm {
-                    LabeledContent("RDS", value: model.rdsSynced ? String(localized: "empfangen") : String(localized: "noch nichts"))
-                    LabeledContent("Stereo", value: model.pilotLocked && model.stereo ? String(localized: "ja") : String(localized: "nein"))
-                }
+                RadioStatusRows(model: model)
             }
             Section("Schnellwahl mit Suchlauf") {
                 ForEach(ScanBands.all) { band in
@@ -415,7 +404,10 @@ private struct RDSPanel: View {
             // Jede Zeile ist immer da und einzeilig: sonst wächst und schrumpft der
             // Kopf, sobald RDS neu gelesen wird, und die Senderliste darunter springt.
             Group {
-                if !rds.radioTextString.isEmpty {
+                if let playing = RadioTextPlus.nowPlaying(rds.radioTextPlus) {
+                    // RadioText+: Interpret und Titel statt des ganzen Radiotexts.
+                    Label(playing, systemImage: "music.note").textSelection(.enabled).help(rds.radioTextString)
+                } else if !rds.radioTextString.isEmpty {
                     Text(rds.radioTextString).textSelection(.enabled).help(rds.radioTextString)
                 } else if !synced && rds.groups == 0 {
                     Text("Noch keine Senderdaten (RDS) – bei schwachem Empfang dauert es länger oder klappt gar nicht.")
@@ -473,6 +465,28 @@ private struct SignalMeter: View {
                     .fill(LinearGradient(colors: [.green, .yellow, .orange], startPoint: .leading, endPoint: .trailing))
                     .frame(width: geometry.size.width * fraction)
             }
+        }
+    }
+}
+
+/// Zähler und Pegel als eigene Ansicht: sie ändern sich mehrmals je Sekunde,
+/// und im Bedienfeld selbst gelesen zeichneten sie das ganze Formular neu –
+/// das Scrollen ruckelte (Review 05.11.2026).
+private struct RadioStatusRows: View {
+    let model: RadioModel
+
+    var body: some View {
+        LabeledContent("Signal", value: model.signalDB.formatted(.number.precision(.fractionLength(0))) + " dBFS")
+            .monospacedDigit()
+        if model.running, model.mode.usesSquelch, model.squelchDB > 0 {
+            Label(model.squelchOpen ? "Rauschsperre offen – Signal \(Int(model.channelAboveFloorDB.rounded())) dB über dem Rauschen"
+                                    : "Rauschsperre zu – Kanal \(Int(model.channelAboveFloorDB.rounded())) dB über dem Rauschen",
+                  systemImage: model.squelchOpen ? "speaker.wave.2.fill" : "speaker.slash")
+                .font(.caption).foregroundStyle(model.squelchOpen ? .green : .secondary)
+        }
+        if model.running && model.mode == .wfm {
+            LabeledContent("RDS", value: model.rdsSynced ? String(localized: "empfangen") : String(localized: "noch nichts"))
+            LabeledContent("Stereo", value: model.pilotLocked && model.stereo ? String(localized: "ja") : String(localized: "nein"))
         }
     }
 }

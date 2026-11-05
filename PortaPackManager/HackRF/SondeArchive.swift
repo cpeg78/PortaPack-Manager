@@ -13,8 +13,21 @@ struct SondeSample: Sendable, Equatable {
     var temperature: Double?
     var humidity: Double?
     var battery: Double?
+    /// Seit Schema 3 (04.11.2026): Luftdruck (hPa, nur RS41-SGP), GPS-Satelliten,
+    /// Zellstrom einer angehängten Ozonsonde (µA). Ältere Meldungen: nil.
+    var pressure: Double?
+    var satellites: Int?
+    var ozoneCurrent: Double?
+    /// Rahmennummer der Sonde (für die Empfangsquote).
+    var frame: Int?
 
     var hasPosition: Bool { latitude != nil && longitude != nil && altitude != nil }
+
+    /// Woher der Wind weht (meteorologisch, Grad): Gegenrichtung des Kurses der
+    /// mit dem Wind treibenden Sonde.
+    static func windFrom(heading: Double) -> Double {
+        (heading + 180).truncatingRemainder(dividingBy: 360)
+    }
 }
 
 /// Ein Flug: alle Meldungen einer Seriennummer, über Dateien hinweg.
@@ -35,6 +48,16 @@ struct SondeFlight: Identifiable, Sendable, Equatable {
     var launch: SondeSample? { samples.first(where: \.hasPosition) }
     var lastPosition: SondeSample? { samples.last(where: \.hasPosition) }
     var minTemperature: Double? { samples.compactMap(\.temperature).min() }
+    var minPressure: Double? { samples.compactMap(\.pressure).min() }
+
+    /// Anteil der gehörten Rahmen zwischen erstem und letztem (RS41 zählt je
+    /// Sekunde einen Rahmen hoch). Nur bei durchgehender Zählung ohne Überlauf.
+    var frameCoverage: Double? {
+        let frames = samples.compactMap(\.frame)
+        guard frames.count >= 10, let first = frames.min(), let last = frames.max(), last > first,
+              last - first < 30_000 else { return nil }
+        return min(1, Double(Set(frames).count) / Double(last - first + 1))
+    }
 
     /// Geplatzt und im Sinkflug gehört: letzte Höhe deutlich unter dem Gipfel.
     var burst: Bool {
@@ -76,10 +99,13 @@ enum SondeArchive {
             let f = line.split(separator: ";", omittingEmptySubsequences: false)
             guard f.count >= 14, !f[2].isEmpty, let date = ISOTime.date(f[0]) else { continue }
             func d(_ i: Int) -> Double? { Double(f[i]) }
+            // Druck, Satelliten und Ozon gibt es erst seit 04.11.2026 (Spalten 14–16).
+            func optional(_ i: Int) -> Double? { i < f.count ? d(i) : nil }
             rows.append(Row(serial: unquote(String(f[2])), type: unquote(String(f[1])), frame: Int(f[3]), sample: SondeSample(
                 date: date, frequencyMHz: d(4), latitude: d(5), longitude: d(6), altitude: d(7),
                 verticalSpeed: d(8), windSpeed: d(9), heading: d(10), temperature: d(11), humidity: d(12),
-                battery: d(13))))
+                battery: d(13), pressure: optional(14), satellites: optional(15).map { Int($0) },
+                ozoneCurrent: optional(16), frame: Int(f[3]))))
         }
         return rows
     }
@@ -97,7 +123,9 @@ enum SondeArchive {
     static func flights(from rows: [Row]) -> [SondeFlight] {
         var grouped: [String: (type: String, samples: [SondeSample])] = [:]
         for row in rows {
-            grouped[row.serial, default: (row.type, [])].samples.append(row.sample)
+            var sample = row.sample
+            if sample.frame == nil { sample.frame = row.frame }
+            grouped[row.serial, default: (row.type, [])].samples.append(sample)
         }
         return grouped.map { serial, entry in
             // Sortieren, doppelte Zeitstempel (dieselbe Meldung zweimal) entfernen.
@@ -109,19 +137,22 @@ enum SondeArchive {
     }
 
     /// Alle Flüge, neueste zuerst. Nicht auf dem Main Actor aufrufen (liest alle Meldungen).
-    /// Flüge mit nur einer Meldung (ein Zufallstreffer am Rand der Reichweite) fallen
-    /// weg – sie füllten die Archivliste ohne Bahn und Profil (Nutzer, 29.10.2026).
-    static func load(database: ArchiveDatabase = .shared) -> [SondeFlight] {
+    /// Flüge unter `minimumSamples` Meldungen (Zufallstreffer am Rand der Reichweite)
+    /// fallen weg – sie füllten die Archivliste ohne Bahn und Profil (Nutzer,
+    /// 29.10.2026; Schwelle 2 → 100 am 04.11.2026). Die Archivpflege löscht sie,
+    /// sobald sie sechs Stunden ruhen (`ArchiveMaintenance.pruneShortSondeFlights`).
+    static func load(database: ArchiveDatabase = .shared, minimum: Int = minimumSamples) -> [SondeFlight] {
         let rows = (try? database.sync { try $0.sondeRows() }) ?? []
-        return flights(from: rows).filter { $0.samples.count >= minimumSamples }
+        return flights(from: rows).filter { $0.samples.count >= minimum }
     }
-    static let minimumSamples = 2
+    /// Bei einer Meldung je Sekunde gut anderthalb Minuten Empfang.
+    static let minimumSamples = 100
 
-    /// Die jüngsten `limit` Flüge (mit mindestens zwei Meldungen), neueste zuerst –
+    /// Die jüngsten `limit` Flüge (mit mindestens `minimumSamples` Meldungen), neueste zuerst –
     /// ohne das ganze Archiv zu lesen.
-    static func recent(limit: Int, database: ArchiveDatabase = .shared) -> [SondeFlight] {
+    static func recent(limit: Int, database: ArchiveDatabase = .shared, minimum: Int = minimumSamples) -> [SondeFlight] {
         let rows = (try? database.sync { db -> [Row] in
-            try db.recentSondeSerials(limit: limit, minimum: minimumSamples).flatMap { try db.sondeRows(serial: $0) }
+            try db.recentSondeSerials(limit: limit, minimum: minimum).flatMap { try db.sondeRows(serial: $0) }
         }) ?? []
         return flights(from: rows)
     }
@@ -167,11 +198,13 @@ enum SondeArchive {
         func f(_ value: Double?, _ format: String) -> String { value.map { String(format: format, $0) } ?? "" }
         return SondeLog.header + flight.samples.map { s in
             // Typ und Seriennummer sind Text aus dem Protokoll – als Formel-sicheres Feld (Review Y6).
-            [ISOTime.string(s.date), TrafficArchive.csvField(flight.type), TrafficArchive.csvField(flight.serial), "",
+            [ISOTime.string(s.date), TrafficArchive.csvField(flight.type), TrafficArchive.csvField(flight.serial),
+             s.frame.map(String.init) ?? "",
              f(s.frequencyMHz, "%.3f"),
              f(s.latitude, "%.5f"), f(s.longitude, "%.5f"), f(s.altitude, "%.0f"), f(s.verticalSpeed, "%.1f"),
              f(s.windSpeed, "%.1f"), f(s.heading, "%.0f"), f(s.temperature, "%.1f"), f(s.humidity, "%.0f"),
-             f(s.battery, "%.1f")].joined(separator: ";") + "\n"
+             f(s.battery, "%.1f"), f(s.pressure, "%.2f"), s.satellites.map(String.init) ?? "",
+             f(s.ozoneCurrent, "%.4f")].joined(separator: ";") + "\n"
         }.joined()
     }
 }

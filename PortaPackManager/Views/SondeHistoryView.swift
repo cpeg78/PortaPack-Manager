@@ -1,8 +1,9 @@
 import Charts
 import SwiftUI
 
-/// Verlauf eines Sondenflugs: Höhe, Steigen, Temperatur/Feuchte über die Zeit
-/// und das Profil über der Höhe (die klassische Darstellung eines Aufstiegs).
+/// Verlauf eines Sondenflugs: Höhe, Steigen, Temperatur/Feuchte über die Zeit,
+/// das Profil über der Höhe (die klassische Darstellung eines Aufstiegs) und das
+/// Windprofil (die Sonde treibt mit dem Wind: GPS-Geschwindigkeit und Kurs).
 struct SondeHistoryView: View {
     let flight: SondeFlight
     @AppStorage("sondeHistoryChart") private var chart: Kind = .altitude
@@ -14,7 +15,7 @@ struct SondeHistoryView: View {
     @State private var hoveredChart: String?
 
     enum Kind: String, CaseIterable, Identifiable {
-        case altitude, climb, weather, profile
+        case altitude, climb, weather, profile, wind
         var id: String { rawValue }
         var title: String {
             switch self {
@@ -22,6 +23,7 @@ struct SondeHistoryView: View {
             case .climb: String(localized: "Steigen")
             case .weather: String(localized: "Temperatur & Feuchte")
             case .profile: String(localized: "Profil")
+            case .wind: String(localized: "Wind")
             }
         }
     }
@@ -84,6 +86,7 @@ struct SondeHistoryView: View {
                 case .climb: climbChart
                 case .weather: weatherCharts
                 case .profile: profileCharts
+                case .wind: windCharts
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -97,7 +100,11 @@ struct SondeHistoryView: View {
         if let top = flight.peak?.altitude { parts.append(String(localized: "Gipfel \((top / 1000).formatted(.number.precision(.fractionLength(1)))) km")) }
         if flight.burst { parts.append(String(localized: "geplatzt")) }
         if let t = flight.minTemperature { parts.append(String(localized: "tiefste Temperatur \(t.formatted(.number.precision(.fractionLength(0)))) °C")) }
+        if let p = flight.minPressure { parts.append(String(localized: "tiefster Druck \(p.formatted(.number.precision(.fractionLength(1)))) hPa")) }
         parts.append(String(localized: "\(flight.samples.count) Meldungen"))
+        if let coverage = flight.frameCoverage {
+            parts.append(String(localized: "\(Int((coverage * 100).rounded())) % der Rahmen gehört"))
+        }
         return parts.joined(separator: " · ")
     }
 
@@ -164,6 +171,19 @@ struct SondeHistoryView: View {
                 .chartYAxisLabel("% rel. Feuchte")
                 .chartYScale(domain: 0...100)
                 .chartOverlay { timeHover($0, humidity, chart: "humidity") }
+                // Nur die RS41-SGP misst den Luftdruck – ohne Werte kein Diagramm.
+                let pressure = points.filter { $0.pressure != nil }
+                if !pressure.isEmpty {
+                    Chart {
+                        ForEach(pressure, id: \.date) { s in
+                            LineMark(x: .value("Zeit", s.date), y: .value("Druck", s.pressure!))
+                                .foregroundStyle(.purple)
+                        }
+                        timeRule("pressure")
+                    }
+                    .chartYAxisLabel("hPa")
+                    .chartOverlay { timeHover($0, pressure, chart: "pressure") }
+                }
             }
         }
     }
@@ -206,6 +226,68 @@ struct SondeHistoryView: View {
                 .chartXScale(domain: 0...100)
                 .chartYAxisLabel("km")
                 .chartOverlay { altitudeHover($0, humidity, chart: "profileHumidity") }
+                // Ozonsonde: Der Zellstrom ist proportional zum Ozon-Partialdruck –
+                // die Ozonschicht zeigt sich als Bauch zwischen 15 und 30 km.
+                let ozone = ascent.filter { $0.ozoneCurrent != nil && $0.altitude != nil }
+                if !ozone.isEmpty {
+                    Chart {
+                        ForEach(ozone, id: \.date) { s in
+                            PointMark(x: .value("Ozon", s.ozoneCurrent!), y: .value("Höhe", s.altitude! / 1000))
+                                .symbolSize(6)
+                                .foregroundStyle(.mint)
+                        }
+                        altitudeRule("profileOzone")
+                    }
+                    .chartXAxisLabel("Ozon-Zellstrom (µA)")
+                    .chartYAxisLabel("km")
+                    .chartOverlay { altitudeHover($0, ozone, chart: "profileOzone") }
+                }
+            }
+        }
+    }
+
+    // MARK: Wind
+
+    /// Die Sonde treibt mit dem Wind: ihre Horizontalgeschwindigkeit ist die
+    /// Windgeschwindigkeit, der Wind kommt aus der Gegenrichtung ihres Kurses.
+    /// Nur der Aufstieg – am Fallschirm pendelt sie und der Kurs streut.
+    @ViewBuilder private var windCharts: some View {
+        let speed = ascent.filter { $0.windSpeed != nil && $0.altitude != nil }
+        let direction = speed.filter { $0.heading != nil && $0.windSpeed! >= 1 }
+        if speed.isEmpty {
+            empty("Für das Windprofil braucht es Geschwindigkeit und Höhe")
+        } else {
+            HStack(spacing: 10) {
+                Chart {
+                    ForEach(speed, id: \.date) { s in
+                        PointMark(x: .value("Wind", s.windSpeed! * 3.6), y: .value("Höhe", s.altitude! / 1000))
+                            .symbolSize(6)
+                            .foregroundStyle(.indigo)
+                    }
+                    altitudeRule("windSpeed")
+                }
+                .chartXAxisLabel("Wind (km/h)")
+                .chartYAxisLabel("km")
+                .chartOverlay { altitudeHover($0, speed, chart: "windSpeed") }
+                Chart {
+                    // Unter 1 m/s ist der Kurs Zufall.
+                    ForEach(direction, id: \.date) { s in
+                        PointMark(x: .value("Richtung", SondeSample.windFrom(heading: s.heading!)), y: .value("Höhe", s.altitude! / 1000))
+                            .symbolSize(6)
+                            .foregroundStyle(.orange)
+                    }
+                    altitudeRule("windDirection")
+                }
+                .chartXAxisLabel("Wind aus (°)")
+                .chartXScale(domain: 0...360)
+                .chartXAxis {
+                    AxisMarks(values: [0, 90, 180, 270, 360]) { value in
+                        AxisGridLine()
+                        AxisValueLabel { Text(verbatim: GeoMath.compass(Double(value.as(Int.self) ?? 0))) }
+                    }
+                }
+                .chartYAxisLabel("km")
+                .chartOverlay { altitudeHover($0, direction, chart: "windDirection") }
             }
         }
     }
@@ -282,11 +364,28 @@ private struct SampleInfo: View {
             if let v = sample.verticalSpeed {
                 Text("Steigen \(v.formatted(.number.precision(.fractionLength(1)))) m/s")
             }
+            if let w = sample.windSpeed {
+                let speed = (w * 3.6).formatted(.number.precision(.fractionLength(0)))
+                if let h = sample.heading, w >= 1 {
+                    Text("Wind \(speed) km/h aus \(GeoMath.compass(SondeSample.windFrom(heading: h)))")
+                } else {
+                    Text("Wind \(speed) km/h")
+                }
+            }
             if let t = sample.temperature {
                 Text("Temperatur \(t.formatted(.number.precision(.fractionLength(1)))) °C")
             }
             if let h = sample.humidity {
                 Text("Feuchte \(h.formatted(.number.precision(.fractionLength(0)))) %")
+            }
+            if let p = sample.pressure {
+                Text("Druck \(p.formatted(.number.precision(.fractionLength(1)))) hPa")
+            }
+            if let o = sample.ozoneCurrent {
+                Text("Ozon-Zellstrom \(o.formatted(.number.precision(.fractionLength(2)))) µA")
+            }
+            if let n = sample.satellites {
+                Text("GPS-Satelliten \(n)")
             }
         }
         .font(.caption.monospacedDigit())

@@ -49,7 +49,16 @@ struct ACARSMessage: Identifiable, Sendable, Equatable {
     var messageNumberBase: String? { messageNumber.map { String($0.prefix(3)) } }
     /// Folgebuchstabe der Nachrichtennummer (A, B, …).
     var messageSequence: Character? { messageNumber.flatMap { $0.count == 4 ? $0.last : nil } }
-    var interpretation: ACARSInterpretation { ACARSInterpreter.interpret(self) }
+    /// Deutung – aus dem Zwischenspeicher, sonst frisch gerechnet. Die Deutung
+    /// kostet Regex-Läufe; Liste, Rang (`relevance`) und Fernzugriff fragten sie
+    /// je Zeile mehrfach ab (Review 05.11.2026, U1). Wer eine Nachricht ablegt
+    /// (Empfang, Archiv), ruft nach dem letzten Feldwechsel `interpret()`.
+    var interpretation: ACARSInterpretation { interpretationCache.value ?? ACARSInterpreter.interpret(self) }
+    /// Nicht `private`: sonst wäre der Memberwise-Init der Nachricht nur dateiweit sichtbar.
+    var interpretationCache = ACARSInterpretationCache()
+
+    /// Deutung einmal berechnen und merken.
+    mutating func interpret() { interpretationCache.value = ACARSInterpreter.interpret(self) }
 
     /// Blöcke mit Ziffer als Block-ID kommen vom Flugzeug (downlink).
     var isDownlink: Bool { blockID.map { $0.isASCII && $0.isNumber } ?? false }
@@ -63,7 +72,11 @@ struct ACARSMessage: Identifiable, Sendable, Equatable {
         "RA": String(localized: "Freitext an Cockpit/Drucker"), "C1": String(localized: "Freitext an Cockpit/Drucker"),
         "SA": String(localized: "Datenlink-Statusmeldung (Media Advisory)"), "QA": String(localized: "OOOI: Gate verlassen (OUT)"),
         "QB": String(localized: "OOOI: abgehoben (OFF)"), "QC": String(localized: "OOOI: gelandet (ON)"), "QD": String(localized: "OOOI: am Gate (IN)"),
-        "QE": String(localized: "OOOI: OUT mit Kraftstoff"), "QF": String(localized: "OOOI: OFF mit Kraftstoff"), "Q1": String(localized: "ETA-Meldung"), "Q2": String(localized: "ETA-Meldung"),
+        "QE": String(localized: "OOOI: OUT mit Kraftstoff"), "QF": String(localized: "OOOI: OFF mit Kraftstoff"),
+        "QG": String(localized: "OOOI: OUT und Rückkehr"), "QH": String(localized: "OOOI: Gate verlassen (OUT)"), "QK": String(localized: "OOOI: Landung"),
+        "QL": String(localized: "OOOI: Ankunft"), "QM": String(localized: "OOOI: Ankunftsinformation"), "QN": String(localized: "OOOI: Ausweichflughafen"),
+        "QP": String(localized: "OOOI: Gate verlassen (OUT)"), "QQ": String(localized: "OOOI: abgehoben (OFF)"), "QR": String(localized: "OOOI: gelandet (ON)"),
+        "QS": String(localized: "OOOI: am Gate (IN)"), "QT": String(localized: "OOOI: OUT und Rückkehr"), "Q1": String(localized: "ETA-Meldung"), "Q2": String(localized: "ETA-Meldung"),
         "10": String(localized: "Positionsmeldung/Anforderung"), "15": String(localized: "Positionsmeldung"), "16": String(localized: "Positionsmeldung"), "20": String(localized: "Positionsmeldung"),
         "21": String(localized: "Positionsmeldung"), "22": String(localized: "Positionsmeldung"), "23": String(localized: "Positionsmeldung"), "2Z": String(localized: "Freitext an die Airline"),
         "30": String(localized: "Wetter/ATIS"), "33": String(localized: "Flugplan"), "3Z": String(localized: "Zeitmeldung"), "4A": String(localized: "Freitext"), "4M": String(localized: "Wartungsmeldung"),
@@ -90,6 +103,13 @@ struct ACARSMessage: Identifiable, Sendable, Equatable {
         "CF": String(localized: "Zentraler Wartungsrechner (CMC)"), "T1": String(localized: "Wartung/Technik"), "T2": String(localized: "Wartung/Technik"),
         "EI": String(localized: "Triebwerksdaten"), "S1": String(localized: "Satcom"), "PS": String(localized: "Kabine/Passagierdienst"), "H1": String(localized: "Hersteller"),
     ]
+}
+
+/// Zwischenspeicher der Deutung: zählt beim Vergleich nicht mit, damit eine
+/// gedeutete und eine ungedeutete Kopie derselben Nachricht gleich bleiben.
+struct ACARSInterpretationCache: Sendable, Equatable {
+    var value: ACARSInterpretation?
+    static func == (_: Self, _: Self) -> Bool { true }
 }
 
 /// Bitstrom → Blöcke, Zustandsfolge wie `decodeAcars` in acarsdec: Zwei

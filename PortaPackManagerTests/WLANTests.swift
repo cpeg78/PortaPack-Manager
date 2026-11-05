@@ -279,6 +279,56 @@ struct WLANTests {
         #expect(parsed.frame.messages.count == 2)
     }
 
+    /// Verwaltungs- oder Datenrahmen (ohne FCS) aus Rahmensteuerung und drei Adressen.
+    private func frame(_ fc: UInt8, flags: UInt8 = 0, _ a1: [UInt8], _ a2: [UInt8], _ a3: [UInt8], body: [UInt8] = []) throws -> WLANFrame {
+        try #require(WLANFrame.parse([fc, flags, 0, 0] + a1 + a2 + a3 + [0x10, 0x00] + body))
+    }
+
+    @Test("An- und Abmeldung: Deauth mit Grund, Gerät↔AP aus Daten- und Anmelderahmen")
+    func associationFrames() throws {
+        let ap: [UInt8] = [0x60, 0x60, 0x1F, 0x00, 0x00, 0x01], phone: [UInt8] = [0xA4, 0x83, 0xE7, 0x11, 0x22, 0x33]
+        let broadcast = [UInt8](repeating: 0xFF, count: 6)
+        let deauth = try frame(0xC0, broadcast, ap, ap, body: [0x07, 0x00])
+        #expect(deauth.kind == .deauthentication)
+        #expect(deauth.reasonCode == 7)
+        #expect(WLANFrame.reasonText(3) == "Gerät verlässt das Netz")
+        #expect(try frame(0xA0, phone, ap, ap, body: [0x08, 0x00]).kind == .disassociation)
+        #expect(deauth.association == nil)
+        // Daten zum AP (To DS): Gerät = Adresse 2; vom AP (From DS): Gerät = Adresse 1.
+        let up = try frame(0x08, flags: 0x01, ap, phone, ap)
+        #expect(up.kind == .data)
+        #expect(up.association?.station == phone && up.association?.bssid == ap)
+        let down = try frame(0x08, flags: 0x02, phone, ap, ap)
+        #expect(down.association?.station == phone && down.association?.bssid == ap)
+        // Rundruf vom AP ist kein Gerät.
+        #expect(try frame(0x08, flags: 0x02, broadcast, ap, ap).association == nil)
+        // Anmeldung: Anfrage vom Gerät, Antwort an das Gerät.
+        let request = try frame(0x00, ap, phone, ap, body: [0x31, 0x04, 0x0A, 0x00])
+        #expect(request.kind == .associationRequest && request.association?.station == phone)
+        let response = try frame(0x10, phone, ap, ap, body: [0x31, 0x04, 0x00, 0x00, 0x01, 0xC0])
+        #expect(response.kind == .associationResponse && response.association?.station == phone)
+        #expect(try frame(0xB0, ap, phone, ap, body: [0, 0, 1, 0, 0, 0]).kind == .authentication)
+    }
+
+    @Test("WPS-Element: Hersteller, Modell, Gerätename und Zustand")
+    func wpsElement() throws {
+        func tlv(_ type: UInt16, _ value: [UInt8]) -> [UInt8] {
+            [UInt8(type >> 8), UInt8(type & 0xFF), UInt8(value.count >> 8), UInt8(value.count & 0xFF)] + value
+        }
+        let body: [UInt8] = [0x00, 0x50, 0xF2, 0x04] + tlv(0x104A, [0x10]) + tlv(0x1044, [0x02])
+            + tlv(0x1021, Array("AVM".utf8)) + tlv(0x1023, Array("FRITZ!Box".utf8)) + tlv(0x1024, Array("7590".utf8))
+            + tlv(0x1011, Array("FRITZ!Box 7590".utf8))
+        let mpdu = WLANTestTransmitter.beacon(source: Self.source, elements: [0x00, 0x04] + Array("Test".utf8) + [0xDD, UInt8(body.count)] + body)
+        let wps = try #require(WLANFrame.parse(Array(mpdu.dropLast(4)))?.wps)
+        #expect(wps.manufacturer == "AVM" && wps.model == "FRITZ!Box" && wps.modelNumber == "7590")
+        #expect(wps.configured == true)
+        // Gerätename steckt schon im Modell → nur einmal.
+        #expect(wps.summary == "AVM FRITZ!Box 7590")
+        // Telefon in der Probe-Anfrage: nur der Name.
+        #expect(WPSInfo(tlv: tlv(0x1011, Array("Pixel 8".utf8)))?.summary == "Pixel 8")
+        #expect(WPSInfo(tlv: tlv(0x104A, [0x10])) == nil)
+    }
+
     @Test("Schutz aus RSN/WPA/Privacy, Steuerrahmen, Probe-Anfrage")
     func securityAndControl() throws {
         func beacon(_ elements: [UInt8], privacy: Bool = false) -> WLANFrame {

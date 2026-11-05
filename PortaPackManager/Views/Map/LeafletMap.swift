@@ -205,7 +205,7 @@ struct LeafletMap: NSViewRepresentable {
     static let html: String = """
         <!doctype html><html><head><meta charset="utf-8">
         <meta name="viewport" content="width=device-width, initial-scale=1">
-        <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src https://tile.openstreetmap.org data:; style-src 'unsafe-inline'; script-src 'unsafe-inline'">
+        <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src https://tile.openstreetmap.org data:; style-src 'unsafe-inline'; script-src 'none'">
         <style>\(resource("leaflet", "css"))</style>
         <style>\(resource("ppm-map", "css"))</style>
         </head><body><div id="map"></div></body></html>
@@ -230,6 +230,8 @@ final class LeafletMessageProxy: NSObject, WKScriptMessageHandler {
 final class LeafletCoordinator: NSObject, WKNavigationDelegate, WKUIDelegate {
     weak var webView: WKWebView?
     var parent: LeafletMap?
+    /// Optionen ohne SwiftUI-Elternteil (Tests mit `makeWebView`).
+    var defaultOptions = MapOptions()
     weak var controller: MapController?
     private var ready = false
     private var sent: [String: MapFeature] = [:]
@@ -261,13 +263,14 @@ final class LeafletCoordinator: NSObject, WKNavigationDelegate, WKUIDelegate {
         let reset = needsReset
         let (diff, state) = MapDiff.make(old: reset ? [:] : sent, new: latest)
         let commands = pendingCommands.filter(\.isFinite)
-        pendingCommands = []
         let message = MapMessage(options: options, diff: diff, commands: commands, reset: reset)
-        guard !message.isEmpty else { sent = state; return }
+        guard !message.isEmpty else { pendingCommands = []; sent = state; return }
         guard let json = message.json() else {
+            // Befehle (`center`, `fit`) bleiben liegen – sonst gingen sie beim Kodierfehler verloren.
             LeafletMap.log.error("Karte: Nachricht ließ sich nicht kodieren – Stand bleibt, nächster Versuch beim nächsten Takt")
             return
         }
+        pendingCommands = []
         sent = state
         needsReset = false
         // Der JSON-Text geht als Argument hinüber – nie als Teil des Quelltexts.
@@ -302,7 +305,7 @@ final class LeafletCoordinator: NSObject, WKNavigationDelegate, WKUIDelegate {
             ready = true
             sent = [:]
             needsReset = false
-            flush(options: parent?.options ?? MapOptions())
+            flush(options: parent?.options ?? defaultOptions)
         case "view":
             func number(_ key: String) -> Double? { (object[key] as? NSNumber)?.doubleValue }
             guard let s = number("south"), let w = number("west"), let n = number("north"), let e = number("east"),

@@ -1,6 +1,8 @@
 import SwiftUI
 
 struct BLEView: View {
+    @StoredColumns("ble.2") private var columns2: TableColumnCustomization<BLELogLine>
+    @StoredColumns("ble.1") private var columns: TableColumnCustomization<BLEDevice>
     @Environment(DeviceSession.self) private var session
     /// Lebt im `ReceiverStore` – überlebt den Seitenwechsel samt laufendem Empfang.
     @Bindable private var model = ReceiverStore.shared.ble
@@ -39,24 +41,24 @@ struct BLEView: View {
     // MARK: - Geräte
 
     private var deviceTable: some View {
-        Table(model.devices.sorted(by: deviceOrder), selection: $selectedDevice, sortOrder: $deviceOrder) {
+        Table(model.devices.sorted(by: deviceOrder), selection: $selectedDevice, sortOrder: $deviceOrder, columnCustomization: $columns) {
             TableColumn("Adresse", sortUsing: ColumnSort("adresse", text: { $0.address.string })) { device in
                 Text(device.address.string).font(.body.monospaced())
                     .foregroundStyle(device.address.rotates ? .secondary : .primary)
                     .help(device.address.kind)
-            }.width(140)
-            TableColumn("Name", sortUsing: ColumnSort("name", text: { $0.name })) { Text($0.name ?? "–") }
+            }.width(min: 84, ideal: 140).customizationID("adresse")
+            TableColumn("Name", sortUsing: ColumnSort("name", text: { $0.name })) { Text($0.name ?? "–") }.customizationID("name")
             TableColumn("Gerät", sortUsing: ColumnSort("geraet", text: { $0.kind ?? $0.company })) { device in
                 Text(device.kind ?? device.company ?? "–").foregroundStyle(device.kind == nil ? .secondary : .primary)
-            }
+            }.customizationID("gerat")
             TableColumn("Werte") { device in
                 Text(summary(device.readings)).foregroundStyle(.secondary)
-            }
+            }.customizationID("werte")
             TableColumn("Pegel", sortUsing: ColumnSort("pegel") { $0.rssiDB }) { device in
                 Text(String(format: "%.0f dB", device.rssiDB)).monospacedDigit()
-            }.width(50)
-            TableColumn("Rahmen", sortUsing: ColumnSort("pakete") { $0.count }) { Text("\($0.count)").monospacedDigit() }.width(50)
-            TableColumn("Zuletzt", sortUsing: ColumnSort("zuletzt") { $0.lastSeen }) { Text($0.lastSeen, style: .relative).foregroundStyle(.secondary) }.width(90)
+            }.width(min: 30, ideal: 50).customizationID("pegel")
+            TableColumn("Rahmen", sortUsing: ColumnSort("pakete") { $0.count }) { Text("\($0.count)").monospacedDigit() }.width(min: 30, ideal: 50).customizationID("rahmen")
+            TableColumn("Zuletzt", sortUsing: ColumnSort("zuletzt") { $0.lastSeen }) { Text($0.lastSeen, style: .relative).foregroundStyle(.secondary) }.width(min: 54, ideal: 90).customizationID("zuletzt")
         }
         .overlay {
             if model.devices.isEmpty {
@@ -82,15 +84,15 @@ struct BLEView: View {
     }
 
     private var packetTable: some View {
-        Table(visibleLog.sorted(by: packetOrder), selection: $selectedPacket, sortOrder: $packetOrder) {
-            TableColumn("Zeit", sortUsing: ColumnSort("zeit") { $0.id }) { Text($0.packet.date, format: .dateTime.hour().minute().second()).monospacedDigit() }.width(65)
-            TableColumn("Kanal", sortUsing: ColumnSort("kanal") { $0.packet.channel }) { Text("\($0.packet.channel)").monospacedDigit() }.width(40)
-            TableColumn("Typ", sortUsing: ColumnSort("typ", text: { $0.advertisement?.type.name })) { Text($0.advertisement?.type.name ?? String(format: "0x%02X", $0.packet.pdu[0] & 0x0F)) }.width(120)
+        Table(visibleLog.sorted(by: packetOrder), selection: $selectedPacket, sortOrder: $packetOrder, columnCustomization: $columns2) {
+            TableColumn("Zeit", sortUsing: ColumnSort("zeit") { $0.id }) { Text($0.packet.date, format: .dateTime.hour().minute().second()).monospacedDigit() }.width(min: 39, ideal: 65).customizationID("zeit")
+            TableColumn("Kanal", sortUsing: ColumnSort("kanal") { $0.packet.channel }) { Text("\($0.packet.channel)").monospacedDigit() }.width(min: 28, ideal: 40).customizationID("kanal")
+            TableColumn("Typ", sortUsing: ColumnSort("typ", text: { $0.advertisement?.type.name })) { Text($0.advertisement?.type.name ?? String(format: "0x%02X", $0.packet.pdu[0] & 0x0F)) }.width(min: 72, ideal: 120).customizationID("typ")
             TableColumn("Adresse", sortUsing: ColumnSort("adresse", text: { $0.advertisement?.address?.string })) { line in
                 Text(line.advertisement?.address?.string ?? "–").font(.body.monospaced())
-            }.width(140)
-            TableColumn("Pegel", sortUsing: ColumnSort("pegel") { $0.packet.rssiDB }) { Text(String(format: "%.0f", $0.packet.rssiDB)).monospacedDigit() }.width(40)
-            TableColumn("Daten") { Text($0.hex).font(.caption.monospaced()).foregroundStyle(.secondary) }
+            }.width(min: 84, ideal: 140).customizationID("adresse")
+            TableColumn("Pegel", sortUsing: ColumnSort("pegel") { $0.packet.rssiDB }) { Text(String(format: "%.0f", $0.packet.rssiDB)).monospacedDigit() }.width(min: 28, ideal: 40).customizationID("pegel")
+            TableColumn("Daten") { Text($0.hex).font(.caption.monospaced()).foregroundStyle(.secondary) }.customizationID("daten")
         }
         .overlay {
             if visibleLog.isEmpty {
@@ -221,16 +223,7 @@ struct BLEView: View {
                 ReceiverControls(model: model, device: session.hackRF)
             }
             Section(PanelSection.status) {
-                LabeledContent("Geräte", value: "\(model.devices.count)")
-                LabeledContent("Rahmen", value: "\(model.packetCount)")
-                LabeledContent("Prüfsummenfehler (CRC)", value: "\(model.crcErrors)")
-                if model.running {
-                    // Nur beim Wechseln neu – ein fester Kanal steht schon oben.
-                    if model.choice == .hop {
-                        LabeledContent("Aktueller Kanal", value: "\(model.channel)")
-                    }
-                    LabeledContent("Rauschen", value: String(format: "%.1f dBFS", model.noiseDB))
-                }
+                BLEStatusRows(model: model)
             }
             Section(PanelSection.anzeige) {
                 Toggle("Scan-Anfragen zeigen", isOn: $model.showRequests)
@@ -258,5 +251,25 @@ extension BLEView {
                          .text(d.channels.sorted().map(String.init).joined(separator: " ")), .flag(d.connectable),
                          .number(d.rssiDB), .integer(d.count), .date(d.firstSeen), .date(d.lastSeen)]
                     })
+    }
+}
+
+/// Zähler und Pegel als eigene Ansicht: sie ändern sich mehrmals je Sekunde,
+/// und im Bedienfeld selbst gelesen zeichneten sie das ganze Formular neu –
+/// das Scrollen ruckelte (Review 05.11.2026).
+private struct BLEStatusRows: View {
+    let model: BLEModel
+
+    var body: some View {
+        LabeledContent("Geräte", value: "\(model.devices.count)")
+        LabeledContent("Rahmen", value: "\(model.packetCount)")
+        LabeledContent("Prüfsummenfehler (CRC)", value: "\(model.crcErrors)")
+        if model.running {
+            // Nur beim Wechseln neu – ein fester Kanal steht schon oben.
+            if model.choice == .hop {
+                LabeledContent("Aktueller Kanal", value: "\(model.channel)")
+            }
+            LabeledContent("Rauschen", value: String(format: "%.1f dBFS", model.noiseDB))
+        }
     }
 }

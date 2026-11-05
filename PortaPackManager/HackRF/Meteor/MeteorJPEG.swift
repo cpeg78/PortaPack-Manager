@@ -127,6 +127,9 @@ enum MeteorJPEG {
         var quality: Int
         var pixels: [UInt8]          // 8 × 112, zeilenweise
         var decodedMCUs: Int
+        /// Bordzeit: Sekunde des Tages (ms + µs, Bytes 2–7 big-endian wie SatDump
+        /// `segment.cpp`); der Tageszähler davor wird nicht gebraucht.
+        var secondOfDay: Double = 0
     }
 
     /// Zerlegt die Nutzdaten eines MSU-MR-Pakets (ohne Primärkopf): 8 Byte
@@ -176,7 +179,10 @@ enum MeteorJPEG {
             decoded += 1
         }
         guard decoded > 0 else { return nil }
-        return Segment(mcuNumber: mcuNumber, quality: qf, pixels: pixels, decodedMCUs: decoded)
+        let milliseconds = Int(payload[2]) << 24 | Int(payload[3]) << 16 | Int(payload[4]) << 8 | Int(payload[5])
+        let microseconds = Int(payload[6]) << 8 | Int(payload[7])
+        return Segment(mcuNumber: mcuNumber, quality: qf, pixels: pixels, decodedMCUs: decoded,
+                       secondOfDay: Double(milliseconds) / 1000 + Double(microseconds) / 1_000_000)
     }
 
     /// Liest Bits MSB zuerst.

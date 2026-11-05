@@ -230,17 +230,7 @@ struct HydrogenView: View {
     private var statusSection: some View {
         if model.running || model.signalSeconds > 0 {
             Section(PanelSection.status) {
-                ProgressView(value: min(1, model.signalSeconds / max(1, model.targetSeconds))) {
-                    Text(model.capture == .reference && model.running
-                         ? String(format: String(localized: "Referenz %.0f von %.0f s"), model.referenceSeconds, model.targetSeconds)
-                         : String(format: String(localized: "Gemessen %.0f von %.0f s"), model.signalSeconds, model.targetSeconds))
-                        .font(.caption.monospacedDigit())
-                }
-                if model.running, let device = session.hackRF, device.isReceiving(for: model), let levels = device.inputLevels {
-                    Text(String(format: String(localized: "Pegel %.0f dBFS · Anschlag %.2f %%"), levels.rmsDBFS, levels.clipped * 100))
-                        .font(.caption.monospacedDigit())
-                        .foregroundStyle(levels.clipped >= 0.001 ? .orange : .secondary)
-                }
+                HydrogenStatusRows(model: model, device: session.hackRF)
             }
         }
     }
@@ -248,12 +238,16 @@ struct HydrogenView: View {
     /// Eigene Regler statt `ReceiverControls`: bewusst ohne Automatik.
     private var gainSection: some View {
         Section(PanelSection.empfang) {
-            LabeledContent("LNA \(Int(model.lnaGain)) dB") {
+            LabeledContent {
                 Slider(value: $model.lnaGain, in: 0...40, step: 8) { _ in model.applyFromControls(session.hackRF) }
+            } label: {
+                GainLabel(name: "LNA", value: model.lnaGain)
             }
             .help(GainHelp.lna)
-            LabeledContent("VGA \(Int(model.vgaGain)) dB") {
+            LabeledContent {
                 Slider(value: $model.vgaGain, in: 0...62, step: 2) { _ in model.applyFromControls(session.hackRF) }
+            } label: {
+                GainLabel(name: "VGA", value: model.vgaGain)
             }
             .help(GainHelp.vga)
             Toggle("Eingebauter Verstärker (+14 dB)", isOn: $model.amplifier)
@@ -414,6 +408,28 @@ struct HydrogenPlot: View {
                 if pen { path.addLine(to: p) } else { path.move(to: p); pen = true }
             }
             context.stroke(path, with: .color(s.color), lineWidth: s.width)
+        }
+    }
+}
+
+/// Zähler und Pegel als eigene Ansicht: sie ändern sich mehrmals je Sekunde,
+/// und im Bedienfeld selbst gelesen zeichneten sie das ganze Formular neu –
+/// das Scrollen ruckelte (Review 05.11.2026).
+private struct HydrogenStatusRows: View {
+    let model: HydrogenModel
+    let device: HackRFDevice?
+
+    var body: some View {
+        ProgressView(value: min(1, model.signalSeconds / max(1, model.targetSeconds))) {
+            Text(model.capture == .reference && model.running
+                 ? String(format: String(localized: "Referenz %.0f von %.0f s"), model.referenceSeconds, model.targetSeconds)
+                 : String(format: String(localized: "Gemessen %.0f von %.0f s"), model.signalSeconds, model.targetSeconds))
+                .font(.caption.monospacedDigit())
+        }
+        if model.running, let device, device.isReceiving(for: model), let levels = device.inputLevels {
+            Text(String(format: String(localized: "Pegel %.0f dBFS · Anschlag %.2f %%"), levels.rmsDBFS, levels.clipped * 100))
+                .font(.caption.monospacedDigit())
+                .foregroundStyle(levels.clipped >= 0.001 ? .orange : .secondary)
         }
     }
 }

@@ -88,6 +88,51 @@ struct DABCodingTests {
         #expect(subchannel?.protection == .eep(profileB: false, level: 3))
     }
 
+    /// FIB aus einer FIG 0 (Kopf: Typ 0, Länge) mit Erweiterung `ext`.
+    private func fig0(_ ext: UInt8, _ payload: [UInt8]) -> [UInt8] {
+        let body = [ext] + payload
+        return [UInt8(body.count)] + body + [0xFF]
+    }
+
+    @Test("FIG 0/10, 0/9, 0/18, 0/19: Uhrzeit, Ortszeit, Durchsagen")
+    func timeAndAnnouncements() {
+        var ensemble = DABEnsemble()
+        // 2026-11-04 19:35 UTC = MJD 61348; kurze Form ohne Sekunden.
+        let mjd = 61_348, hour = 19, minute = 35
+        let word = mjd << 14 | hour << 6 | minute
+        ensemble.process(fib: fig0(10, [UInt8(word >> 24 & 0xFF), UInt8(word >> 16 & 0xFF), UInt8(word >> 8 & 0xFF), UInt8(word & 0xFF)])[...])
+        #expect(ensemble.clock == Date(timeIntervalSince1970: 1_793_820_900))
+        ensemble.process(fib: fig0(9, [0x02, 0xE0, 0x00])[...])
+        #expect(ensemble.localOffsetMinutes == 60)
+        // Dienst 0xD301 unterstützt Verkehrsfunk (Bit 1), Cluster 5; Cluster 5 meldet Verkehrsfunk auf Unterkanal 3.
+        ensemble.process(fib: fig0(18, [0xD3, 0x01, 0x00, 0x02, 0x01, 0x05])[...])
+        #expect(ensemble.announcementSupport[0xD301] == 0x0002)
+        ensemble.process(fib: fig0(19, [0x05, 0x00, 0x02, 0x03])[...])
+        #expect(ensemble.activeAnnouncements().map(\.subchannelID) == [3])
+        #expect(DABAnnouncement.names(0x0002) == ["Verkehrsfunk"])
+        // Ende der Durchsage: Arten 0.
+        ensemble.process(fib: fig0(19, [0x05, 0x00, 0x00, 0x03])[...])
+        #expect(ensemble.activeAnnouncements().isEmpty)
+    }
+
+    @Test("FIG 0/21 und 0/24: Frequenzen anderer Ensembles, UKW-Alternativen, Dienste in anderen Ensembles")
+    func frequencyInformation() {
+        var ensemble = DABEnsemble()
+        // Ensemble 10C3 auf 178,352 MHz (11147 · 16 kHz), UKW-PI D312 auf 98,5 und 99,7 MHz.
+        let list: [UInt8] = [0x10, 0xC3, 0x03, 0x00, 0x2B, 0x8B,
+                             0xD3, 0x12, 0x82, 110, 122]
+        ensemble.process(fib: fig0(21, [0x00, UInt8(list.count)] + list)[...])
+        #expect(ensemble.ensembleFrequencies[0x10C3] == [178_352])
+        #expect(ensemble.fmFrequencies[0xD312] == [98_500, 99_700])
+        #expect(DABModel.channelName(kHz: [178_352]) == "5C")
+        // FIG 0/24 mit OE = 1: Dienst D312 läuft auch in Ensemble 10C3.
+        ensemble.process(fib: fig0(0x40 | 24, [0xD3, 0x12, 0x01, 0x10, 0xC3])[...])
+        #expect(ensemble.otherEnsembles[0xD312] == [0x10C3])
+        // Abgeschnittene Liste: kein Absturz, nichts Falsches.
+        ensemble.process(fib: fig0(21, [0x00, 0x09, 0x10, 0xC3, 0x07, 0x00])[...])
+        #expect(ensemble.ensembleFrequencies[0x10C3] == [178_352])
+    }
+
     @Test("EBU-Latin-Zeichensatz")
     func charset() {
         // 0x91 = ä, 0x97 = ö, 0x99 = ü, 0x8D = ß

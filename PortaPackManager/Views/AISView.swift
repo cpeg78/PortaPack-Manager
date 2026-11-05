@@ -2,6 +2,7 @@ import CoreLocation
 import SwiftUI
 
 struct AISView: View {
+    @StoredColumns("ais.1") private var columns: TableColumnCustomization<AISVessel>
     @Environment(DeviceSession.self) private var session
     @Environment(\.openWindow) private var openWindow
     /// Gehört dem Fernzugriff, damit App und Browser denselben Empfänger bedienen.
@@ -49,33 +50,32 @@ struct AISView: View {
                    onPick: { cardHidden = false })
             .equatable()
             .onChange(of: selection) { _, _ in cardHidden = false }
-            .overlay(alignment: .topTrailing) {
+            .overlay {
                 if !cardHidden, let vessel = model.vessels.first(where: { $0.id == selection }) {
-                    infoCard(vessel)
-                        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 10))
-                        .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(.orange.opacity(0.6)))
-                        .padding(10)
+                    MapInfoCardFrame(width: 250) { infoCard(vessel) }
                 }
             }
     }
 
     private var table: some View {
-        Table(model.vessels.sorted(by: order, current: [byDistance]), selection: $selection, sortOrder: $order) {
-            TableColumn("MMSI", sortUsing: ColumnSort("mmsi") { $0.mmsi }) { Text(String($0.mmsi)).font(.body.monospaced()) }.width(90)
-            TableColumn("Name", sortUsing: ColumnSort("name", text: { $0.name })) { Text($0.name ?? "–") }.width(min: 90, ideal: 140)
-            TableColumn("Rufz.", sortUsing: ColumnSort("rufzeichen", text: { $0.callsign })) { Text($0.callsign ?? "–").font(.body.monospaced()) }.width(60)
-            TableColumn("Typ", sortUsing: ColumnSort("typ", text: { Self.kindText($0) })) { vessel in
-                Text(Self.kindText(vessel) ?? "–")
-            }.width(min: 80, ideal: 110)
+        Table(model.vessels.sorted(by: order, current: [byDistance]), selection: $selection, sortOrder: $order, columnCustomization: $columns) {
+            TableColumn("MMSI", sortUsing: ColumnSort("mmsi") { $0.mmsi }) { Text(String($0.mmsi)).font(.body.monospaced()) }.width(min: 54, ideal: 90).customizationID("mmsi")
+            TableColumn("Name", sortUsing: ColumnSort("name", text: { $0.name })) { Text($0.name ?? "–") }.width(min: 90, ideal: 140).customizationID("name")
+            TableColumn("Rufz.", sortUsing: ColumnSort("rufzeichen", text: { $0.callsign })) { Text($0.callsign ?? "–").font(.body.monospaced()) }.width(min: 36, ideal: 60).customizationID("rufz")
+            TableColumn("Typ", sortUsing: ColumnSort("typ", text: { $0.kindText })) { vessel in
+                Text(vessel.kindText ?? "–")
+                    .foregroundStyle(vessel.beaconActive ? Color.red : Color.primary)
+                    .fontWeight(vessel.beaconActive ? .bold : .regular)
+            }.width(min: 80, ideal: 110).customizationID("typ")
             TableColumn("Fahrt", sortUsing: ColumnSort("fahrt") { $0.speedKnots }) { vessel in
                 Text([vessel.speedKnots.map { String(format: "%.1f kn", $0) },
                       vessel.courseDegrees.map { String(format: "%.0f°", $0) }].compactMap { $0 }.joined(separator: " · "))
-            }.width(min: 60, ideal: 90)
-            TableColumn("Status", sortUsing: ColumnSort("status", text: { AISMessage.statusText($0.status) })) { Text(AISMessage.statusText($0.status) ?? "–").foregroundStyle(.secondary) }.width(min: 70, ideal: 100)
-            TableColumn("Ziel", sortUsing: ColumnSort("ziel", text: { $0.destination })) { Text($0.destination ?? "–") }.width(min: 60, ideal: 100)
-            TableColumn("Entfernung", sortUsing: byDistance) { Text(distanceString($0)) }.width(90)
-            TableColumn("Nachr.", sortUsing: ColumnSort("msg") { $0.messages }) { Text("\($0.messages)").monospacedDigit() }.width(40)
-            TableColumn("Zuletzt", sortUsing: ColumnSort("zuletzt") { $0.lastSeen }) { Text($0.lastSeen, style: .relative).foregroundStyle(.secondary) }.width(90)
+            }.width(min: 60, ideal: 90).customizationID("fahrt")
+            TableColumn("Status", sortUsing: ColumnSort("status", text: { AISMessage.statusText($0.status) })) { Text(AISMessage.statusText($0.status) ?? "–").foregroundStyle(.secondary) }.width(min: 70, ideal: 100).customizationID("status")
+            TableColumn("Ziel", sortUsing: ColumnSort("ziel", text: { $0.destination })) { Text($0.destination ?? "–") }.width(min: 60, ideal: 100).customizationID("ziel")
+            TableColumn("Entfernung", sortUsing: byDistance) { Text(distanceString($0)) }.width(min: 54, ideal: 90).customizationID("entfernung")
+            TableColumn("Nachr.", sortUsing: ColumnSort("msg") { $0.messages }) { Text("\($0.messages)").monospacedDigit() }.width(min: 28, ideal: 40).customizationID("nachr")
+            TableColumn("Zuletzt", sortUsing: ColumnSort("zuletzt") { $0.lastSeen }) { Text($0.lastSeen, style: .relative).foregroundStyle(.secondary) }.width(min: 54, ideal: 90).customizationID("zuletzt")
         }
         .contextMenu(forSelectionType: AISVessel.ID.self) { ids in
             if let vessel = model.vessels.first(where: { ids.contains($0.id) }) {
@@ -122,11 +122,16 @@ struct AISView: View {
                 ReceiverControls(model: model, device: session.hackRF)
             }
             Section(PanelSection.status) {
-                LabeledContent("Schiffe", value: "\(model.vessels.count)")
-                LabeledContent("Mit Position", value: "\(positioned.count)")
-                LabeledContent("Meldungen", value: "\(model.messageCount)")
-                ForEach(Array(AISModel.channels.enumerated()), id: \.offset) { index, channel in
-                    LabeledContent("Kanal \(channel.name)", value: String(format: "%.0f dBFS", model.channelDB[index]))
+                AISStatusRows(model: model, positioned: positioned.count)
+            }
+            if !model.safetyMessages.isEmpty {
+                Section("Sicherheitsmeldungen") {
+                    ForEach(model.safetyMessages.prefix(20)) { message in
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text(message.text).textSelection(.enabled)
+                            Text(safetyCaption(message)).font(.caption).foregroundStyle(.secondary)
+                        }
+                    }
                 }
             }
             Section("Letzte Meldungen (NMEA)") {
@@ -157,18 +162,24 @@ struct AISView: View {
         .formStyle(.grouped)
     }
 
-    /// Steckbrief des ausgewählten Schiffs – fast alles sendet das Schiff
-    /// selbst (Meldung 5 bzw. 24); nur das Foto kommt aus dem Netz.
-    /// Art des Senders für Tabelle und Infokarte.
-    private static func kindText(_ vessel: AISVessel) -> String? {
-        vessel.isBaseStation ? String(localized: "Basisstation")
-            : vessel.isAidToNavigation ? String(localized: "Seezeichen")
-            : AISMessage.shipTypeText(vessel.shipType)
+    /// Absender (Name oder MMSI), Empfänger und Uhrzeit einer Sicherheitsmeldung.
+    private func safetyCaption(_ message: AISSafetyMessage) -> String {
+        let sender = model.vessels.first { $0.mmsi == message.mmsi }?.name ?? String(message.mmsi)
+        let target = message.destination.map { String(localized: " an \(String($0))") } ?? ""
+        return "\(sender)\(target) · " + message.date.formatted(date: .omitted, time: .shortened)
     }
 
+    /// Steckbrief des ausgewählten Schiffs – fast alles sendet das Schiff
+    /// selbst (Meldung 5 bzw. 24); nur das Foto kommt aus dem Netz.
     private func infoCard(_ vessel: AISVessel) -> some View {
         var rows: [InfoCardContent.Row] = []
-        if let kind = Self.kindText(vessel) { rows.append(.init(String(localized: "Typ"), kind)) }
+        if let kind = vessel.kindText { rows.append(.init(String(localized: "Typ"), kind)) }
+        if let text = vessel.safetyText { rows.append(.init(String(localized: "Meldung"), text)) }
+        if let altitude = vessel.altitudeMeters { rows.append(.init(String(localized: "Höhe"), "\(altitude) m")) }
+        if let weather = vessel.weather {
+            rows.append(.init(String(localized: "Wetter"), weather.summary))
+            if let time = weather.time { rows.append(.init(String(localized: "Gemessen"), time)) }
+        }
         if let status = AISMessage.statusText(vessel.status) { rows.append(.init(String(localized: "Status"), status)) }
         if let speed = vessel.speedKnots {
             let course = vessel.courseDegrees.map { String(format: " · %.0f° %@", $0, GeoMath.compass($0)) } ?? ""
@@ -234,11 +245,14 @@ struct MapShip: MapTarget {
         id = vessel.id
         label = vessel.name ?? String(vessel.mmsi)
         coordinate = CLLocationCoordinate2D(latitude: vessel.latitude ?? 0, longitude: vessel.longitude ?? 0)
-        let fixed = vessel.isBaseStation || vessel.isAidToNavigation
+        let fixed = vessel.isBaseStation || vessel.isAidToNavigation || vessel.beacon != nil || vessel.weather != nil
         heading = fixed ? nil : vessel.displayHeading
         stale = now.timeIntervalSince(vessel.lastSeen) > Self.staleSeconds
         trail = vessel.trail.map { CLLocationCoordinate2D(latitude: $0.lat, longitude: $0.lon) }
-        symbol = vessel.isBaseStation ? .antenna
+        symbol = vessel.beacon != nil ? .sos
+            : vessel.weather != nil && vessel.shipType == nil ? .weather
+            : vessel.isSARAircraft ? .plane
+            : vessel.isBaseStation ? .antenna
             : vessel.isAidToNavigation ? .beacon
             : heading == nil ? .dot : .hull
         // Größer als Flugzeuge und dunkel umrandet: Pfeile in der Akzentfarbe gingen
@@ -338,11 +352,28 @@ extension AISView {
         CSVDocument(header: ["mmsi", "name", "rufzeichen", "imo", "typ", "status", "fahrt_kn", "kurs_grad", "steuerkurs_grad",
                              "breite", "laenge", "ziel", "eta", "laenge_m", "breite_m", "tiefgang_m", "nachrichten", "zuletzt", "kanal"],
                     rows: model.vessels.map { v in
-                        [.integer(v.mmsi), .text(v.name), .text(v.callsign), .integer(v.imo), .text(Self.kindText(v)),
+                        [.integer(v.mmsi), .text(v.name), .text(v.callsign), .integer(v.imo), .text(v.kindText),
                          .text(AISMessage.statusText(v.status)), .number(v.speedKnots), .number(v.courseDegrees, digits: 0),
                          .integer(v.heading), .number(v.latitude, digits: 5), .number(v.longitude, digits: 5), .text(v.destination),
                          .text(v.eta?.text), .integer(v.lengthMeters), .integer(v.beamMeters), .number(v.draughtMeters),
                          .integer(v.messages), .date(v.lastSeen), .text(v.lastChannel)]
                     })
+    }
+}
+
+/// Zähler und Pegel als eigene Ansicht: sie ändern sich mehrmals je Sekunde,
+/// und im Bedienfeld selbst gelesen zeichneten sie das ganze Formular neu –
+/// das Scrollen ruckelte (Review 05.11.2026).
+private struct AISStatusRows: View {
+    let model: AISModel
+    let positioned: Int
+
+    var body: some View {
+        LabeledContent("Schiffe", value: "\(model.vessels.count)")
+        LabeledContent("Mit Position", value: "\(positioned)")
+        LabeledContent("Meldungen", value: "\(model.messageCount)")
+        ForEach(Array(AISModel.channels.enumerated()), id: \.offset) { index, channel in
+            LabeledContent("Kanal \(channel.name)", value: String(format: "%.0f dBFS", model.channelDB[index]))
+        }
     }
 }

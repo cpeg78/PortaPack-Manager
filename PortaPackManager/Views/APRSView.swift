@@ -2,6 +2,7 @@ import CoreLocation
 import SwiftUI
 
 struct APRSView: View {
+    @StoredColumns("aprs.1") private var columns: TableColumnCustomization<APRSStation>
     @Environment(DeviceSession.self) private var session
     /// Lebt im `ReceiverStore` – überlebt den Seitenwechsel samt laufendem Empfang.
     @Bindable private var model = ReceiverStore.shared.aprs
@@ -91,24 +92,24 @@ struct APRSView: View {
     }
 
     private var table: some View {
-        Table(model.stations.sorted(by: order, current: [byDistance]), selection: $selection, sortOrder: $order) {
-            TableColumn("Rufzeichen", sortUsing: ColumnSort("rufzeichen", text: { $0.id })) { Text($0.id).font(.body.monospaced()) }.width(min: 80, ideal: 100)
+        Table(model.stations.sorted(by: order, current: [byDistance]), selection: $selection, sortOrder: $order, columnCustomization: $columns) {
+            TableColumn("Rufzeichen", sortUsing: ColumnSort("rufzeichen", text: { $0.id })) { Text($0.id).font(.body.monospaced()) }.width(min: 80, ideal: 100).customizationID("rufzeichen")
             TableColumn("Typ", sortUsing: ColumnSort("typ", text: { $0.last.kind.title })) { station in
                 Label(station.last.kind.title, systemImage: station.last.systemImage)
-            }.width(min: 80, ideal: 110)
-            TableColumn("Entfernung", sortUsing: byDistance) { Text(distanceString($0)) }.width(90)
+            }.width(min: 80, ideal: 110).customizationID("typ")
+            TableColumn("Entfernung", sortUsing: byDistance) { Text(distanceString($0)) }.width(min: 54, ideal: 90).customizationID("entfernung")
             TableColumn("Tempo", sortUsing: ColumnSort("tempo") { $0.last.speedKnots }) { station in
                 Text(station.last.speedKnots.map { String(format: "%.0f km/h", $0 * 1.852) } ?? "–")
-            }.width(70)
+            }.width(min: 42, ideal: 70).customizationID("tempo")
             TableColumn("Höhe", sortUsing: ColumnSort("hoehe") { $0.last.altitudeMeters }) { station in
                 Text(station.last.altitudeMeters.map { String(format: "%.0f m", $0) } ?? "–")
-            }.width(60)
+            }.width(min: 36, ideal: 60).customizationID("hohe")
             TableColumn("Kommentar") { station in
-                Text(detail(station.last)).foregroundStyle(.secondary).lineLimit(1)
-            }
-            TableColumn("Pfad") { Text($0.last.path).font(.caption.monospaced()).foregroundStyle(.secondary) }.width(min: 60, ideal: 120)
-            TableColumn("Rahmen", sortUsing: ColumnSort("pakete") { $0.packets }) { Text("\($0.packets)").monospacedDigit() }.width(50)
-            TableColumn("Zuletzt", sortUsing: ColumnSort("zuletzt") { $0.lastHeard }) { Text($0.lastHeard, style: .relative).foregroundStyle(.secondary) }.width(90)
+                Text(detail(station)).foregroundStyle(.secondary).lineLimit(1)
+            }.customizationID("kommentar")
+            TableColumn("Pfad") { Text($0.last.path).font(.caption.monospaced()).foregroundStyle(.secondary) }.width(min: 60, ideal: 120).customizationID("pfad")
+            TableColumn("Rahmen", sortUsing: ColumnSort("pakete") { $0.packets }) { Text("\($0.packets)").monospacedDigit() }.width(min: 30, ideal: 50).customizationID("rahmen")
+            TableColumn("Zuletzt", sortUsing: ColumnSort("zuletzt") { $0.lastHeard }) { Text($0.lastHeard, style: .relative).foregroundStyle(.secondary) }.width(min: 54, ideal: 90).customizationID("zuletzt")
         }
         .contextMenu(forSelectionType: APRSStation.ID.self) { ids in
             if let station = model.stations.first(where: { ids.contains($0.id) }) {
@@ -157,10 +158,7 @@ struct APRSView: View {
                 ReceiverControls(model: model, device: session.hackRF)
             }
             Section(PanelSection.status) {
-                LabeledContent("Stationen", value: "\(model.stations.count)")
-                LabeledContent("Mit Position", value: "\(positioned.count)")
-                LabeledContent("Rahmen", value: "\(model.packetCount)")
-                LabeledContent("Kanalpegel", value: String(format: "%.0f dBFS", model.signalDB))
+                APRSStatusRows(model: model, positioned: positioned.count)
             }
             Section(PanelSection.anzeige) {
                 Toggle("Spuren zeigen", isOn: $showTrails)
@@ -184,10 +182,12 @@ struct APRSView: View {
         .formStyle(.grouped)
     }
 
-    private func detail(_ packet: APRSPacket) -> String {
+    private func detail(_ station: APRSStation) -> String {
+        let packet = station.last
         var parts: [String] = []
         if let message = packet.micEMessage { parts.append(message) }
         if let weather = packet.weather { parts.append(weather) }
+        if packet.telemetry != nil, let telemetry = station.telemetry { parts.append(telemetry) }
         if packet.objectKilled { parts.append(String(localized: "gelöscht")) }
         if !packet.comment.isEmpty { parts.append(packet.comment) }
         if packet.objectName != nil { parts.append(String(localized: "von \(packet.source)")) }
@@ -219,8 +219,23 @@ extension APRSView {
                     rows: model.stations.map { s in
                         [.text(s.id), .text(s.last.kind.title), .number(s.latitude, digits: 5), .number(s.longitude, digits: 5),
                          .number(s.last.speedKnots.map { $0 * 1.852 }, digits: 0), .number(s.last.courseDegrees, digits: 0),
-                         .number(s.last.altitudeMeters, digits: 0), .text(detail(s.last)), .text(s.last.path),
+                         .number(s.last.altitudeMeters, digits: 0), .text(detail(s)), .text(s.last.path),
                          .text("\(s.last.symbolTable)\(s.last.symbolCode)"), .integer(s.packets), .date(s.lastHeard), .text(s.last.raw)]
                     })
+    }
+}
+
+/// Zähler und Pegel als eigene Ansicht: sie ändern sich mehrmals je Sekunde,
+/// und im Bedienfeld selbst gelesen zeichneten sie das ganze Formular neu –
+/// das Scrollen ruckelte (Review 05.11.2026).
+private struct APRSStatusRows: View {
+    let model: APRSModel
+    let positioned: Int
+
+    var body: some View {
+        LabeledContent("Stationen", value: "\(model.stations.count)")
+        LabeledContent("Mit Position", value: "\(positioned)")
+        LabeledContent("Rahmen", value: "\(model.packetCount)")
+        LabeledContent("Kanalpegel", value: String(format: "%.0f dBFS", model.signalDB))
     }
 }

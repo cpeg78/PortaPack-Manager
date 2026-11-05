@@ -73,13 +73,16 @@ struct WLANStation: Identifiable, Sendable, Equatable {
     var beacons = 0
     var rateMbps: Double
     var nan = false
+    /// Hersteller/Modell/Name aus dem WPS-Element.
+    var wps: String?
     var lastSeen: Date
 
     var id: String { bssid }
     var displayName: String { ssid.flatMap { $0.isEmpty ? nil : $0 } ?? (nan ? "NAN-Cluster" : String(localized: "(verborgen)")) }
 }
 
-/// Ein Gerät, das per Probe-Anfrage nach Netzen sucht.
+/// Ein Gerät: sucht per Probe-Anfrage nach Netzen oder ist (aus Daten- und
+/// Anmelderahmen) mit einem Access Point verbunden.
 struct WLANClient: Identifiable, Sendable, Equatable {
     var mac: String
     var ssids: Set<String> = []
@@ -87,6 +90,11 @@ struct WLANClient: Identifiable, Sendable, Equatable {
     var rssiDB: Double
     var channel: Int
     var lastSeen: Date
+    /// BSSID des Access Points, mit dem es zuletzt Daten tauschte bzw. sich anmeldete.
+    var bssid: String?
+    var dataFrames = 0
+    /// Gerätename/Hersteller aus dem WPS-Element der Probe-Anfrage.
+    var wps: String?
 
     var id: String { mac }
     /// Zufällige (lokal verwaltete) Adresse: zweitunterstes Bit des ersten Bytes.
@@ -104,8 +112,27 @@ struct WLANFrameCounts: Sendable, Equatable {
     var data = 0
     var control = 0
     var nan = 0
+    var authentications = 0
+    var associations = 0
+    var deauthentications = 0
+    var disassociations = 0
     var dsss = 0
     var ofdm = 0
+}
+
+/// Ab- oder Ausbuchung (Deauth/Disassoc) – gehäuft ein Hinweis auf einen
+/// Deauth-Angriff, der Geräte aus dem Netz wirft.
+struct WLANDisconnect: Identifiable, Sendable, Equatable {
+    let id: Int
+    let date: Date
+    let deauthentication: Bool
+    let source: String
+    let target: String
+    let bssid: String
+    let reason: Int?
+    let channel: Int
+
+    var broadcast: Bool { target == "FF:FF:FF:FF:FF:FF" }
 }
 
 /// Belegung eines 1-MHz-Abschnitts: Anteil der Zeit über der Schwelle und Spitzenpegel.
@@ -180,6 +207,10 @@ final class WiFiModel {
     private(set) var stations: [WLANStation] = []
     private(set) var clients: [WLANClient] = []
     private(set) var frameCounts = WLANFrameCounts()
+    /// Letzte Ab- und Ausbuchungen, neueste zuerst.
+    private(set) var disconnects: [WLANDisconnect] = []
+    /// Ab so vielen Abmeldungen in einer Minute warnt die Seite vor einem Angriff.
+    static let deauthAlarmPerMinute = 20
     private(set) var frameChannel = 0
     private(set) var frameNoiseDB = -100.0
     private let frames = FrameCollector()
@@ -258,6 +289,7 @@ final class WiFiModel {
         var stations: [String: WLANStation] = [:]
         var clients: [String: WLANClient] = [:]
         var counts = WLANFrameCounts()
+        var disconnects: [WLANDisconnect] = []
         var channel = 0
         /// Roh­rahmen für den PCAP-Export (mit rekonstruierter FCS und Kanal).
         var captured: [PCAPWriter.Frame] = []
@@ -268,6 +300,7 @@ final class WiFiModel {
                 stations = [:]
                 clients = [:]
                 counts = WLANFrameCounts()
+                disconnects = []
                 captured = []
             }
         }
@@ -302,6 +335,7 @@ final class WiFiModel {
                         station.rssiDB = 0.8 * station.rssiDB + 0.2 * packet.rssiDB
                         station.rateMbps = min(station.rateMbps, packet.rateMbps)
                         station.nan = station.nan || frame.address3 == WLANFrame.nanCluster
+                        if let wps = frame.wps?.summary { station.wps = wps }
                         station.lastSeen = packet.date
                         stations[bssid] = station
                         DevicePruning.prune(&stations, limit: 2000, maxAge: 1800, now: packet.date) { $0.lastSeen }
@@ -312,12 +346,28 @@ final class WiFiModel {
                         client.probes += 1
                         client.channel = channel
                         if let ssid = frame.ssid, client.ssids.count < 64 { client.ssids.insert(ssid.isEmpty ? String(localized: "(alle)") : ssid) }
+                        if let wps = frame.wps?.summary { client.wps = wps }
                         client.rssiDB = 0.8 * client.rssiDB + 0.2 * packet.rssiDB
                         client.lastSeen = packet.date
                         clients[mac] = client
                         // Zufällige (randomisierte) Adressen blähen die Liste sonst unbegrenzt auf.
                         DevicePruning.prune(&clients, limit: 2000, maxAge: 1800, now: packet.date) { $0.lastSeen }
-                    case .data: counts.data += 1
+                    case .data:
+                        counts.data += 1
+                        noteAssociation(frame, packet: packet, channel: channel)
+                    case .authentication:
+                        counts.authentications += 1
+                        noteAssociation(frame, packet: packet, channel: channel)
+                    case .associationRequest, .associationResponse:
+                        counts.associations += 1
+                        noteAssociation(frame, packet: packet, channel: channel)
+                    case .deauthentication, .disassociation:
+                        let deauth = frame.kind == .deauthentication
+                        if deauth { counts.deauthentications += 1 } else { counts.disassociations += 1 }
+                        disconnects.append(WLANDisconnect(id: counts.total, date: packet.date, deauthentication: deauth,
+                                                          source: WLANFrame.mac(frame.address2), target: WLANFrame.mac(frame.address1),
+                                                          bssid: WLANFrame.mac(frame.address3), reason: frame.reasonCode, channel: channel))
+                        if disconnects.count > 500 { disconnects.removeFirst(disconnects.count - 500) }
                     case .control: counts.control += 1
                     case .action:
                         if frame.nanAttributes != nil { counts.nan += 1 }
@@ -325,6 +375,22 @@ final class WiFiModel {
                     }
                 }
             }
+        }
+
+        /// Wer mit welchem Access Point spricht (Daten-, Anmelderahmen); legt das
+        /// Gerät an, wenn es noch nicht per Probe-Anfrage bekannt ist. Im Lock.
+        private func noteAssociation(_ frame: WLANFrame, packet: WLANPacket, channel: Int) {
+            guard let pair = frame.association else { return }
+            let mac = WLANFrame.mac(pair.station)
+            var client = clients[mac] ?? WLANClient(mac: mac, rssiDB: packet.rssiDB, channel: channel, lastSeen: packet.date)
+            client.bssid = WLANFrame.mac(pair.bssid)
+            if frame.kind == .data { client.dataFrames += 1 }
+            client.channel = channel
+            // Pegel nur nachführen, wenn das Gerät selbst sendete (nicht der AP an das Gerät).
+            if frame.address2 == pair.station { client.rssiDB = 0.8 * client.rssiDB + 0.2 * packet.rssiDB }
+            client.lastSeen = packet.date
+            clients[mac] = client
+            DevicePruning.prune(&clients, limit: 2000, maxAge: 1800, now: packet.date) { $0.lastSeen }
         }
     }
 
@@ -346,10 +412,13 @@ final class WiFiModel {
                 try await Task.sleep(for: .seconds(frameDwell))
                 guard device.isReceiving(for: self) else { throw HackRFError.takenOver }
                 device.stopReceiving(owner: self)
-                let (stations, clients, counts) = collector.lock.withLock { (collector.stations, collector.clients, collector.counts) }
+                let (stations, clients, counts, disconnects) = collector.lock.withLock {
+                    (collector.stations, collector.clients, collector.counts, collector.disconnects)
+                }
                 self.stations = stations.values.sorted { $0.beacons > $1.beacons }
                 self.clients = clients.values.sorted { $0.lastSeen > $1.lastSeen }
                 frameCounts = counts
+                if disconnects.last?.id != self.disconnects.first?.id { self.disconnects = disconnects.reversed() }
                 frameNoiseDB = collector.receiver.noiseDB
                 sweeps += 1
                 if frameChannels == .single { try await Task.sleep(for: .milliseconds(10)) }
@@ -362,6 +431,12 @@ final class WiFiModel {
         stations = []
         clients = []
         frameCounts = WLANFrameCounts()
+        disconnects = []
+    }
+
+    /// Ab- und Ausbuchungen der letzten Minute (Angriffswarnung).
+    func recentDisconnects(now: Date = Date()) -> Int {
+        disconnects.prefix { now.timeIntervalSince($0.date) < 60 }.count
     }
 
     /// Rahmenmitschnitt für PCAP ein-/ausschalten.

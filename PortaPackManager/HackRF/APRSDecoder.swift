@@ -224,6 +224,10 @@ struct APRSPacket: Sendable, Equatable {
     var objectKilled = false
     var micEMessage: String?
     var weather: String?
+    /// Telemetrie `T#…`: Folgenummer, bis zu fünf Rohwerte, acht Bits.
+    var telemetry: APRSTelemetry?
+    /// PARM/UNIT/EQNS/BITS-Nachricht: beschreibt die Telemetrie einer Station.
+    var telemetryDefinition: APRSTelemetry.Definition?
     var raw: String
 
     /// Kennung für die Stationsliste: Objektname oder Absender.
@@ -300,9 +304,25 @@ struct APRSPacket: Sendable, Equatable {
             kind = .message
             if text.count > 11, text[10] == UInt8(ascii: ":") {
                 let to = Self.string(text[1..<10]).trimmingCharacters(in: .whitespaces)
-                let body = Self.string(text[11...])
-                comment = String(localized: "an \(to): \(body)")
-                if to.hasPrefix("BLN") { kind = .other; comment = String(localized: "Bulletin \(to): \(body)") }
+                var body = Self.string(text[11...])
+                if let definition = APRSTelemetry.Definition(station: to, body) {
+                    kind = .telemetry
+                    telemetryDefinition = definition
+                    comment = String(localized: "Telemetrie-Beschreibung für \(to): \(body)")
+                } else if let number = Self.acknowledgement(body, prefix: "ack") {
+                    comment = String(localized: "Bestätigung an \(to) (Nr. \(number))")
+                } else if let number = Self.acknowledgement(body, prefix: "rej") {
+                    comment = String(localized: "Abgelehnt an \(to) (Nr. \(number))")
+                } else {
+                    // Nachrichtennummer „{nn“ am Ende (für die Bestätigung) abtrennen.
+                    var number: String?
+                    if let brace = body.lastIndex(of: "{"), body.distance(from: brace, to: body.endIndex) <= 6 {
+                        number = String(body[body.index(after: brace)...]).replacingOccurrences(of: "}", with: "")
+                        body = String(body[..<brace])
+                    }
+                    comment = String(localized: "an \(to): \(body)") + (number.map { String(localized: " (Nr. \($0))") } ?? "")
+                    if to.hasPrefix("BLN") { kind = .other; comment = String(localized: "Bulletin \(to): \(body)") }
+                }
             } else {
                 comment = Self.string(text.dropFirst())
             }
@@ -311,7 +331,20 @@ struct APRSPacket: Sendable, Equatable {
             weather = Self.weatherSummary(Self.string(text.dropFirst(9)))
         case UInt8(ascii: "T"):
             kind = .telemetry
-            comment = Self.string(text.dropFirst())
+            telemetry = APRSTelemetry(Self.string(text.dropFirst()))
+            comment = telemetry == nil ? Self.string(text.dropFirst()) : ""
+        case UInt8(ascii: "$"):
+            // Rohes NMEA eines GPS ($GPRMC, $GPGGA …).
+            let sentence = Self.string(text)
+            if let fix = Self.nmeaPosition(sentence) {
+                kind = .position
+                (latitude, longitude) = (fix.lat, fix.lon)
+                speedKnots = fix.knots
+                courseDegrees = fix.course
+                altitudeMeters = fix.altitude
+            } else {
+                comment = sentence
+            }
         case UInt8(ascii: "}"):
             // Drittanbieter-Paket: inneres Paket auswerten, Pfad behalten.
             if let inner = APRSPacket.parse(tnc2: Self.string(text.dropFirst())) {
@@ -416,6 +449,9 @@ struct APRSPacket: Sendable, Equatable {
         let northOrWest: (UInt8) -> Bool = { (0x50...0x5A).contains($0) }
         let digits = dest.prefix(6).compactMap(digit)
         guard digits.count == 6 else { return }
+        // Länge, Tempo und Kurs sind mit 28 versetzt – kleinere Bytes ergäben
+        // negative Grad und Tempi (Review 05.11.2026).
+        guard text[1...6].allSatisfy({ $0 >= 28 }) else { return }
         var lat = Double(digits[0] * 10 + digits[1]) + (Double(digits[2] * 10 + digits[3]) + Double(digits[4] * 10 + digits[5]) / 100) / 60
         if !northOrWest(dest[3]) { lat = -lat }
 
@@ -499,10 +535,19 @@ struct APRSPacket: Sendable, Equatable {
             switch chars[i] {
             case "g": if let v = value(3) { parts.append(String(format: String(localized: "Böen %.0f km/h"), Double(v) * 1.609)) }; i += 4
             case "t": if let v = value(3) { parts.append(String(format: "%.1f °C", (Double(v) - 32) * 5 / 9)) }; i += 4; found = true
-            case "r", "p", "P": i += 4
+            case "r", "p", "P":
+                // Regen in 1/100 Zoll: letzte Stunde, letzte 24 h, seit Mitternacht.
+                if let v = value(3) {
+                    let span = chars[i] == "r" ? String(localized: "1 h") : chars[i] == "p" ? String(localized: "24 h") : String(localized: "heute")
+                    parts.append(String(format: String(localized: "Regen %.1f mm (%@)"), Double(v) * 0.254, span))
+                }
+                i += 4; found = true
             case "h": if let v = value(2) { parts.append("\(v == 0 ? 100 : v) %") }; i += 3; found = true
             case "b": if let v = value(5) { parts.append(String(format: "%.1f hPa", Double(v) / 10)) }; i += 6; found = true
-            case "L", "l": i += 4
+            case "L", "l":
+                // Sonneneinstrahlung W/m²; „l“ = ab 1000.
+                if let v = value(3) { parts.append("\(chars[i] == "l" ? v + 1000 : v) W/m²") }
+                i += 4; found = true
             default: i = chars.count
             }
         }
@@ -510,6 +555,37 @@ struct APRSPacket: Sendable, Equatable {
     }
 
     // MARK: Hilfen
+
+    /// „ack12“ bzw. „rej12“ → „12“.
+    static func acknowledgement(_ body: String, prefix: String) -> String? {
+        guard body.hasPrefix(prefix), body.count > prefix.count, body.count <= prefix.count + 5 else { return nil }
+        return String(body.dropFirst(prefix.count)).replacingOccurrences(of: "}", with: "")
+    }
+
+    /// Position aus $GPRMC/$GNRMC (mit Fahrt und Kurs) bzw. $GPGGA/$GNGGA (mit Höhe).
+    static func nmeaPosition(_ sentence: String) -> (lat: Double, lon: Double, knots: Double?, course: Double?, altitude: Double?)? {
+        let f = sentence.split(separator: "*").first.map { $0.split(separator: ",", omittingEmptySubsequences: false).map(String.init) } ?? []
+        guard let type = f.first?.suffix(3) else { return nil }
+        func coordinate(_ value: String, _ hemisphere: String, degrees: Int) -> Double? {
+            // Beide Teile nur aus Ziffern – `Double("inf")`/`Double("1e5")` ließen
+            // sonst ∞ bzw. 100 000° durch (Review 05.11.2026).
+            guard value.count > degrees, let d = number(value.prefix(degrees)), let m = number(value.dropFirst(degrees)),
+                  m < 60 else { return nil }
+            let limit: Double = degrees == 2 ? 90 : 180
+            let result = (d + m / 60) * (hemisphere == "S" || hemisphere == "W" ? -1 : 1)
+            return abs(result) <= limit ? result : nil
+        }
+        switch type {
+        case "RMC" where f.count >= 9 && f[2] == "A":
+            guard let lat = coordinate(f[3], f[4], degrees: 2), let lon = coordinate(f[5], f[6], degrees: 3) else { return nil }
+            return (lat, lon, number(f[7]), number(f[8]), nil)
+        case "GGA" where f.count >= 10 && f[6] != "0":
+            guard let lat = coordinate(f[2], f[3], degrees: 2), let lon = coordinate(f[4], f[5], degrees: 3) else { return nil }
+            return (lat, lon, nil, nil, number(f[9], signed: true))
+        default:
+            return nil
+        }
+    }
 
     /// Zahl nur aus ASCII-Ziffern (höchstens ein Dezimalpunkt, mit `signed` ein
     /// führendes „-“). `Double(String)` nimmt auch „inf“, „nan“ und „1e9999“ an –
@@ -570,16 +646,94 @@ struct APRSStation: Identifiable, Sendable, Equatable {
     var trail: [Point] = []
     var packets = 0
     var lastHeard = Date()
+    /// Letzte Telemetrie im Klartext (mit Namen/Einheiten, sobald bekannt).
+    var telemetry: String?
+}
+
+/// APRS-Telemetrie (APRS 1.0.1 Kap. 13): `T#nnn,a1,…,a5,bbbbbbbb`; Namen,
+/// Einheiten und Umrechnung kommen getrennt als Nachrichten an die Station
+/// selbst (PARM., UNIT., EQNS. a·x² + b·x + c je Kanal, BITS.).
+struct APRSTelemetry: Sendable, Equatable {
+    var sequence: String
+    var values: [Double]
+    var bits: String?
+
+    init?(_ text: String) {
+        guard text.hasPrefix("#") else { return nil }
+        let fields = text.dropFirst().split(separator: ",", omittingEmptySubsequences: false).map { $0.trimmingCharacters(in: .whitespaces) }
+        guard fields.count >= 2 else { return nil }
+        sequence = fields[0]
+        values = fields.dropFirst().prefix(5).compactMap { APRSPacket.number($0, signed: true) }
+        bits = fields.count >= 7 ? String(fields[6].prefix(8)) : nil
+        guard !values.isEmpty else { return nil }
+    }
+
+    struct Definition: Sendable, Equatable {
+        enum Kind: String, Sendable { case names = "PARM", units = "UNIT", equations = "EQNS", bits = "BITS" }
+        var station: String
+        var kind: Kind
+        var fields: [String]
+
+        init?(station: String, _ body: String) {
+            guard let dot = body.firstIndex(of: "."), let kind = Kind(rawValue: String(body[..<dot])) else { return nil }
+            self.station = station
+            self.kind = kind
+            fields = body[body.index(after: dot)...].split(separator: ",", omittingEmptySubsequences: false)
+                .map { $0.trimmingCharacters(in: .whitespaces) }
+        }
+    }
+
+    /// Beschreibung einer Station, aus ihren Definitionsnachrichten gesammelt.
+    struct Description: Sendable, Equatable {
+        var names: [String] = []
+        var units: [String] = []
+        var equations: [Double] = []
+
+        mutating func apply(_ definition: Definition) {
+            switch definition.kind {
+            case .names: names = definition.fields
+            case .units: units = definition.fields
+            case .equations: equations = definition.fields.compactMap { APRSPacket.number($0, signed: true) }
+            case .bits: break
+            }
+        }
+    }
+
+    /// „Temp 21.5 °C, Batt 12.6 V …“ – ohne Beschreibung Kanal 1–5 roh.
+    func text(using description: Description?) -> String {
+        let channels = values.enumerated().map { k, raw -> String in
+            let name = description?.names.indices.contains(k) == true && !(description?.names[k].isEmpty ?? true)
+                ? description!.names[k] : String(localized: "Kanal \(k + 1)")
+            var value = raw
+            if let e = description?.equations, e.count >= 3 * (k + 1) {
+                value = e[3 * k] * raw * raw + e[3 * k + 1] * raw + e[3 * k + 2]
+            }
+            let unit = description?.units.indices.contains(k) == true ? description!.units[k] : ""
+            let number = value == value.rounded() ? String(format: "%.0f", value) : String(format: "%.2f", value)
+            return "\(name) \(number)" + (unit.isEmpty ? "" : " \(unit)")
+        }
+        return String(localized: "Nr. \(sequence): ") + channels.joined(separator: ", ") + (bits.map { String(localized: ", Bits \($0)") } ?? "")
+    }
 }
 
 /// Sammelt Pakete zu Stationen.
 struct APRSStationTracker {
     private(set) var stations: [String: APRSStation] = [:]
+    /// Telemetrie-Beschreibungen je Station (aus PARM/UNIT/EQNS) – begrenzt wie die Stationen.
+    private(set) var telemetryDescriptions: [String: APRSTelemetry.Description] = [:]
 
     mutating func ingest(_ packet: APRSPacket, at date: Date = Date()) {
+        if let definition = packet.telemetryDefinition {
+            if telemetryDescriptions[definition.station] != nil || telemetryDescriptions.count < 2000 {
+                telemetryDescriptions[definition.station, default: .init()].apply(definition)
+            }
+        }
         let id = packet.stationID
         var station = stations[id] ?? APRSStation(id: id, last: packet)
         station.last = packet
+        if let telemetry = packet.telemetry {
+            station.telemetry = telemetry.text(using: telemetryDescriptions[packet.source])
+        }
         station.packets += 1
         station.lastHeard = date
         if let lat = packet.latitude, let lon = packet.longitude {

@@ -96,6 +96,9 @@ struct SmartHomeFrame: Sendable, Equatable {
     var deviceTypeGuessed = false
     /// Rohbytes (ohne Präambel/Sync, Prüfsummen entfernt bei wM-Bus).
     var bytes: [UInt8]
+    /// wM-Bus: Kopfbytes der Datensätze eines vollständigen Rahmens – daraus
+    /// lernt die App den Aufbau späterer Kompaktrahmen.
+    var wmbusFormat: [UInt8]?
 
     var deviceKey: String { "\(radio.rawValue)|\(address)" }
 }
@@ -160,12 +163,16 @@ enum SmartHomeNames {
         switch key {
         case "Abstand": String(localized: "Abstand")
         case "Aktualitätsdauer": String(localized: "Aktualitätsdauer")
+        case "Alarm": String(localized: "Alarm")
         case "Allgemein": String(localized: "Allgemein")
         case "Ausgelöst": String(localized: "Ausgelöst")
         case "Außentemperatur": String(localized: "Außentemperatur")
         case "Batterie": String(localized: "Batterie")
         case "Batterierestlaufzeit": String(localized: "Batterierestlaufzeit")
+        case "Batterie schwach": String(localized: "Batterie schwach")
         case "Betriebsdauer": String(localized: "Betriebsdauer")
+        case "Bewegung": String(localized: "Bewegung")
+        case "Bewegungen": String(localized: "Bewegungen")
         case "Bodenfeuchte": String(localized: "Bodenfeuchte")
         case "Busadresse": String(localized: "Busadresse")
         case "Datum": String(localized: "Datum")
@@ -177,6 +184,7 @@ enum SmartHomeNames {
         case "Ereignis": String(localized: "Ereignis")
         case "Erweiterte Kennung": String(localized: "Erweiterte Kennung")
         case "Fabrikationsnummer": String(localized: "Fabrikationsnummer")
+        case "Fehlercode": String(localized: "Fehlercode")
         case "Fehlerflags": String(localized: "Fehlerflags")
         case "Feinstaub PM2,5": String(localized: "Feinstaub PM2,5")
         case "Firmware-Version": String(localized: "Firmware-Version")
@@ -190,9 +198,12 @@ enum SmartHomeNames {
         case "Herstellerdaten": String(localized: "Herstellerdaten")
         case "Herstellerwert": String(localized: "Herstellerwert")
         case "Hitze": String(localized: "Hitze")
+        case "Griff": String(localized: "Griff")
+        case "Heizen": String(localized: "Heizen")
         case "Impulse": String(localized: "Impulse")
         case "Kälte": String(localized: "Kälte")
         case "Kontakt offen": String(localized: "Kontakt offen")
+        case "Lamellenwinkel": String(localized: "Lamellenwinkel")
         case "Leistung": String(localized: "Leistung")
         case "Leistungsfaktor": String(localized: "Leistungsfaktor")
         case "Luftdruck": String(localized: "Luftdruck")
@@ -207,6 +218,7 @@ enum SmartHomeNames {
         case "Notfall": String(localized: "Notfall")
         case "Parametersatz": String(localized: "Parametersatz")
         case "Pegel": String(localized: "Pegel")
+        case "Rollladen geschlossen": String(localized: "Rollladen geschlossen")
         case "Rauch": String(localized: "Rauch")
         case "Regen": String(localized: "Regen")
         case "Richtung": String(localized: "Richtung")
@@ -233,6 +245,9 @@ enum SmartHomeNames {
         case "Vorlauftemperatur": String(localized: "Vorlauftemperatur")
         case "Wärme": String(localized: "Wärme")
         case "Wasser": String(localized: "Wasser")
+        case "Sollwertsteller": String(localized: "Sollwertsteller")
+        case "Verriegelt": String(localized: "Verriegelt")
+        case "Wasserstand": String(localized: "Wasserstand")
         case "Wassertemperatur": String(localized: "Wassertemperatur")
         case "Wert": String(localized: "Wert")
         case "Wetter": String(localized: "Wetter")

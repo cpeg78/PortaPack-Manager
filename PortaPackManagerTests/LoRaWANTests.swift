@@ -81,6 +81,23 @@ struct LoRaWANTests {
         #expect(restarted.fullFCnt == 3)
     }
 
+    @Test("MAC-Befehle (DevStatusAns, LinkCheckReq), Flags, Cayenne LPP")
+    func macAndCayenne() {
+        // Aufwärts: DevStatusAns Batterie 128, Reserve −5 dB (6 Bit), dann LinkCheckReq.
+        let commands = LoRaWANMAC.parse([0x06, 128, 0x3B, 0x02], uplink: true)
+        #expect(commands.count == 2)
+        #expect(commands[0].battery == 128 && commands[0].margin == -5)
+        #expect(commands[1].cid == 0x02)
+        #expect(LoRaWANMAC.parse([0x06, 0, 0x0A], uplink: true)[0].text == "Gerätestatus: Netzbetrieb, Reserve 10 dB")
+        // Unbekannte Kennung bricht ab, statt Unsinn zu lesen.
+        #expect(LoRaWANMAC.parse([0x7F, 1, 2], uplink: true).map(\.cid) == [0x7F])
+        // Cayenne: Kanal 1 Temperatur 27,2 °C, Kanal 2 Feuchte 50 %, Kanal 3 Luftdruck 1013,2 hPa.
+        #expect(CayenneLPP.decode([0x01, 103, 0x01, 0x10, 0x02, 104, 100, 0x03, 115, 0x27, 0x94])
+                == ["K1: 27.2 °C", "K2: 50.0 %", "K3: 1013.2 hPa"])
+        #expect(CayenneLPP.decode([0x01, 103, 0x01]) == nil)              // abgeschnitten
+        #expect(CayenneLPP.decode([0x01, 0xEE, 0x00, 0x00]) == nil)       // unbekannter Typ
+    }
+
     @Test("Join-Request: EUIs und DevNonce")
     func joinRequest() throws {
         let joinEUI: UInt64 = 0x70B3D57ED0012345
@@ -93,5 +110,14 @@ struct LoRaWANTests {
         let frame = try #require(LoRaWANParser.parse(phy, sessions: [:]))
         #expect(frame.mType == .joinRequest)
         #expect(frame.joinEUI == joinEUI && frame.devEUI == devEUI && frame.devNonce == 0x1234)
+    }
+
+    @Test("Rahmen über 255 Byte werden abgelehnt, statt in der MIC-Länge zu trappen (Review 05.11.2026)")
+    func oversizedFrame() {
+        let devAddr: UInt32 = 0x2601_1BDA
+        let session = LoRaWANSession(devAddr: devAddr, nwkSKey: Array(0..<16), appSKey: Array(16..<32), label: nil)
+        let phy: [UInt8] = [0x40, 0xDA, 0x1B, 0x01, 0x26, 0x00, 0x01, 0x00, 0x01] + [UInt8](repeating: 0, count: 300)
+        #expect(LoRaWANParser.parse(phy, sessions: [devAddr: session]) == nil)
+        #expect(LoRaWANParser.parse(Array(phy.prefix(255)), sessions: [devAddr: session]) != nil)
     }
 }

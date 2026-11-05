@@ -87,6 +87,10 @@ final class ADSBModel {
                     if newMessages || tickDate.timeIntervalSince(shownDate) >= 5 {
                         shownDate = tickDate
                         self.aircraft = planes.sorted { $0.lastSeen > $1.lastSeen }
+                        for plane in self.aircraft {
+                            guard let kind = plane.emergency?.text, tickDate.timeIntervalSince(plane.lastSeen) < 60 else { continue }
+                            Notifier.shared.aircraftEmergency(plane, kind: kind)
+                        }
                         self.mapAircraft = self.aircraft.compactMap { MapAircraft($0, now: tickDate) }
                         if self.aircraftCount != planes.count { self.aircraftCount = planes.count }
                     }

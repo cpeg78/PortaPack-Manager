@@ -2,6 +2,9 @@ import Charts
 import SwiftUI
 
 struct WiFiView: View {
+    @StoredColumns("wifi.3") private var columns3: TableColumnCustomization<WLANClient>
+    @StoredColumns("wifi.2") private var columns2: TableColumnCustomization<WLANStation>
+    @StoredColumns("wifi.1") private var columns: TableColumnCustomization<WiFiNetwork>
     @Environment(DeviceSession.self) private var session
     /// Lebt im `ReceiverStore` – überlebt den Seitenwechsel samt laufendem Empfang.
     @Bindable private var model = ReceiverStore.shared.wifi
@@ -126,7 +129,7 @@ struct WiFiView: View {
     // MARK: Netze
 
     private var networkTable: some View {
-        Table(model.networks.sorted(by: order), sortOrder: $order) {
+        Table(model.networks.sorted(by: order), sortOrder: $order, columnCustomization: $columns) {
             TableColumn("Name", sortUsing: ColumnSort("name", text: { $0.ssid })) { network in
                 HStack(spacing: 4) {
                     if network.bssid != nil, network.bssid == model.current?.bssid {
@@ -134,19 +137,19 @@ struct WiFiView: View {
                     }
                     Text(network.ssid ?? String(localized: "(verborgen)")).foregroundStyle(network.ssid == nil ? .secondary : .primary)
                 }
-            }
-            TableColumn("Band", sortUsing: ColumnSort("band", text: { $0.band.rawValue })) { Text($0.band.title) }.width(55)
+            }.customizationID("name")
+            TableColumn("Band", sortUsing: ColumnSort("band", text: { $0.band.rawValue })) { Text($0.band.title) }.width(min: 33, ideal: 55).customizationID("band")
             TableColumn("Kanal", sortUsing: ColumnSort("kanal") { $0.channel }) { n in
                 Text(n.widthMHz > 20 ? "\(n.channel) (\(n.widthMHz) MHz)" : "\(n.channel)").monospacedDigit()
-            }.width(90)
+            }.width(min: 54, ideal: 90).customizationID("kanal")
             TableColumn("Signal", sortUsing: ColumnSort("signal") { $0.rssi }) { n in
                 Text("\(n.rssi) dBm").monospacedDigit().foregroundStyle(n.rssi > -60 ? .green : n.rssi > -75 ? .orange : .red)
-            }.width(70)
+            }.width(min: 42, ideal: 70).customizationID("signal")
             TableColumn("Abstand", sortUsing: ColumnSort("abstand") { $0.rssi - $0.noise }) { n in
                 Text(n.noise == 0 ? "–" : "\(n.rssi - n.noise) dB").monospacedDigit()
-            }.width(60)
-            TableColumn("Schutz", sortUsing: ColumnSort("schutz", text: { $0.security })) { Text($0.security) }.width(55)
-            TableColumn("BSSID") { Text($0.bssid ?? "–").font(.caption.monospaced()).foregroundStyle(.secondary) }
+            }.width(min: 36, ideal: 60).customizationID("abstand")
+            TableColumn("Schutz", sortUsing: ColumnSort("schutz", text: { $0.security })) { Text($0.security) }.width(min: 33, ideal: 55).customizationID("schutz")
+            TableColumn("BSSID") { Text($0.bssid ?? "–").font(.caption.monospaced()).foregroundStyle(.secondary) }.customizationID("bssid")
         }
         .overlay {
             if model.networks.isEmpty, !model.scanningNetworks {
@@ -154,6 +157,14 @@ struct WiFiView: View {
                                        description: Text(model.networkError ?? String(localized: "„Netze suchen“ fragt das WLAN des Mac ab.")))
             }
         }
+    }
+
+    /// „an alle · Gerät verlässt das Netz · Kanal 6 · 14:02“.
+    private func disconnectCaption(_ event: WLANDisconnect) -> String {
+        let target = event.broadcast ? String(localized: "an alle") : String(localized: "an \(event.target)")
+        let reason = event.reason.map(WLANFrame.reasonText).map { " · " + $0 } ?? ""
+        return "\(target)\(reason) · " + String(localized: "Kanal \(event.channel)") + " · "
+            + event.date.formatted(date: .omitted, time: .standard)
     }
 
     private func exportPCAP() {
@@ -172,23 +183,30 @@ struct WiFiView: View {
     private static let byStationName = ColumnSort<WLANStation>("name", text: { (s: WLANStation) -> String? in s.displayName })
 
     private var stationTable: some View {
-        Table(model.stations.sorted(by: stationOrder), sortOrder: $stationOrder) {
+        Table(model.stations.sorted(by: stationOrder), sortOrder: $stationOrder, columnCustomization: $columns2) {
             TableColumn("Netz", sortUsing: Self.byStationName) { (s: WLANStation) in
                 Text(s.displayName).foregroundStyle(s.ssid?.isEmpty == false ? Color.primary : Color.secondary)
-            }
+            }.customizationID("netz")
             TableColumn("Kanal", sortUsing: Self.byStationChannel) { (s: WLANStation) in
                 Text(s.dsChannel.map { $0 == s.channel ? "\($0)" : String(localized: "\($0) (gehört auf \(s.channel))") } ?? "\(s.channel)").monospacedDigit()
-            }.width(min: 50, ideal: 70)
+            }.width(min: 50, ideal: 70).customizationID("kanal")
             TableColumn("Pegel", sortUsing: Self.byStationLevel) { (s: WLANStation) in
                 Text(String(format: "%.0f dBFS", s.rssiDB)).monospacedDigit()
-            }.width(70)
+            }.width(min: 42, ideal: 70).customizationID("pegel")
             TableColumn("Beacons", sortUsing: Self.byBeacons) { (s: WLANStation) in
                 Text("\(s.beacons)").monospacedDigit()
-            }.width(60)
-            TableColumn("Rate") { (s: WLANStation) in Text(String(format: "%.0f Mbit/s", s.rateMbps)).foregroundStyle(.secondary) }.width(70)
-            TableColumn("Schutz") { (s: WLANStation) in Text(s.security) }.width(100)
-            TableColumn("BSSID") { (s: WLANStation) in Text(s.bssid).font(.caption.monospaced()).foregroundStyle(.secondary) }.width(130)
-            TableColumn("Gehört") { (s: WLANStation) in Text(s.lastSeen, style: .relative).foregroundStyle(.secondary) }.width(70)
+            }.width(min: 36, ideal: 60).customizationID("beacons")
+            TableColumn("Rate") { (s: WLANStation) in Text(String(format: "%.0f Mbit/s", s.rateMbps)).foregroundStyle(.secondary) }.width(min: 42, ideal: 70).customizationID("rate")
+            TableColumn("Schutz") { (s: WLANStation) in Text(s.security) }.width(min: 60, ideal: 100).customizationID("schutz")
+            TableColumn("Geräte") { (s: WLANStation) in
+                let count = connectedCount[s.bssid] ?? 0
+                Text(count == 0 ? "–" : "\(count)").monospacedDigit()
+            }.width(min: 30, ideal: 50).customizationID("gerate")
+            TableColumn("Router (WPS)") { (s: WLANStation) in
+                Text(s.wps ?? "–").foregroundStyle(.secondary).help(s.wps ?? "")
+            }.width(min: 80, ideal: 140).customizationID("router-wps")
+            TableColumn("BSSID") { (s: WLANStation) in Text(s.bssid).font(.caption.monospaced()).foregroundStyle(.secondary) }.width(min: 78, ideal: 130).customizationID("bssid")
+            TableColumn("Gehört") { (s: WLANStation) in Text(s.lastSeen, style: .relative).foregroundStyle(.secondary) }.width(min: 42, ideal: 70).customizationID("gehort")
         }
         .overlay {
             if model.stations.isEmpty {
@@ -198,23 +216,41 @@ struct WiFiView: View {
         }
     }
 
+    /// Verbundene Geräte je Access Point (aus Daten- und Anmelderahmen).
+    private var connectedCount: [String: Int] {
+        model.clients.reduce(into: [:]) { counts, client in
+            if let bssid = client.bssid { counts[bssid, default: 0] += 1 }
+        }
+    }
+
+    /// Netzname zur BSSID, sonst die BSSID.
+    private func networkName(_ bssid: String) -> String {
+        model.stations.first { $0.bssid == bssid }.map(\.displayName) ?? bssid
+    }
+
     private var clientTable: some View {
-        Table(model.clients) {
-            TableColumn("Gerät (sucht)") { (c: WLANClient) in
+        Table(model.clients, columnCustomization: $columns3) {
+            TableColumn("Gerät") { (c: WLANClient) in
                 HStack(spacing: 4) {
                     Text(c.mac).font(.caption.monospaced())
                     if c.randomized { Text("zufällig").font(.caption2).foregroundStyle(.secondary) }
                 }
-            }.width(160)
-            TableColumn("Gesuchte Netze") { (c: WLANClient) in Text(c.ssids.sorted().joined(separator: ", ")).lineLimit(1) }
-            TableColumn("Anfragen") { (c: WLANClient) in Text("\(c.probes)").monospacedDigit() }.width(60)
-            TableColumn("Pegel") { (c: WLANClient) in Text(String(format: "%.0f dBFS", c.rssiDB)).monospacedDigit() }.width(70)
-            TableColumn("Kanal") { (c: WLANClient) in Text("\(c.channel)").monospacedDigit() }.width(45)
-            TableColumn("Gehört") { (c: WLANClient) in Text(c.lastSeen, style: .relative).foregroundStyle(.secondary) }.width(70)
+                .help(c.wps ?? "")
+            }.width(min: 96, ideal: 160).customizationID("gerat")
+            TableColumn("Name (WPS)") { (c: WLANClient) in Text(c.wps ?? "–").foregroundStyle(.secondary).lineLimit(1) }
+                .width(min: 60, ideal: 120).customizationID("name-wps")
+            TableColumn("Verbunden mit") { (c: WLANClient) in
+                Text(c.bssid.map(networkName) ?? "–").lineLimit(1).help(c.bssid ?? "")
+            }.width(min: 80, ideal: 130).customizationID("verbunden-mit")
+            TableColumn("Gesuchte Netze") { (c: WLANClient) in Text(c.ssids.sorted().joined(separator: ", ")).lineLimit(1) }.customizationID("gesuchte-netze")
+            TableColumn("Anfragen") { (c: WLANClient) in Text("\(c.probes)").monospacedDigit() }.width(min: 36, ideal: 60).customizationID("anfragen")
+            TableColumn("Pegel") { (c: WLANClient) in Text(String(format: "%.0f dBFS", c.rssiDB)).monospacedDigit() }.width(min: 42, ideal: 70).customizationID("pegel")
+            TableColumn("Kanal") { (c: WLANClient) in Text("\(c.channel)").monospacedDigit() }.width(min: 28, ideal: 45).customizationID("kanal")
+            TableColumn("Gehört") { (c: WLANClient) in Text(c.lastSeen, style: .relative).foregroundStyle(.secondary) }.width(min: 42, ideal: 70).customizationID("gehort")
         }
         .overlay {
             if model.clients.isEmpty {
-                Text("Hier erscheinen Geräte, die nach bekannten Netzen suchen (Probe-Anfragen), mit den gesuchten Netznamen.")
+                Text("Hier erscheinen Geräte, die nach bekannten Netzen suchen (Probe-Anfragen) oder mit einem Netz Daten tauschen.")
                     .font(.caption).foregroundStyle(.secondary).padding()
             }
         }
@@ -275,29 +311,26 @@ struct WiFiView: View {
                 ReceiverControls(model: model, device: session.hackRF)
             }
             Section(PanelSection.status) {
-                if model.hackRFMode == .frames {
-                    if model.running { LabeledContent("Aktuell", value: String(localized: "Kanal \(model.frameChannel) · Rauschen \(String(format: "%.0f", model.frameNoiseDB)) dBFS")) }
-                    let c = model.frameCounts
-                    LabeledContent("Rahmen", value: "\(c.total) · \(c.dsss) DSSS / \(c.ofdm) OFDM")
-                    LabeledContent("Davon", value: String(localized: "\(c.beacons) Beacons · \(c.probeRequests) Probe · \(c.data) Daten · \(c.control) Steuer · \(c.nan) NAN"))
-                    LabeledContent("Netze / Geräte", value: "\(model.stations.count) / \(model.clients.count)")
-                } else {
-                    LabeledContent("Durchläufe", value: "\(model.sweeps)")
-                }
+                WiFiStatusRows(model: model)
             }
-            if !model.wifiRanking.isEmpty {
-                Section("Empfehlung") {
-                    let wifi = model.wifiRanking.filter { [1, 6, 11].contains($0.channel) }
-                    if let best = wifi.first {
-                        LabeledContent("WLAN (1/6/11)", value: String(localized: "Kanal \(best.channel) · \(Int(best.busy * 100)) % belegt"))
+            if model.hackRFMode == .frames, !model.disconnects.isEmpty {
+                Section("Abmeldungen") {
+                    let lastMinute = model.recentDisconnects()
+                    if lastMinute >= WiFiModel.deauthAlarmPerMinute {
+                        Label(String(localized: "\(lastMinute) Abmeldungen in einer Minute – vermutlich ein Deauth-Angriff, der Geräte aus dem Netz wirft."),
+                              systemImage: "exclamationmark.triangle.fill")
+                            .foregroundStyle(.orange).font(.callout)
                     }
-                    let zigbee = model.zigbeeRanking.prefix(3)
-                    LabeledContent("Zigbee", value: zigbee.map { "\($0.channel) (\(Int($0.busy * 100)) %)" }.joined(separator: ", "))
-                    Text("Zigbee und WLAN teilen sich das 2,4-GHz-Band. Ein Zigbee-Kanalwechsel heißt oft: viele Geräte neu anlernen.")
-                        .font(.caption).foregroundStyle(.secondary)
-                        .help("Zigbee-Kanal 25/26 liegt oberhalb von WLAN-Kanal 11, Kanal 15 und 20 zwischen WLAN 1/6/11.")
+                    ForEach(model.disconnects.prefix(12)) { event in
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text("\(event.deauthentication ? "Deauth" : "Disassoc") · \(networkName(event.bssid))")
+                                .font(.caption.weight(.medium))
+                            Text(disconnectCaption(event)).font(.caption2).foregroundStyle(.secondary)
+                        }
+                    }
                 }
             }
+            WiFiRankingSection(model: model)
             if model.hackRFMode == .occupancy {
                 Section(PanelSection.anzeige) {
                     Toggle("Zigbee-Kanäle einzeichnen", isOn: $showZigbee)
@@ -345,5 +378,47 @@ extension WiFiView {
                         [.text(s.bssid), .text(s.ssid), .integer(s.channel), .integer(s.dsChannel), .text(s.security), .number(s.rssiDB),
                          .integer(s.beacons), .number(s.rateMbps, digits: 0), .flag(s.nan), .date(s.lastSeen)]
                     })
+    }
+}
+
+/// Zähler und Pegel als eigene Ansicht: sie ändern sich mehrmals je Sekunde,
+/// und im Bedienfeld selbst gelesen zeichneten sie das ganze Formular neu –
+/// das Scrollen ruckelte (Review 05.11.2026).
+private struct WiFiStatusRows: View {
+    let model: WiFiModel
+
+    var body: some View {
+        if model.hackRFMode == .frames {
+            if model.running { LabeledContent("Aktuell", value: String(localized: "Kanal \(model.frameChannel) · Rauschen \(String(format: "%.0f", model.frameNoiseDB)) dBFS")) }
+            let c = model.frameCounts
+            LabeledContent("Rahmen", value: "\(c.total) · \(c.dsss) DSSS / \(c.ofdm) OFDM")
+            LabeledContent("Davon", value: String(localized: "\(c.beacons) Beacons · \(c.probeRequests) Probe · \(c.data) Daten · \(c.control) Steuer · \(c.nan) NAN"))
+            LabeledContent("Anmeldung", value: String(localized: "\(c.authentications) Auth · \(c.associations) Assoc · \(c.deauthentications) Deauth · \(c.disassociations) Disassoc"))
+            LabeledContent("Netze / Geräte", value: "\(model.stations.count) / \(model.clients.count)")
+        } else {
+            LabeledContent("Durchläufe", value: "\(model.sweeps)")
+        }
+    }
+}
+
+/// Empfehlung als eigene Ansicht: die Rangfolge ändert sich mit jedem Durchlauf,
+/// und im Bedienfeld selbst gelesen zeichnete sie das ganze Formular neu.
+private struct WiFiRankingSection: View {
+    let model: WiFiModel
+
+    var body: some View {
+        if !model.wifiRanking.isEmpty {
+            Section("Empfehlung") {
+                let wifi = model.wifiRanking.filter { [1, 6, 11].contains($0.channel) }
+                if let best = wifi.first {
+                    LabeledContent("WLAN (1/6/11)", value: String(localized: "Kanal \(best.channel) · \(Int(best.busy * 100)) % belegt"))
+                }
+                let zigbee = model.zigbeeRanking.prefix(3)
+                LabeledContent("Zigbee", value: zigbee.map { "\($0.channel) (\(Int($0.busy * 100)) %)" }.joined(separator: ", "))
+                Text("Zigbee und WLAN teilen sich das 2,4-GHz-Band. Ein Zigbee-Kanalwechsel heißt oft: viele Geräte neu anlernen.")
+                    .font(.caption).foregroundStyle(.secondary)
+                    .help("Zigbee-Kanal 25/26 liegt oberhalb von WLAN-Kanal 11, Kanal 15 und 20 zwischen WLAN 1/6/11.")
+            }
+        }
     }
 }

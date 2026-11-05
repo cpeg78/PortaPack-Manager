@@ -108,7 +108,7 @@ enum ArchiveMaintenance {
                 }
             }
             if let recordings {
-                for name in names {
+                for name in names.compactMap(AirbandLog.safeRecordingName) {
                     try? FileManager.default.removeItem(at: recordings.appendingPathComponent(name))
                 }
             }
@@ -126,6 +126,9 @@ enum ArchiveMaintenance {
     static func start() {
         guard task == nil else { return }
         task = Task {
+            // Erst öffnen und migrieren (abseits des Main Actors), dann die
+            // Altdateien – sonst migrierte der erste `readNow`-Aufrufer (Review 05.11.2026).
+            await Task.detached(priority: .utility) { _ = try? ArchiveDatabase.shared.sync { _ in } }.value
             await ArchiveMigrationState.shared.start(root: AppFiles.support, database: .shared)
             while !Task.isCancelled {
                 await Task.detached(priority: .background) { runLogged() }.value
@@ -143,5 +146,28 @@ enum ArchiveMaintenance {
         let days = UserDefaults.standard.integer(forKey: retentionKey)
         let result = run(recordings: AirbandLog.standard.recordingsFolder, retentionDays: days)
         if result.deleted > 0 { log.notice("Archiv gepflegt: \(result.deleted) Einträge gelöscht") }
+        let short = pruneShortSondeFlights()
+        if short > 0 { log.notice("Archiv gepflegt: \(short) Meldungen kurzer Sondenflüge gelöscht") }
+    }
+
+    /// Entfernt Sondenflüge unter `SondeArchive.minimumSamples` Meldungen, die seit
+    /// sechs Stunden ruhen – aus ihnen lässt sich weder Bahn noch Profil ablesen
+    /// (Nutzer, 04.11.2026: „mit 3 Meldungen brauchen die nicht ins Archiv“).
+    /// Unabhängig von der Aufbewahrungsfrist.
+    @discardableResult
+    static func pruneShortSondeFlights(database: ArchiveDatabase = .shared, now: Date = Date()) -> Int {
+        do {
+            let deleted = try database.sync { db in
+                try db.transaction {
+                    try db.deleteShortSondeFlights(minimum: SondeArchive.minimumSamples,
+                                                   endedBefore: now.addingTimeInterval(-6 * 3600))
+                }
+            }
+            if deleted > 0 { database.vacuumIncrementally() }
+            return deleted
+        } catch {
+            log.error("Kurze Sondenflüge: \(String(describing: error), privacy: .public)")
+            return 0
+        }
     }
 }

@@ -164,6 +164,8 @@ struct ZigbeeNode: Identifiable, Sendable, Equatable {
     var state: [String: String] = [:]
     /// Zahlenwert je Messgröße (für den Verlauf), z. B. „°C“ → 21.5.
     var metrics: [String: Double] = [:]
+    /// Multiplikatoren/Divisoren für Zähler und elektrische Messung (`ZCL.factorKey`).
+    var factors: [UInt32: Int64] = [:]
     /// Gerät spricht Thread (6LoWPAN) statt Zigbee.
     var thread = false
     var lastSeen: Date
@@ -450,9 +452,12 @@ final class ZigbeeModel {
                 node.ieee = nwk.sourceIEEE ?? nwk.securityHeader?.source ?? node.ieee
                 node.lastSummary = packet.summary
                 if let zcl = packet.zcl, let cluster = packet.aps?.cluster {
-                    if !zcl.readings.isEmpty {
-                        node.lastReadings = zcl.readings
-                        node.apply(readings: zcl.readings, cluster: cluster)
+                    // Faktoren zuerst übernehmen: Sie kommen oft in derselben Leseantwort wie die Werte.
+                    node.factors.merge(ZCL.factors(in: zcl.attributes, cluster: cluster)) { _, new in new }
+                    let readings = zcl.readings(cluster: cluster, factors: node.factors)
+                    if !readings.isEmpty {
+                        node.lastReadings = readings
+                        node.apply(readings: readings, cluster: cluster)
                     }
                     // Zonenstatus meldet der Sensor selbst (Cluster-Befehl von der Quelle).
                     if zcl.clusterSpecific, cluster == 0x0500, zcl.command == 0 { node.state[ZCL.clusterName(cluster)] = zcl.summary }

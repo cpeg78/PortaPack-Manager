@@ -2,6 +2,7 @@ import CoreLocation
 import SwiftUI
 
 struct ADSBView: View {
+    @StoredColumns("adsb.1") private var columns: TableColumnCustomization<Aircraft>
     @AppStorage("adsbLogExpanded") private var logExpanded = false
     @Environment(DeviceSession.self) private var session
     @Environment(\.openWindow) private var openWindow
@@ -111,16 +112,59 @@ struct ADSBView: View {
                 rows.append(.init(String(localized: "Strecke"), String(localized: "⚠︎ passt nicht zur Position")))
             }
         }
-        rows.append(.init(String(localized: "Höhe"), altitude(plane.altitude)))
+        rows.append(.init(String(localized: "Höhe"), plane.onGround ? String(localized: "am Boden") : altitude(plane.altitude)))
         rows.append(.init(String(localized: "Tempo"), speed(plane.groundSpeed)))
         rows.append(.init(String(localized: "Kurs"), plane.track.map { String(format: "%.0f° %@", $0, GeoMath.compass($0)) } ?? "–"))
         rows.append(.init(String(localized: "Steigen"), climb(plane.verticalRate)))
+        rows += Self.statusRows(plane, altitude: altitude)
         if home != nil { rows.append(.init(String(localized: "Entfernung"), distanceString(plane))) }
         rows.append(.init(String(localized: "Position"), String(format: "%.4f, %.4f", lat, lon)))
         rows.append(.init(String(localized: "Nachrichten"), "\(plane.messages)"))
         return SelectedAircraftInfo(id: plane.id, callsign: plane.callsign, icaoHex: plane.icaoHex,
                                     latitude: lat, longitude: lon, rows: rows, lastSeen: plane.lastSeen,
                                     photo: AircraftPhotoLookup.shared.photo(for: plane.icao))
+    }
+
+    /// Squawk, Notfall und – wenn gesendet – Autopilot und ADS-B-Güte.
+    static func statusRows(_ plane: Aircraft, altitude: (Int?) -> String) -> [SelectedAircraftInfo.Row] {
+        var rows: [SelectedAircraftInfo.Row] = []
+        if let emergency = plane.emergency?.text { rows.append(.init(String(localized: "Notfall"), "⚠︎ " + emergency)) }
+        if let squawk = plane.squawkText { rows.append(.init("Squawk", squawk)) }
+        if let state = plane.targetState {
+            if let selected = state.selectedAltitude {
+                rows.append(.init(String(localized: "Sollhöhe"), altitude(selected) + (state.fromFMS ? " (FMS)" : "")))
+            }
+            if let heading = state.selectedHeading { rows.append(.init(String(localized: "Sollkurs"), String(format: "%.0f°", heading))) }
+            if let qnh = state.qnh { rows.append(.init("QNH", String(format: "%.1f hPa", qnh))) }
+            if let modes = state.modes { rows.append(.init(String(localized: "adsb.autopilot", defaultValue: "Autopilot"), modes.text)) }
+        }
+        let c = plane.commB
+        if plane.targetState?.selectedAltitude == nil, let selected = c.mcpAltitude ?? c.fmsAltitude {
+            rows.append(.init(String(localized: "Sollhöhe"), altitude(selected)))
+        }
+        if plane.targetState?.qnh == nil, let qnh = c.qnh { rows.append(.init("QNH", String(format: "%.1f hPa", qnh))) }
+        if let heading = c.heading { rows.append(.init(String(localized: "Steuerkurs"), String(format: "%.0f° (magn.)", heading))) }
+        let airspeeds = [c.indicatedAirspeed.map { String(format: "IAS %.0f kn", $0) }, c.trueAirspeed.map { String(format: "TAS %.0f kn", $0) },
+                         c.mach.map { String(format: "Mach %.2f", $0) }].compactMap { $0 }
+        if !airspeeds.isEmpty { rows.append(.init(String(localized: "adsb.airspeed", defaultValue: "Fahrt"), airspeeds.joined(separator: " · "))) }
+        if let roll = c.roll, abs(roll) >= 1 {
+            rows.append(.init(String(localized: "Querneigung"), String(format: "%.0f° %@", abs(roll), roll > 0 ? String(localized: "rechts") : String(localized: "links"))))
+        }
+        if let speed = c.windSpeed, let from = c.windFrom {
+            rows.append(.init(String(localized: "Wind"), String(format: "%.0f km/h aus %.0f° %@", speed * 1.852, from, GeoMath.compass(from))))
+        }
+        if let version = plane.adsbVersion {
+            let accuracy = plane.nacp.flatMap(Self.nacpText).map { ", " + $0 } ?? ""
+            rows.append(.init("ADS-B", String(localized: "Version \(version)") + accuracy))
+        }
+        return rows
+    }
+
+    /// NACp → Genauigkeit der Position (95 %), DO-260B Tabelle 2-71.
+    static func nacpText(_ nacp: Int) -> String? {
+        let meters: [Int: String] = [11: "3 m", 10: "10 m", 9: "30 m", 8: "93 m", 7: "185 m", 6: "556 m",
+                                     5: "926 m", 4: "1,9 km", 3: "3,7 km", 2: "7,4 km", 1: "18,5 km"]
+        return meters[nacp].map { String(localized: "Position auf \($0) genau") }
     }
 
     // Vergleicher als Konstanten und Zellen mit Typangabe – sonst sprengt die
@@ -137,6 +181,7 @@ struct ADSBView: View {
     private static let bySpeed = ColumnSort<Aircraft>("tempo") { (p: Aircraft) -> Double? in p.groundSpeed }
     private static let byTrack = ColumnSort<Aircraft>("kurs") { (p: Aircraft) -> Double? in p.track }
     private static let byClimb = ColumnSort<Aircraft>("steigen") { (p: Aircraft) -> Int? in p.verticalRate }
+    private static let bySquawk = ColumnSort<Aircraft>("squawk") { (p: Aircraft) -> Int? in p.squawk }
     private static let byMessages = ColumnSort<Aircraft>("msg") { (p: Aircraft) -> Int? in p.messages }
     private static let byLastSeen = ColumnSort<Aircraft>("zuletzt") { (p: Aircraft) -> Date? in p.lastSeen }
 
@@ -171,38 +216,46 @@ struct ADSBView: View {
         MainActor.assumeIsolated { FlightRouteLookup.shared.route(for: p.callsign)?.codesText } })
 
     private var table: some View {
-        Table(listed.sorted(by: order, current: [byDistance]), selection: $selection, sortOrder: $order) {
+        Table(listed.sorted(by: order, current: [byDistance]), selection: $selection, sortOrder: $order, columnCustomization: $columns) {
             Group {
-                TableColumn("ICAO", sortUsing: Self.byICAO) { (p: Aircraft) in Text(p.icaoHex).font(.body.monospaced()) }.width(70)
-                TableColumn("Kennung", sortUsing: Self.byCallsign) { (p: Aircraft) in Text(p.callsign ?? "–").font(.body.monospaced()) }.width(80)
+                TableColumn("ICAO", sortUsing: Self.byICAO) { (p: Aircraft) in Text(p.icaoHex).font(.body.monospaced()) }.width(min: 42, ideal: 70).customizationID("icao")
+                TableColumn("Kennung", sortUsing: Self.byCallsign) { (p: Aircraft) in Text(p.callsign ?? "–").font(.body.monospaced()) }.width(min: 48, ideal: 80).customizationID("kennung")
+                TableColumn("Squawk", sortUsing: Self.bySquawk) { (p: Aircraft) in
+                    let emergency = p.emergency?.text
+                    Text(p.squawkText ?? (emergency == nil ? "–" : "⚠︎"))
+                        .font(.body.monospaced())
+                        .fontWeight(emergency == nil ? .regular : .bold)
+                        .foregroundStyle(emergency == nil ? Color.primary : Color.red)
+                        .help(emergency ?? "")
+                }.width(min: 36, ideal: 60).customizationID("squawk")
                 TableColumn("Kennzeichen", sortUsing: Self.byRegistration) { (p: Aircraft) in
                     Text(info(p)?.registration ?? "–").font(.body.monospaced())
-                }.width(80)
+                }.width(min: 48, ideal: 80).customizationID("kennzeichen")
                 TableColumn("Typ", sortUsing: Self.byType) { (p: Aircraft) in
                     Text(info(p)?.typeText ?? "–").help(info(p)?.typeText ?? "")
-                }.width(min: 80, ideal: 160)
+                }.width(min: 80, ideal: 160).customizationID("typ")
                 TableColumn("Betreiber", sortUsing: Self.byOperator) { (p: Aircraft) in
                     Text(info(p)?.operatorText ?? "–").help(info(p)?.operatorText ?? "")
-                }.width(min: 80, ideal: 140)
+                }.width(min: 80, ideal: 140).customizationID("betreiber")
                 TableColumn("Strecke", sortUsing: Self.byRoute) { (p: Aircraft) in
                     let route = routes.route(for: p.callsign)
                     Text(routeText(p)).font(.body.monospaced())
                         .help(route.map { "\($0.origin.shortText) → \($0.destination.shortText)" } ?? "")
-                }.width(90)
+                }.width(min: 54, ideal: 90).customizationID("strecke")
             }
             Group {
-                TableColumn("Höhe", sortUsing: Self.byAltitude) { (p: Aircraft) in Text(altitude(p.altitude)) }.width(80)
-                TableColumn("Tempo", sortUsing: Self.bySpeed) { (p: Aircraft) in Text(speed(p.groundSpeed)) }.width(80)
-                TableColumn("Kurs", sortUsing: Self.byTrack) { (p: Aircraft) in Text(p.track.map { String(format: "%.0f°", $0) } ?? "–") }.width(50)
-                TableColumn("Steigen", sortUsing: Self.byClimb) { (p: Aircraft) in Text(climb(p.verticalRate)) }.width(80)
+                TableColumn("Höhe", sortUsing: Self.byAltitude) { (p: Aircraft) in Text(p.onGround ? String(localized: "am Boden") : altitude(p.altitude)) }.width(min: 48, ideal: 80).customizationID("hohe")
+                TableColumn("Tempo", sortUsing: Self.bySpeed) { (p: Aircraft) in Text(speed(p.groundSpeed)) }.width(min: 48, ideal: 80).customizationID("tempo")
+                TableColumn("Kurs", sortUsing: Self.byTrack) { (p: Aircraft) in Text(p.track.map { String(format: "%.0f°", $0) } ?? "–") }.width(min: 30, ideal: 50).customizationID("kurs")
+                TableColumn("Steigen", sortUsing: Self.byClimb) { (p: Aircraft) in Text(climb(p.verticalRate)) }.width(min: 48, ideal: 80).customizationID("steigen")
                 TableColumn("Position") { (p: Aircraft) in
                     if let lat = p.latitude, let lon = p.longitude {
                         Text(String(format: "%.4f, %.4f", lat, lon)).font(.caption.monospacedDigit())
                     } else { Text("–") }
-                }
-                TableColumn("Entfernung", sortUsing: byDistance) { (p: Aircraft) in Text(distanceString(p)) }.width(100)
-                TableColumn("Nachr.", sortUsing: Self.byMessages) { (p: Aircraft) in Text("\(p.messages)").monospacedDigit() }.width(45)
-                TableColumn("Letzter Kontakt", sortUsing: Self.byLastSeen) { (p: Aircraft) in Text(p.lastSeen, style: .relative).foregroundStyle(.secondary) }.width(100)
+                }.customizationID("position")
+                TableColumn("Entfernung", sortUsing: byDistance) { (p: Aircraft) in Text(distanceString(p)) }.width(min: 60, ideal: 100).customizationID("entfernung")
+                TableColumn("Nachr.", sortUsing: Self.byMessages) { (p: Aircraft) in Text("\(p.messages)").monospacedDigit() }.width(min: 28, ideal: 45).customizationID("nachr")
+                TableColumn("Letzter Kontakt", sortUsing: Self.byLastSeen) { (p: Aircraft) in Text(p.lastSeen, style: .relative).foregroundStyle(.secondary) }.width(min: 60, ideal: 100).customizationID("letzter-kontakt")
             }
         }
         .contextMenu(forSelectionType: Aircraft.ID.self) { ids in
@@ -249,16 +302,7 @@ struct ADSBView: View {
                 ReceiverControls(model: model, device: session.hackRF)
             }
             Section(PanelSection.status) {
-                LabeledContent("Flugzeuge", value: "\(listed.count)")
-                LabeledContent("Mit Position", value: "\(positioned.count)")
-                if let maxRange = maxRangeKm {
-                    LabeledContent("Weitestes Flugzeug", value: metric ? String(format: "%.1f km", maxRange)
-                                   : String(format: "%.1f NM", maxRange / 1.852))
-                }
-                LabeledContent("Gültige Nachrichten", value: "\(model.framesValid)")
-                LabeledContent("Nachrichten/s", value: String(format: "%.1f", model.messagesPerSecond))
-                LabeledContent("Präambel-Treffer", value: "\(model.framesSeen)")
-                    .help("Signale, die wie der Anfang einer Nachricht aussehen (Mode-S-Präambel). Ohne gültige Prüfsumme sind es Rauschen oder Störungen.")
+                ADSBStatusRows(model: model, listed: listed.count, positioned: positioned.count, maxRangeKm: maxRangeKm, metric: metric)
             }
             Section {
                 if model.log.isEmpty {
@@ -461,7 +505,7 @@ struct ADSBMapView: View, Equatable {
                    onSelect: select)
             .overlay {
                 if let selected, !cardHidden {
-                    AircraftInfoCard(info: selected, controller: map) { cardHidden = true }
+                    AircraftInfoCard(info: selected) { cardHidden = true }
                 } else if showAirports, let airport {
                     AirportInfoCard(airport: airport, controller: map) { self.airport = nil }
                 }
@@ -718,33 +762,41 @@ struct SelectedAircraftInfo: Equatable {
     let photo: AircraftPhoto?
 }
 
-/// Infokarte neben dem ausgewählten Flugzeug; wandert beim Ziehen mit und
-/// weicht an den Rändern auf die andere Seite aus.
-struct AircraftInfoCard: View {
-    let info: SelectedAircraftInfo
-    let controller: MapController
-    let onClose: () -> Void
-
-    private let width: CGFloat = 230
-    @State private var height: CGFloat = 200
+/// Infokarte des ausgewählten Flugzeugs – fest am linken Kartenrand (Wunsch
+/// 04.11.2026: sie lief dem Flugzeug hinterher und verdeckte die Karte daneben).
+/// Unten bleibt Platz für „Alle Flugzeuge zeigen“; ist sie höher, rollt sie.
+/// Rahmen der Steckbriefe auf den Karten (Flugzeuge, Schiffe): fest oben
+/// links, wächst mit dem Inhalt bis zur verfügbaren Höhe und scrollt erst
+/// darüber (`fixedSize` hätte die Höchstgrenze ausgehebelt, der Text lief
+/// über den Rand).
+struct MapInfoCardFrame<Content: View>: View {
+    let width: CGFloat
+    @ViewBuilder let content: () -> Content
+    @State private var contentHeight: CGFloat = 200
 
     var body: some View {
         GeometryReader { geo in
-            let size = geo.size
-            if let view = controller.viewport {
-                let p = view.point(CLLocationCoordinate2D(latitude: info.latitude, longitude: info.longitude))
-                let gap: CGFloat = 18, margin: CGFloat = 8
-                let x = p.x + gap + width + margin <= size.width ? p.x + gap
-                    : max(margin, p.x - gap - width)
-                let y = min(max(p.y - gap, margin), max(margin, size.height - height - margin))
-                card
-                    .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 10))
-                    .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(.orange.opacity(0.6)))
-                    .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { height = $0 }
-                    .offset(x: x, y: y)
+            ScrollView {
+                content().onGeometryChange(for: CGFloat.self) { $0.size.height } action: { contentHeight = $0 }
             }
+            .scrollBounceBehavior(.basedOnSize)
+            .frame(width: width, height: min(contentHeight, max(120, geo.size.height - 70)))
+            .clipShape(RoundedRectangle(cornerRadius: 10))
+            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 10))
+            .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(.orange.opacity(0.6)))
+            .padding(10)
         }
-        .allowsHitTesting(true)
+    }
+}
+
+struct AircraftInfoCard: View {
+    let info: SelectedAircraftInfo
+    let onClose: () -> Void
+
+    private let width: CGFloat = 230
+
+    var body: some View {
+        MapInfoCardFrame(width: width) { card }
     }
 
     private var card: some View {
@@ -796,14 +848,39 @@ extension ADSBView {
     /// Live-Liste in Fuß/Knoten (Rohwerte von ADS-B), unabhängig von der Anzeige-Einheit.
     func csvDocument() -> CSVDocument {
         CSVDocument(header: ["icao", "kennung", "kennzeichen", "typ", "betreiber", "strecke", "hoehe_ft", "tempo_kn", "kurs_grad",
-                             "steigen_ft_min", "breite", "laenge", "position_zeit", "nachrichten", "zuletzt"],
+                             "steigen_ft_min", "breite", "laenge", "position_zeit", "nachrichten", "zuletzt", "squawk", "notfall"],
                     rows: model.aircraft.map { p in
                         let i = info(p)
                         let route = routes.route(for: p.callsign) == nil ? nil : routeText(p)
                         return [.text(p.icaoHex), .text(p.callsign), .text(i?.registration), .text(i?.typeText), .text(i?.operatorText),
                                 .text(route), .integer(p.altitude), .number(p.groundSpeed, digits: 0), .number(p.track, digits: 0),
                                 .integer(p.verticalRate), .number(p.latitude, digits: 5), .number(p.longitude, digits: 5),
-                                .date(p.positionDate), .integer(p.messages), .date(p.lastSeen)]
+                                .date(p.positionDate), .integer(p.messages), .date(p.lastSeen),
+                                .text(p.squawkText), .text(p.emergency?.text)]
                     })
+    }
+}
+
+/// Zähler und Pegel als eigene Ansicht: sie ändern sich mehrmals je Sekunde,
+/// und im Bedienfeld selbst gelesen zeichneten sie das ganze Formular neu –
+/// das Scrollen ruckelte (Review 05.11.2026).
+private struct ADSBStatusRows: View {
+    let model: ADSBModel
+    let listed: Int
+    let positioned: Int
+    let maxRangeKm: Double?
+    let metric: Bool
+
+    var body: some View {
+        LabeledContent("Flugzeuge", value: "\(listed)")
+        LabeledContent("Mit Position", value: "\(positioned)")
+        if let maxRange = maxRangeKm {
+            LabeledContent("Weitestes Flugzeug", value: metric ? String(format: "%.1f km", maxRange)
+                           : String(format: "%.1f NM", maxRange / 1.852))
+        }
+        LabeledContent("Gültige Nachrichten", value: "\(model.framesValid)")
+        LabeledContent("Nachrichten/s", value: String(format: "%.1f", model.messagesPerSecond))
+        LabeledContent("Präambel-Treffer", value: "\(model.framesSeen)")
+            .help("Signale, die wie der Anfang einer Nachricht aussehen (Mode-S-Präambel). Ohne gültige Prüfsumme sind es Rauschen oder Störungen.")
     }
 }

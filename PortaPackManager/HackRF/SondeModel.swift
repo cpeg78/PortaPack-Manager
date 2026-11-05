@@ -82,6 +82,10 @@ struct SondeTracker {
         if merged.temperature == nil { merged.temperature = old.temperature }
         if merged.humidity == nil { merged.humidity = old.humidity }
         if merged.gpsTime == nil { merged.gpsTime = old.gpsTime }
+        if merged.pressure == nil { merged.pressure = old.pressure }
+        if merged.humiditySensorTemperature == nil { merged.humiditySensorTemperature = old.humiditySensorTemperature }
+        if merged.satellites == nil { merged.satellites = old.satellites }
+        merged.instruments = SondeInstrument.merge(old.instruments, with: report.instruments)
         if merged.latitude == nil {
             merged.latitude = old.latitude; merged.longitude = old.longitude; merged.altitude = old.altitude
             merged.groundSpeed = old.groundSpeed; merged.heading = old.heading; merged.verticalSpeed = old.verticalSpeed
@@ -204,7 +208,8 @@ final class SondeModel {
     func stop(on device: HackRFDevice?) {
         updateTask?.cancel()
         updateTask = nil
-        device?.stopReceiving(owner: self)
+        // Ohne Parameter den eigenen Strom beenden – sonst lief er weiter (Review 05.11.2026).
+        (device ?? self.device)?.stopReceiving(owner: self)
         self.device = nil
         running = false
     }
@@ -318,14 +323,15 @@ final class SondeModel {
 /// (`sonde_samples`). Bis 29.10.2026 eine CSV-Datei je Empfangsfenster im Ordner
 /// „Radiosonden“; das CSV-Format (`header`, `line`) bleibt für den Export.
 enum SondeLog {
-    static let header = "empfangen;typ;seriennummer;rahmen;frequenz_mhz;breite;laenge;hoehe_m;steigen_ms;wind_ms;kurs;temperatur;feuchte;batterie_v\n"
+    static let header = "empfangen;typ;seriennummer;rahmen;frequenz_mhz;breite;laenge;hoehe_m;steigen_ms;wind_ms;kurs;temperatur;feuchte;batterie_v;druck_hpa;satelliten;ozon_ua\n"
 
     static func line(_ r: SondeReport, received: Date) -> String {
         func f(_ value: Double?, _ format: String) -> String { value.map { String(format: format, $0) } ?? "" }
         return [ISOTime.string(received), r.kind.rawValue, r.serial, r.frame.map(String.init) ?? "",
                 String(format: "%.3f", r.frequency / 1e6), f(r.latitude, "%.5f"), f(r.longitude, "%.5f"),
                 f(r.altitude, "%.0f"), f(r.verticalSpeed, "%.1f"), f(r.groundSpeed, "%.1f"), f(r.heading, "%.0f"),
-                f(r.temperature, "%.1f"), f(r.humidity, "%.0f"), f(r.batteryVolts, "%.1f")]
+                f(r.temperature, "%.1f"), f(r.humidity, "%.0f"), f(r.batteryVolts, "%.1f"),
+                f(r.pressure, "%.2f"), r.satellites.map(String.init) ?? "", f(r.ozoneCurrent, "%.4f")]
             .joined(separator: ";") + "\n"
     }
 
@@ -338,7 +344,8 @@ enum SondeLog {
             frequencyMHz: rounded(r.frequency / 1e6, 1000), latitude: rounded(r.latitude, 1e5), longitude: rounded(r.longitude, 1e5),
             altitude: rounded(r.altitude, 1), verticalSpeed: rounded(r.verticalSpeed, 10), windSpeed: rounded(r.groundSpeed, 10),
             heading: rounded(r.heading, 1), temperature: rounded(r.temperature, 10), humidity: rounded(r.humidity, 1),
-            battery: rounded(r.batteryVolts, 10)))
+            battery: rounded(r.batteryVolts, 10), pressure: rounded(r.pressure, 100), satellites: r.satellites,
+            ozoneCurrent: rounded(r.ozoneCurrent, 10_000), frame: r.frame))
     }
 
     /// Hängt Meldungen an (Schreiben abseits des Main Actors, eine Transaktion).

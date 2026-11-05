@@ -8,6 +8,8 @@ struct SmartHome868View: View {
 }
 
 private struct SmartHome868Page: View {
+    @StoredColumns("smarthome868.2") private var columns2: TableColumnCustomization<SmartHomeReception>
+    @StoredColumns("smarthome868.1") private var columns: TableColumnCustomization<SmartHomeDevice>
     @Environment(DeviceSession.self) private var session
     @Bindable var model: SmartHome868Model
     @State private var selectedDevice: SmartHomeDevice.ID?
@@ -56,32 +58,32 @@ private struct SmartHome868Page: View {
     }
 
     private var deviceTable: some View {
-        Table(of: SmartHomeDevice.self, selection: $selectedDevice, sortOrder: $deviceOrder) {
+        Table(of: SmartHomeDevice.self, selection: $selectedDevice, sortOrder: $deviceOrder, columnCustomization: $columns) {
             TableColumn("Funkart", sortUsing: ColumnSort("funkart", text: { $0.radio.rawValue })) { (device: SmartHomeDevice) in
                 Label(device.radio.rawValue, systemImage: device.radio.symbol).lineLimit(1)
-            }.width(min: 90, ideal: 120)
+            }.width(min: 90, ideal: 120).customizationID("funkart")
             TableColumn("Kennung", sortUsing: ColumnSort("kennung", text: { $0.address })) { (device: SmartHomeDevice) in
                 Text(device.address).font(.body.monospaced())
-            }.width(min: 80, ideal: 130)
+            }.width(min: 80, ideal: 130).customizationID("kennung")
             TableColumn("Hersteller/Typ", sortUsing: ColumnSort("typ", text: { $0.deviceType })) { (device: SmartHomeDevice) in
                 Text(device.deviceType.isEmpty ? "–" : device.deviceType).lineLimit(1)
-            }.width(min: 90, ideal: 160)
+            }.width(min: 90, ideal: 160).customizationID("hersteller-typ")
             TableColumn("Letzter Wert", sortUsing: ColumnSort("wert", text: { $0.lastValueText })) { (device: SmartHomeDevice) in
                 HStack(spacing: 4) {
                     if device.encrypted { Image(systemName: "lock.fill").foregroundStyle(.secondary).help("verschlüsselt") }
                     Text(device.lastValueText).lineLimit(1)
                 }
-            }
+            }.customizationID("letzter-wert")
             TableColumn("Pegel", sortUsing: ColumnSort("pegel") { $0.snrDB }) { (device: SmartHomeDevice) in
                 Text(String(format: "%.0f dB", device.snrDB)).monospacedDigit()
                     .help(levelText(rssi: device.rssiDB, snr: device.snrDB))
-            }.width(50)
+            }.width(min: 30, ideal: 50).customizationID("pegel")
             TableColumn("Zuletzt", sortUsing: ColumnSort("zuletzt") { $0.lastSeen }) { (device: SmartHomeDevice) in
                 Text(device.lastSeen, style: .relative).foregroundStyle(.secondary)
-            }.width(90)
+            }.width(min: 54, ideal: 90).customizationID("zuletzt")
             TableColumn("Anzahl", sortUsing: ColumnSort("anzahl") { $0.count }) { (device: SmartHomeDevice) in
                 Text("\(device.count)").monospacedDigit()
-            }.width(50)
+            }.width(min: 30, ideal: 50).customizationID("anzahl")
         } rows: {
             ForEach(visibleDevices.sorted(by: deviceOrder)) { TableRow($0) }
         }
@@ -118,22 +120,22 @@ private struct SmartHome868Page: View {
                 }
                 .padding(.horizontal, 8).padding(.vertical, 4)
             }
-            Table(visibleFrames.sorted(by: frameOrder), selection: $selectedFrame, sortOrder: $frameOrder) {
+            Table(visibleFrames.sorted(by: frameOrder), selection: $selectedFrame, sortOrder: $frameOrder, columnCustomization: $columns2) {
                 TableColumn("Zeit", sortUsing: ColumnSort("zeit") { $0.id }) {
                     Text($0.date, format: .dateTime.hour().minute().second()).monospacedDigit()
-                }.width(65)
+                }.width(min: 39, ideal: 65).customizationID("zeit")
                 TableColumn("Funkart", sortUsing: ColumnSort("funkart", text: { $0.frame.radio.rawValue })) {
                     Text($0.frame.radio.rawValue).lineLimit(1)
-                }.width(min: 60, ideal: 90)
+                }.width(min: 60, ideal: 90).customizationID("funkart")
                 TableColumn("Absender", sortUsing: ColumnSort("absender", text: { $0.frame.address })) {
                     Text($0.frame.address).font(.body.monospaced()).lineLimit(1)
-                }.width(min: 70, ideal: 120)
+                }.width(min: 70, ideal: 120).customizationID("absender")
                 TableColumn("Inhalt", sortUsing: ColumnSort("inhalt", text: { $0.frame.summary })) { reception in
                     HStack(spacing: 4) {
                         if reception.frame.encrypted { Image(systemName: "lock.fill").foregroundStyle(.secondary) }
                         Text(reception.frame.summary.isEmpty ? reception.frame.kind : reception.frame.summary).lineLimit(1)
                     }
-                }
+                }.customizationID("inhalt")
             }
             .overlay {
                 if visibleFrames.isEmpty {
@@ -253,18 +255,7 @@ private struct SmartHome868Page: View {
                 ReceiverControls(model: model, device: session.hackRF)
             }
             Section(PanelSection.status) {
-                LabeledContent("Geräte", value: "\(model.devices.count)")
-                LabeledContent("Rahmen", value: "\(model.frameCount)")
-                LabeledContent("Funkstöße", value: "\(model.burstCount)")
-                    .help("Alles, was kurz über dem Rauschen lag – auch fremde Sender und Störungen.")
-                if model.running {
-                    ForEach(SmartHomeChannel.allCases, id: \.self) { channel in
-                        if let noise = model.noiseDB[channel] {
-                            LabeledContent("Rauschen \(channel.frequencyMHz.formatted(.number.precision(.fractionLength(2)))) MHz",
-                                           value: "\(noise.formatted(.number.precision(.fractionLength(1)))) dBFS")
-                        }
-                    }
-                }
+                SmartHome868StatusRows(model: model)
             }
             if let device = selectedDeviceValue, device.radio == .enocean {
                 enoceanSection(device)
@@ -363,5 +354,27 @@ extension SmartHome868Page {
                          .flag(d.encrypted), .number(d.rssiDB), .number(d.snrDB), .integer(d.count), .date(d.firstSeen), .date(d.lastSeen),
                          .text(d.lastSummary)]
                     })
+    }
+}
+
+/// Zähler und Pegel als eigene Ansicht: sie ändern sich mehrmals je Sekunde,
+/// und im Bedienfeld selbst gelesen zeichneten sie das ganze Formular neu –
+/// das Scrollen ruckelte (Review 05.11.2026).
+private struct SmartHome868StatusRows: View {
+    let model: SmartHome868Model
+
+    var body: some View {
+        LabeledContent("Geräte", value: "\(model.devices.count)")
+        LabeledContent("Rahmen", value: "\(model.frameCount)")
+        LabeledContent("Funkstöße", value: "\(model.burstCount)")
+            .help("Alles, was kurz über dem Rauschen lag – auch fremde Sender und Störungen.")
+        if model.running {
+            ForEach(SmartHomeChannel.allCases, id: \.self) { channel in
+                if let noise = model.noiseDB[channel] {
+                    LabeledContent("Rauschen \(channel.frequencyMHz.formatted(.number.precision(.fractionLength(2)))) MHz",
+                                   value: "\(noise.formatted(.number.precision(.fractionLength(1)))) dBFS")
+                }
+            }
+        }
     }
 }

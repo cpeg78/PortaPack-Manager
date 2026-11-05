@@ -38,6 +38,9 @@ struct SensorReading: Sendable, Equatable {
         case "Formaldehyd": String(localized: "Formaldehyd")
         case "VOC-Stufe": String(localized: "VOC-Stufe")
         case "Neue Batterie": String(localized: "Neue Batterie")
+        case "Reifendruck": String(localized: "Reifendruck")
+        case "Luftdruck": String(localized: "Luftdruck")
+        case "Format": String(localized: "Format")
         default: key
         }
     }
@@ -82,6 +85,18 @@ enum SensorDecoders {
         },
         Decoder(name: "LaCrosse TX35DTH-IT / TFA 30.3155", modulation: .fsk) { train in
             bothPolarities(SensorSlicer.pcm(train, bitWidth: 105, reset: 4000)) { lacrosseIT($0, model: "LaCrosse-TX35DTHIT") }
+        },
+        // Fine Offset (Ecowitt, Froggit, Misol, Bresser-Klone) nach rtl_433 `fineoffset.c`.
+        Decoder(name: "Fine Offset WH24 / WH65B / WS69 / WH25 / WH32 (Ecowitt, Froggit, Misol)", modulation: .fsk) { train in
+            bothPolarities(SensorSlicer.pcm(train, bitWidth: 58, reset: 20_000)) { fineOffsetWH24($0) ?? fineOffsetWH25($0) }
+        },
+        Decoder(name: "Fine Offset WH2 / WH5 / Telldus / TFA 30.3225", modulation: .ook) { train in
+            SensorSlicer.pwm(train, short: 500, long: 1500, reset: 1200, tolerance: 160).compactMap(fineOffsetWH2)
+        },
+        // Oregon Scientific v2.1/v3 (rtl_433 `oregon_scientific.c`): OOK Manchester, Halbbit ≈ 488 µs.
+        Decoder(name: "Oregon Scientific THGR122N/228N/968, THN132N, THGR810", modulation: .ook) { train in
+            let buffer = SensorAnalyzer.manchester(train, halfBit: 488, reset: 2400)
+            return [oregonV21(buffer) ?? oregonV3(buffer)].compactMap { $0 }
         },
         // Reifendruck (TPMS) auf 433,92 MHz, FSK differentiell-Manchester. Rahmung
         // und CRC nach rtl_433; Druck/Temperatur sind geräteabhängig und werden
@@ -255,14 +270,216 @@ enum SensorDecoders {
 
     private static func bcd(_ byte: UInt8) -> Int { Int(byte >> 4) * 10 + Int(byte & 0x0F) }
 
+    // MARK: - Fine Offset (rtl_433 `fineoffset.c`)
+
+    private static func sum(_ bytes: ArraySlice<UInt8>) -> UInt8 { bytes.reduce(0, &+) }
+
+    /// WH24/WH65B/WS69 (Außeneinheit mit Wind, Regen, UV, Licht): Präambel
+    /// AA 2D D4, 17 Byte, CRC-8 0x31 über 16 Byte = 0 und Summe in Byte 16.
+    /// Faktoren nach Paketlänge: WH24 Wind 1,12 m/s und Regen 0,3 mm je Schritt,
+    /// WH65B/WS69 0,51 m/s und 0,254 mm.
+    static func fineOffsetWH24(_ bits: SensorBitBuffer) -> SensorReading? {
+        guard let row = bits.rows.first, (190...268).contains(row.count),
+              let found = bits.search(row: 0, pattern: [0xAA, 0x2D, 0xD4], bits: 24) else { return nil }
+        let offset = found + 24
+        guard offset + 17 * 8 <= row.count else { return nil }
+        let wh24 = row.count - offset - 17 * 8 < 8 && offset < 61
+        let ws69 = row.count > 215
+        let b = bits.extract(row: 0, from: offset, bits: min(25, (row.count - offset) / 8) * 8)
+        guard b.count >= 17, b[0] == 0x24,
+              SensorChecksum.crc8(Array(b[0..<16]), polynomial: 0x31, initial: 0) == 0, sum(b[0..<16]) == b[16] else { return nil }
+        let model = wh24 && !ws69 ? "Fineoffset-WH24" : ws69 ? "Fineoffset-WS69" : "Fineoffset-WH65B"
+        var r = SensorReading(model: model, id: String(b[1]), integrity: "CRC")
+        r.batteryOK = b[3] & 0x08 == 0
+        let windDirection = Int(b[2]) | Int(b[3] & 0x80) << 1
+        let temperature = Int(b[3] & 0x07) << 8 | Int(b[4])
+        let windRaw = Int(b[6]) | Int(b[3] & 0x10) << 4
+        let (windFactor, rainStep) = wh24 && !ws69 ? (1.12, 0.3) : (0.51, 0.254)
+        if temperature != 0x7FF { r.temperatureC = Double(temperature - 400) / 10 }
+        if b[5] != 0xFF { r.humidity = Int(b[5]) }
+        if windDirection != 0x1FF { r.windDirection = Double(windDirection) }
+        if windRaw != 0x1FF { r.windAverageMS = (Double(windRaw) * 0.125 * windFactor * 10).rounded() / 10 }
+        if b[7] != 0xFF { r.windGustMS = (Double(b[7]) * windFactor * 10).rounded() / 10 }
+        r.rainMM = (Double(Int(b[8]) << 8 | Int(b[9])) * rainStep * 10).rounded() / 10
+        let uv = Int(b[10]) << 8 | Int(b[11])
+        if uv != 0xFFFF {
+            let upper = [432, 851, 1210, 1570, 2017, 2450, 2761, 3100, 3512, 3918, 4277, 4650, 5029]
+            r.uvIndex = Double(upper.firstIndex { uv <= $0 } ?? 13)
+        }
+        let light = Int(b[12]) << 16 | Int(b[13]) << 8 | Int(b[14])
+        if light != 0xFF_FFFF { r.lightLux = Double(light) / 10 }
+        // WS69: Luftdruck in den nächsten 8 Byte mit eigener Prüfung.
+        if ws69, b.count >= 25, SensorChecksum.crc8(Array(b[0..<24]), polynomial: 0x31, initial: 0) == 0, sum(b[0..<24]) == b[24] {
+            let pressure = Int(b[17]) << 16 | Int(b[18]) << 8 | Int(b[19])
+            if pressure < 0x01_FFFF { r.extra["Luftdruck"] = String(format: "%.2f hPa", Double(pressure) / 100) }
+        }
+        return r
+    }
+
+    /// WH25/WH32/WH32B (Innen- bzw. Außenfühler mit Druck): Präambel AA 2D D4,
+    /// 8 Byte, Typ 0xE (WH32 ohne Druck 0xD), Summe in Byte 6, WH25 zusätzlich
+    /// nibble-vertauschte XOR-Summe in Byte 7.
+    static func fineOffsetWH25(_ bits: SensorBitBuffer) -> SensorReading? {
+        guard let row = bits.rows.first, row.count >= 160, row.count < 190 || row.count >= 440,
+              let found = bits.search(row: 0, pattern: [0xAA, 0x2D, 0xD4], bits: 24), found + 24 + 64 <= row.count else { return nil }
+        let b = bits.extract(row: 0, from: found + 24, bits: 64)
+        let long = row.count < 190 || row.count > 510
+        let type = b[0] & 0xF0
+        guard type == 0xE0 || (long && type == 0xD0), sum(b[0..<6]) == b[6] else { return nil }
+        if !long {
+            let x = b[0..<6].reduce(0, ^)
+            guard (x & 0x0F) << 4 | x >> 4 == b[7] else { return nil }
+        }
+        let model = !long ? "Fineoffset-WH25" : type == 0xD0 ? "Fineoffset-WH32" : "Fineoffset-WH32B"
+        var r = SensorReading(model: model, id: String(Int(b[0] & 0x0F) << 4 | Int(b[1] >> 4)), integrity: "CRC")
+        r.batteryOK = b[1] & 0x08 == 0
+        r.temperatureC = Double((Int(b[1] & 0x03) << 8 | Int(b[2])) - 400) / 10
+        r.humidity = Int(b[3])
+        let pressure = Int(b[4]) << 8 | Int(b[5])
+        if pressure != 0xFFFF, type == 0xE0 { r.extra["Luftdruck"] = String(format: "%.1f hPa", Double(pressure) / 10) }
+        return r
+    }
+
+    /// WH2/WH2A/WH5/Telldus/TFA 30.3225: Länge und erstes Byte bestimmen das
+    /// Modell, CRC-8 0x31 über 4 Byte, Typ-Nibble 4, Temperatur 12 Bit
+    /// (WH2/Telldus Vorzeichen-Betrag, WH5/TFA −40 °C versetzt).
+    static func fineOffsetWH2(_ bits: SensorBitBuffer) -> SensorReading? {
+        guard bits.rows.count >= 1 else { return nil }
+        let row = bits.rows[0]
+        guard row.count >= 47 else { return nil }
+        let first = bits.extract(row: 0, from: 0, bits: 8)[0]
+        let second = bits.extract(row: 0, from: 8, bits: 8)[0]
+        let model: String, skip: Int, length: Int
+        switch (row.count, first) {
+        case (48, 0xFF): (model, skip, length) = ("Fineoffset-WH2", 8, 40)
+        case (55, 0xFE): (model, skip, length) = ("Fineoffset-WH2A", 7, 48)
+        case (47, 0xFE): (model, skip, length) = ("Fineoffset-WH5", 7, 40)
+        case (49, 0xFF) where second & 0x80 != 0: (model, skip, length) = ("Fineoffset-TelldusProove", 9, 40)
+        default: return nil
+        }
+        let b = bits.extract(row: 0, from: skip, bits: length)
+        guard SensorChecksum.crc8(Array(b[0..<4]), polynomial: 0x31, initial: 0) == b[4], b[0] >> 4 == 4 else { return nil }
+        let tfa = model == "Fineoffset-WH2A" && b[3] == 0xFF
+        if tfa { guard b.count >= 6, sum(b[0..<5]) == b[5] else { return nil } }
+        var temperature = Int(b[1] & 0x0F) << 8 | Int(b[2])
+        var batteryLow: Bool?
+        if tfa {
+            batteryLow = temperature & 0x800 != 0
+            temperature = (temperature & 0x7FF) - 400
+        } else if model == "Fineoffset-WH5" {
+            temperature -= 400
+        } else if temperature & 0x800 != 0 {
+            temperature = -(temperature & 0x7FF)
+        }
+        let celsius = Double(temperature) / 10
+        if model == "Fineoffset-WH5", !(-40...60).contains(celsius) { return nil }
+        var r = SensorReading(model: tfa ? "TFA-303225" : model, id: String(Int(b[0] & 0x0F) << 4 | Int(b[1] >> 4)), integrity: "CRC")
+        r.temperatureC = celsius
+        if b[3] != 0xFF { r.humidity = Int(b[3]) }
+        if let batteryLow { r.batteryOK = !batteryLow }
+        return r
+    }
+
+    // MARK: - Oregon Scientific (rtl_433 `oregon_scientific.c`)
+
+    /// Bits je Nibble spiegeln (rtl_433 `reflect_nibbles`): Oregon sendet jedes Nibble LSB zuerst.
+    static func reflectNibbles(_ bytes: [UInt8]) -> [UInt8] {
+        func reflect4(_ n: UInt8) -> UInt8 { (n & 1) << 3 | (n & 2) << 1 | (n & 4) >> 1 | (n & 8) >> 3 }
+        return bytes.map { reflect4($0 >> 4) << 4 | reflect4($0 & 0x0F) }
+    }
+
+    /// Prüfsumme v2.1/v3: Summe der Nibbles vor `index`, Prüfbyte mit vertauschten Nibbles.
+    static func oregonChecksumOK(_ msg: [UInt8], nibbles index: Int) -> Bool {
+        guard msg.count > (index + 1) >> 1 else { return false }
+        var sum = 0
+        for i in stride(from: 0, to: index - 1, by: 2) { sum += Int(msg[i >> 1] >> 4) + Int(msg[i >> 1] & 0x0F) }
+        let checksum: Int
+        if index & 1 != 0 {
+            sum += Int(msg[index >> 1] >> 4)
+            checksum = Int(msg[index >> 1] & 0x0F) | Int(msg[(index + 1) >> 1] & 0xF0)
+        } else {
+            checksum = Int(msg[index >> 1] >> 4) | Int(msg[index >> 1] & 0x0F) << 4
+        }
+        return sum & 0xFF == checksum
+    }
+
+    /// Temperatur in BCD: Zehner, Einer, Zehntel; Bit 3 von Byte 5 = minus.
+    private static func oregonTemperature(_ m: [UInt8]) -> Double {
+        let value = Double(Int(m[5] >> 4) * 100 + Int(m[4] & 0x0F) * 10 + Int(m[4] >> 4)) / 10 + Double(m[5] & 0x07) * 100
+        return m[5] & 0x08 != 0 ? -value : value
+    }
+
+    private static func oregonReading(_ model: String, _ m: [UInt8], humidity: Bool) -> SensorReading {
+        var r = SensorReading(model: model, id: String(Int(m[2] & 0x0F) | Int(m[3] & 0xF0)),
+                              channel: Int(m[2] >> 4), integrity: "Prüfsumme")
+        r.batteryOK = (m[3] >> 2) & 1 == 0
+        r.temperatureC = oregonTemperature(m)
+        if humidity { r.humidity = Int(m[6] & 0x0F) * 10 + Int(m[6] >> 4) }
+        return r
+    }
+
+    /// v2.1: Präambel 55 55 (bzw. AA AA), Sync 0x99 an Bit 24…31 ± Versatz, danach
+    /// jedes Datenbit noch einmal Manchester-kodiert (01 = 1, 10 = 0).
+    static func oregonV21(_ bits: SensorBitBuffer) -> SensorReading? {
+        guard let row = bits.rows.first, row.count >= 56 + 40 else { return nil }
+        let b = bits.extract(row: 0, from: 0, bits: 56)
+        guard (b[1] == 0x55 && b[2] == 0x55) || (b[1] == 0xAA && b[2] == 0xAA) else { return nil }
+        let test = UInt32(b[3]) << 24 | UInt32(b[4]) << 16 | UInt32(b[5]) << 8 | UInt32(b[6])
+        guard let shift = (0..<8).first(where: { k in
+            let mask = UInt32(0xFFFF_0000) >> k
+            return test & mask == UInt32(0x5599_0000) >> k || test & mask == UInt32(0xAA99_0000) >> k
+        }) else { return nil }
+        // Zweite Manchester-Stufe: Paare ab Bit 40 + Versatz, höchstens 173 Datenbits.
+        var data = SensorBitBuffer()
+        var count = 0
+        var i = 40 + shift
+        while i + 1 < row.count, count < 173 {
+            let pair = bits.extract(row: 0, from: i, bits: 2)[0] >> 6
+            guard pair == 0b01 || pair == 0b10 else { break }
+            data.add(pair == 0b01 ? 1 : 0)
+            count += 1
+            i += 2
+        }
+        guard count >= 64 else { return nil }
+        let m = reflectNibbles(data.extract(row: 0, from: 0, bits: (count + 7) / 8 * 8))
+        let sensor = Int(m[0]) << 8 | Int(m[1])
+        switch sensor {
+        case 0x1D20, 0x1D30:
+            guard [68, 76].contains(count), oregonChecksumOK(m, nibbles: 15) else { return nil }
+            let model = sensor == 0x1D30 ? "Oregon-THGR968" : count == 76 ? "Oregon-THGR122N" : "Oregon-THGR228N"
+            return oregonReading(model, m, humidity: true)
+        case 0xEC40 where count == 64:
+            guard oregonChecksumOK(m, nibbles: 12), m[5] >> 4 <= 9, m[4] & 0x0F <= 9, m[4] >> 4 <= 9 else { return nil }
+            let reading = oregonReading("Oregon-THN132N", m, humidity: false)
+            return (-50...70).contains(reading.temperatureC ?? 0) ? reading : nil
+        default:
+            return nil
+        }
+    }
+
+    /// v3: Präambel …F FF C (bzw. Nullen), Datenbeginn hinter 00 05, Nibbles gespiegelt.
+    static func oregonV3(_ bits: SensorBitBuffer) -> SensorReading? {
+        guard let row = bits.rows.first, row.count >= 24 else { return nil }
+        let b = bits.extract(row: 0, from: 0, bits: 24)
+        guard (b[0] & 0x0F == 0x0F && b[1] == 0xFF && b[2] & 0xC0 == 0xC0) || (b[0] & 0x0F == 0 && b[1] == 0 && b[2] & 0xC0 == 0),
+              let found = bits.search(row: 0, pattern: [0x00, 0x05], bits: 16) else { return nil }
+        let start = found + 16, length = row.count - start
+        guard length >= 56, length <= 44 * 8 else { return nil }
+        let m = reflectNibbles(bits.extract(row: 0, from: start, bits: (length + 7) / 8 * 8))
+        let sensor = Int(m[0]) << 8 | Int(m[1])
+        guard sensor & 0xF0FF == 0xF024 || sensor == 0xF8B4, m.count >= 9, oregonChecksumOK(m, nibbles: 15),
+              m[5] >> 4 <= 9, m[4] & 0x0F <= 9, m[4] >> 4 <= 9, m[6] & 0x0F <= 9, m[6] >> 4 <= 9 else { return nil }
+        let reading = oregonReading("Oregon-THGR810", m, humidity: true)
+        return (-50...70).contains(reading.temperatureC ?? 0) ? reading : nil
+    }
+
     // MARK: - TPMS (Reifendruck)
 
     /// TPMS-Rahmen: nach der Synchronisation CRC-8 (Poly 0x07) über die
-    /// Nutzbytes. Geprüft werden zwei verbreitete Längen (Toyota 8+1,
-    /// generisch 9+1); ein Treffer liefert Sensor-ID (erste 4 Byte) und die
-    /// Rohbytes. **Druck und Temperatur werden nicht gedeutet** – deren
-    /// Skalierung ist je Hersteller verschieden und hier nicht gegen echte
-    /// Aufnahmen geprüft; das CRC schützt vor Fehltreffern im Rauschen.
+    /// Nutzbytes. Geprüft werden drei verbreitete Längen (Toyota 8+1,
+    /// generisch 7+1 bzw. 9+1); ein Treffer liefert Sensor-ID (erste 4 Byte)
+    /// und die Rohbytes. Druck und Temperatur nur, wo das Format sie selbst
+    /// absichert (`toyota`) – sonst ist die Skalierung je Hersteller verschieden.
     static func tpms(_ bits: SensorBitBuffer) -> SensorReading? {
         guard bits.rows.count == 1 else { return nil }
         // Toyota-Präambel (rtl_433 tpms_toyota): differentiell-Manchester,
@@ -277,19 +494,34 @@ enum SensorDecoders {
             while offset + total <= row.count {
                 let bytes = bits.extract(row: 0, from: offset, bits: total)
                 let data = Array(bytes.dropLast())
-                if SensorChecksum.crc8(data, polynomial: 0x07, initial: 0x80) == bytes.last
-                    || SensorChecksum.crc8(data, polynomial: 0x07, initial: 0x00) == bytes.last,
+                let toyotaCRC = SensorChecksum.crc8(data, polynomial: 0x07, initial: 0x80) == bytes.last
+                if toyotaCRC || SensorChecksum.crc8(data, polynomial: 0x07, initial: 0x00) == bytes.last,
                    bytes.contains(where: { $0 != 0 }), bytes.contains(where: { $0 != 0xFF }) {
                     let id = data.prefix(4).map { String(format: "%02x", $0) }.joined()
                     var reading = SensorReading(model: "TPMS", id: id, integrity: "CRC")
                     reading.extra["Rohdaten"] = bytes.map { String(format: "%02X", $0) }.joined(separator: " ")
                     reading.extra["Länge"] = "\(length) Byte"
+                    if toyotaCRC, length == 9 { toyota(data, into: &reading) }
                     return reading
                 }
                 offset += 8
             }
         }
         return nil
+    }
+
+    /// Toyota/Pacific PMV-C210 (rtl_433 `tpms_toyota.c`): ID (4) · Status-Bit,
+    /// Druck (8 Bit über Byte 4/5) · Temperatur (8 Bit über Byte 5/6) · Druck
+    /// invertiert. Nur wenn beide Druckwerte übereinstimmen – das Format sichert
+    /// sich selbst ab, ein Zufallstreffer der CRC-Suche fällt so heraus.
+    private static func toyota(_ b: [UInt8], into reading: inout SensorReading) {
+        let pressure = Int(b[4] & 0x7F) << 1 | Int(b[5] >> 7)
+        guard pressure == Int(b[7] ^ 0xFF) else { return }
+        let temperature = Int(b[5] & 0x7F) << 1 | Int(b[6] >> 7)
+        let psi = Double(pressure) * 0.25 - 7
+        reading.temperatureC = Double(temperature) - 40
+        reading.extra["Reifendruck"] = String(format: "%.2f bar", psi * 0.0689476)
+        reading.extra["Format"] = "Toyota/PMV"
     }
 
     /// Nutzdaten hinter der Präambel (`aaaa…2dd4`), sonst `nil`.

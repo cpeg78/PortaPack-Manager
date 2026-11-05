@@ -117,6 +117,104 @@ struct AISTests {
         #expect(found["B"] == [477_553_000])
     }
 
+    /// Bits eines Felds, höchstwertiges zuerst.
+    private func field(_ value: Int, _ length: Int) -> [UInt8] {
+        (0..<length).map { UInt8((value >> (length - 1 - $0)) & 1) }
+    }
+
+    /// 6-Bit-AIS-Text (A–Z, Leerzeichen, Ziffern).
+    private func sixBit(_ text: String) -> [UInt8] {
+        text.utf8.flatMap { c in field(Int(c) >= 64 ? Int(c) - 64 : Int(c), 6) }
+    }
+
+    @Test("Typ 9: SAR-Flugzeug mit Höhe (gpsd-Beispiel)")
+    func sarAircraft() throws {
+        let m = try #require(AISNMEA.bits(from: ["!AIVDM,1,1,,B,91b55wi;hbOS@OdQAC062Ch2089h,0*30"]).flatMap(AISMessage.decode))
+        #expect(m.type == 9 && m.mmsi == 111_232_511)
+        #expect(m.isSARAircraft)
+        #expect(m.altitudeMeters == 303)
+        #expect(m.speedKnots == 42)
+        #expect(abs(m.longitude! + 6.27884) < 1e-4)
+        #expect(abs(m.latitude! - 58.144) < 1e-3)
+        #expect(m.courseDegrees == 154.5)
+        var tracker = AISTracker()
+        tracker.ingest(m, channel: "B")
+        let vessel = try #require(tracker.vessels[111_232_511])
+        #expect(vessel.kindText == "Rettungsflugzeug (SAR)")
+        #expect(MapShip(vessel, now: Date()).symbol == .plane)
+    }
+
+    @Test("Typ 8 DAC 1/FI 31: Wetter und Pegel einer Messstation (IMO 289)")
+    func metHydro() throws {
+        var bits = [UInt8](repeating: 0, count: 360)
+        func set(_ start: Int, _ length: Int, _ value: Int) {
+            let v = value < 0 ? value + (1 << length) : value
+            for k in 0..<length { bits[start + k] = UInt8((v >> (length - 1 - k)) & 1) }
+        }
+        set(0, 6, 8); set(8, 30, 2_111_234); set(40, 10, 1); set(50, 6, 31)
+        set(56, 25, Int(8.5 * 60_000)); set(81, 24, Int(53.9 * 60_000))
+        set(106, 5, 4); set(111, 5, 18); set(116, 6, 30)
+        set(122, 7, 12); set(129, 7, 20); set(136, 9, 250); set(145, 9, 360)
+        set(154, 11, -35); set(165, 7, 88); set(172, 10, 501); set(182, 9, 214)
+        set(194, 8, 45); set(202, 12, 1120); set(216, 8, 255); set(224, 9, 360)
+        set(277, 8, 255); set(285, 6, 63); set(327, 10, 82)
+        let m = try #require(AISMessage.decode(AISBits(bits: bits)))
+        let w = try #require(m.weather)
+        #expect(abs((m.latitude ?? 0) - 53.9) < 1e-4 && abs((m.longitude ?? 0) - 8.5) < 1e-4)
+        #expect(w.windKnots == 12 && w.gustKnots == 20 && w.windFrom == 250)
+        #expect(w.airTemperature == -3.5 && w.humidity == 88 && w.dewPoint == nil)
+        #expect(w.pressure == 1013)
+        #expect(w.visibilityNM == 4.5)
+        #expect(abs((w.waterLevel ?? 0) - 1.2) < 1e-9)
+        #expect(w.currentKnots == nil && w.waveHeight == nil && w.waterTemperature == 8.2)
+        #expect(w.time == "04. 18:30 UTC")
+        var tracker = AISTracker()
+        tracker.ingest(m, channel: "A")
+        let station = try #require(tracker.vessels[2_111_234])
+        #expect(station.kindText == "Wetterstation")
+        #expect(MapShip(station, now: Date()).symbol == .weather)
+    }
+
+    @Test("Typ 14 und 12: Sicherheitsmeldungen, Wiederholung nur einmal")
+    func safetyMessages() throws {
+        let broadcast = AISBits(bits: field(14, 6) + field(0, 2) + field(351_809_000, 30) + field(0, 2) + sixBit("RCVD YR TEST MSG"))
+        let m = try #require(AISMessage.decode(broadcast))
+        #expect(m.safetyText == "RCVD YR TEST MSG")
+        #expect(m.safetyDestination == nil)
+        let addressed = AISBits(bits: field(12, 6) + field(0, 2) + field(244_000_001, 30) + field(0, 2)
+                                + field(211_000_002, 30) + field(0, 2) + sixBit("ICE WARNING"))
+        let a = try #require(AISMessage.decode(addressed))
+        #expect(a.safetyText == "ICE WARNING")
+        #expect(a.safetyDestination == 211_000_002)
+        var tracker = AISTracker()
+        let t0 = Date(timeIntervalSince1970: 1000)
+        tracker.ingest(m, channel: "A", at: t0)
+        tracker.ingest(m, channel: "B", at: t0.addingTimeInterval(5))
+        tracker.ingest(a, channel: "A", at: t0.addingTimeInterval(6))
+        tracker.ingest(m, channel: "A", at: t0.addingTimeInterval(700))
+        #expect(tracker.safetyMessages.map(\.text) == ["RCVD YR TEST MSG", "ICE WARNING", "RCVD YR TEST MSG"])
+        #expect(tracker.vessels[351_809_000]?.safetyText == "RCVD YR TEST MSG")
+    }
+
+    @Test("Notsender: SART/MOB/EPIRB nach MMSI, aktiv nur bei Status 14 oder „ACTIVE“")
+    func beacons() throws {
+        #expect(AISBeacon(mmsi: 970_123_456) == .sart)
+        #expect(AISBeacon(mmsi: 972_000_001) == .manOverboard)
+        #expect(AISBeacon(mmsi: 974_000_001) == .epirb)
+        #expect(AISBeacon(mmsi: 211_000_001) == nil)
+        var tracker = AISTracker()
+        let test = AISBits(bits: field(14, 6) + field(0, 2) + field(970_123_456, 30) + field(0, 2) + sixBit("SART TEST"))
+        tracker.ingest(try #require(AISMessage.decode(test)), channel: "A")
+        let sart = try #require(tracker.vessels[970_123_456])
+        #expect(sart.kindText == "Notsender (AIS-SART)")
+        #expect(!sart.beaconActive)
+        #expect(MapShip(sart, now: Date()).symbol == .sos)
+        let active = AISBits(bits: field(14, 6) + field(0, 2) + field(970_123_456, 30) + field(0, 2) + sixBit("SART ACTIVE"))
+        tracker.ingest(try #require(AISMessage.decode(active)), channel: "A")
+        #expect(tracker.vessels[970_123_456]?.beaconActive == true)
+        #expect(AISMessage.statusText(14) == "Notsender aktiv")
+    }
+
     @Test("Schiffsliste führt Stamm- und Positionsdaten zusammen")
     func tracker() throws {
         var tracker = AISTracker()
@@ -126,5 +224,25 @@ struct AISTests {
         tracker.ingest(position, channel: "B")
         let v = try #require(tracker.sorted.first)
         #expect(v.name == "EVER DIADEM" && v.speedKnots == 12 && v.latitude == 53.5 && v.messages == 2)
+    }
+
+    @Test("Drehrate: ±127 heißt „> 5°/30 s“ ohne Zahlenwert, −128 nicht verfügbar (Review 05.11.2026)")
+    func rateOfTurnLimits() throws {
+        func message(rot: Int) throws -> AISMessage {
+            var bits = field(1, 6) + field(0, 2) + field(265_547_250, 30) + field(0, 4) + field(rot & 0xFF, 8)
+            bits += [UInt8](repeating: 0, count: 168 - bits.count)
+            return try #require(AISMessage.decode(AISBits(bits: bits)))
+        }
+        let starboard = try message(rot: 127)
+        #expect(starboard.rateOfTurn == nil && starboard.rateOfTurnOverRange == 1)
+        #expect(starboard.rateOfTurnText == "> 5°/30 s nach Steuerbord")
+        let port = try message(rot: -127)
+        #expect(port.rateOfTurn == nil && port.rateOfTurnOverRange == -1)
+        #expect(port.rateOfTurnText == "> 5°/30 s nach Backbord")
+        let unavailable = try message(rot: -128)
+        #expect(unavailable.rateOfTurn == nil && unavailable.rateOfTurnOverRange == nil && unavailable.rateOfTurnText == nil)
+        let turning = try message(rot: -10)
+        #expect(abs((turning.rateOfTurn ?? 0) + 4.464) < 0.01 && turning.rateOfTurnOverRange == nil)
+        #expect(turning.rateOfTurnText == "-4.5°/min")
     }
 }

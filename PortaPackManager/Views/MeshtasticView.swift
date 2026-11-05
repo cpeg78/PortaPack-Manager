@@ -2,6 +2,8 @@ import CoreLocation
 import SwiftUI
 
 struct MeshtasticView: View {
+    @StoredColumns("meshtastic.2") private var columns2: TableColumnCustomization<MeshtasticLogLine>
+    @StoredColumns("meshtastic.1") private var columns: TableColumnCustomization<MeshtasticNode>
     @Environment(DeviceSession.self) private var session
     /// Lebt im `ReceiverStore` – überlebt den Seitenwechsel samt laufendem Empfang.
     @Bindable private var model = ReceiverStore.shared.meshtastic
@@ -55,7 +57,7 @@ struct MeshtasticView: View {
     // MARK: - Knoten
 
     private var nodeTable: some View {
-        Table(model.nodes.sorted(by: nodeOrder), selection: $selectedNode, sortOrder: $nodeOrder) {
+        Table(model.nodes.sorted(by: nodeOrder), selection: $selectedNode, sortOrder: $nodeOrder, columnCustomization: $columns) {
             TableColumn("Name", sortUsing: ColumnSort("name", text: { $0.longName ?? $0.shortName })) { node in
                 HStack(spacing: 6) {
                     if let short = node.shortName {
@@ -65,15 +67,15 @@ struct MeshtasticView: View {
                     }
                     Text(node.longName ?? "–").foregroundStyle(node.longName == nil ? .secondary : .primary)
                 }
-            }
-            TableColumn("ID", sortUsing: ColumnSort("id") { $0.number }) { Text($0.idString).font(.body.monospaced()) }.width(90)
+            }.customizationID("name")
+            TableColumn("ID", sortUsing: ColumnSort("id") { $0.number }) { Text($0.idString).font(.body.monospaced()) }.width(min: 54, ideal: 90).customizationID("id")
             TableColumn("Position", sortUsing: ColumnSort("position") { $0.positionDate }) { node in
                 Text(position(node)).foregroundStyle(.secondary)
-            }
-            TableColumn("SNR", sortUsing: ColumnSort("snr") { $0.snrDB }) { Text(String(format: "%.1f dB", $0.snrDB)).monospacedDigit() }.width(60)
-            TableColumn("Sprünge", sortUsing: ColumnSort("hops") { $0.hops }) { Text($0.hops.map(String.init) ?? "–").monospacedDigit() }.width(50)
-            TableColumn("Rahmen", sortUsing: ColumnSort("pakete") { $0.packets }) { Text("\($0.packets)").monospacedDigit() }.width(50)
-            TableColumn("Zuletzt", sortUsing: ColumnSort("zuletzt") { $0.lastSeen }) { Text($0.lastSeen, style: .relative).foregroundStyle(.secondary) }.width(90)
+            }.customizationID("position")
+            TableColumn("SNR", sortUsing: ColumnSort("snr") { $0.snrDB }) { Text(String(format: "%.1f dB", $0.snrDB)).monospacedDigit() }.width(min: 36, ideal: 60).customizationID("snr")
+            TableColumn("Sprünge", sortUsing: ColumnSort("hops") { $0.hops }) { Text($0.hops.map(String.init) ?? "–").monospacedDigit() }.width(min: 30, ideal: 50).customizationID("sprunge")
+            TableColumn("Rahmen", sortUsing: ColumnSort("pakete") { $0.packets }) { Text("\($0.packets)").monospacedDigit() }.width(min: 30, ideal: 50).customizationID("rahmen")
+            TableColumn("Zuletzt", sortUsing: ColumnSort("zuletzt") { $0.lastSeen }) { Text($0.lastSeen, style: .relative).foregroundStyle(.secondary) }.width(min: 54, ideal: 90).customizationID("zuletzt")
         }
         .overlay {
             if model.nodes.isEmpty {
@@ -110,6 +112,23 @@ struct MeshtasticView: View {
         let accent = MapColor.accent
         var list: [MapFeature] = []
         if let home { list.append(.home(home)) }
+        // Funkstrecken zwischen Nachbarn, die beide eine Position haben.
+        let located = Dictionary(positioned.map { ($0.number, CLLocationCoordinate2D(latitude: $0.latitude!, longitude: $0.longitude!)) },
+                                 uniquingKeysWith: { a, _ in a })
+        var linked = Set<String>()
+        for node in positioned {
+            for neighbor in node.neighbors {
+                guard let a = located[node.number], let b = located[neighbor.number] else { continue }
+                let key = [node.number, neighbor.number].sorted().map(String.init).joined(separator: "-")
+                guard linked.insert(key).inserted else { continue }
+                list.append(.line("link:\(key)", [a, b], color: MapColor.stale, width: 1.5))
+            }
+        }
+        for waypoint in model.waypoints {
+            guard let lat = waypoint.latitude, let lon = waypoint.longitude else { continue }
+            list.append(.marker("wp:\(waypoint.id)", at: CLLocationCoordinate2D(latitude: lat, longitude: lon),
+                                symbol: .pin, color: MapColor.accent, size: 16, label: waypoint.name))
+        }
         for node in positioned {
             let selected = selectedNode == node.id
             let stale = Date().timeIntervalSince(node.lastSeen) > 3600
@@ -146,25 +165,25 @@ struct MeshtasticView: View {
     private var visibleLog: [MeshtasticLogLine] { textOnly ? model.log.filter(\.isText) : model.log }
 
     private var logTable: some View {
-        Table(visibleLog.sorted(by: lineOrder), selection: $selectedLine, sortOrder: $lineOrder) {
-            TableColumn("Zeit", sortUsing: ColumnSort("zeit") { $0.id }) { Text($0.frame.date, format: .dateTime.hour().minute().second()).monospacedDigit() }.width(65)
+        Table(visibleLog.sorted(by: lineOrder), selection: $selectedLine, sortOrder: $lineOrder, columnCustomization: $columns2) {
+            TableColumn("Zeit", sortUsing: ColumnSort("zeit") { $0.id }) { Text($0.frame.date, format: .dateTime.hour().minute().second()).monospacedDigit() }.width(min: 39, ideal: 65).customizationID("zeit")
             TableColumn("Von", sortUsing: ColumnSort("von", text: { $0.packet.map { name(of: $0.header.from) } })) { line in
                 Text(line.packet.map { name(of: $0.header.from) } ?? "–")
-            }.width(min: 80, ideal: 120)
+            }.width(min: 80, ideal: 120).customizationID("von")
             TableColumn("An", sortUsing: ColumnSort("an", text: { $0.packet.map { name(of: $0.header.to) } })) { line in
                 Text(line.packet.map { name(of: $0.header.to) } ?? "–").foregroundStyle(.secondary)
-            }.width(min: 50, ideal: 80)
+            }.width(min: 50, ideal: 80).customizationID("an")
             TableColumn("Art", sortUsing: ColumnSort("art", text: { $0.kind })) { line in
                 Text(line.kind).foregroundStyle(line.packet?.data == nil ? .secondary : .primary)
-            }.width(min: 70, ideal: 100)
+            }.width(min: 70, ideal: 100).customizationID("art")
             TableColumn("Inhalt") { line in
                 Text(line.summary)
                     .foregroundStyle(line.isText ? .primary : .secondary)
                     .fontWeight(line.isText ? .medium : .regular)
                     .opacity(line.duplicate ? 0.5 : 1)
                     .lineLimit(2)
-            }
-            TableColumn("SNR", sortUsing: ColumnSort("snr") { $0.frame.snrDB }) { Text(String(format: "%.1f", $0.frame.snrDB)).monospacedDigit() }.width(45)
+            }.customizationID("inhalt")
+            TableColumn("SNR", sortUsing: ColumnSort("snr") { $0.frame.snrDB }) { Text(String(format: "%.1f", $0.frame.snrDB)).monospacedDigit() }.width(min: 28, ideal: 45).customizationID("snr")
         }
         .overlay {
             if visibleLog.isEmpty {
@@ -214,6 +233,13 @@ struct MeshtasticView: View {
                 row("SNR", String(format: "%.1f dB", node.snrDB))
                 row("Pegel", String(format: "%.1f dBFS", node.levelDB))
                 row("Rahmen", "\(node.packets)")
+                if !node.neighbors.isEmpty {
+                    row("Nachbarn", node.neighbors.map { n in
+                        let name = model.nodes.first { $0.number == n.number }?.displayName ?? Meshtastic.nodeName(n.number)
+                        return name + (n.snr.map { String(format: " (%.1f dB)", $0) } ?? "")
+                    }.joined(separator: ", "))
+                }
+                if let route = node.lastRoute { row("Route", route) }
                 row("Zuerst gesehen", node.firstSeen.formatted(date: .omitted, time: .standard))
             }
             .font(.callout)
@@ -337,13 +363,7 @@ struct MeshtasticView: View {
                 ReceiverControls(model: model, device: session.hackRF)
             }
             Section(PanelSection.status) {
-                LabeledContent("Knoten", value: "\(model.nodes.count)")
-                LabeledContent("Rahmen", value: "\(model.frameCount)")
-                LabeledContent("Nicht entschlüsselt", value: "\(model.undecrypted)")
-                LabeledContent("Prüfsummen-/Kopffehler", value: "\(model.crcErrors) / \(model.headerErrors)")
-                if model.running {
-                    LabeledContent("Rauschen", value: String(format: "%.1f dBFS", model.noiseDB))
-                }
+                MeshtasticStatusRows(model: model)
             }
             FrequencyMemorySection(page: .meshtastic, currentMHz: model.manualFrequency ? model.frequencyMHz : model.automaticFrequencyMHz) { entry in
                 model.manualFrequency = true
@@ -377,5 +397,22 @@ extension MeshtasticView {
                          .number(n.snrDB), .number(n.levelDB), .integer(n.hops), .integer(n.packets), .date(n.firstSeen), .date(n.lastSeen),
                          .text(n.telemetry.joined(separator: " · "))]
                     })
+    }
+}
+
+/// Zähler und Pegel als eigene Ansicht: sie ändern sich mehrmals je Sekunde,
+/// und im Bedienfeld selbst gelesen zeichneten sie das ganze Formular neu –
+/// das Scrollen ruckelte (Review 05.11.2026).
+private struct MeshtasticStatusRows: View {
+    let model: MeshtasticModel
+
+    var body: some View {
+        LabeledContent("Knoten", value: "\(model.nodes.count)")
+        LabeledContent("Rahmen", value: "\(model.frameCount)")
+        LabeledContent("Nicht entschlüsselt", value: "\(model.undecrypted)")
+        LabeledContent("Prüfsummen-/Kopffehler", value: "\(model.crcErrors) / \(model.headerErrors)")
+        if model.running {
+            LabeledContent("Rauschen", value: String(format: "%.1f dBFS", model.noiseDB))
+        }
     }
 }

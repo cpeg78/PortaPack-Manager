@@ -349,8 +349,12 @@ final class TVModel {
         scanTask = Task { [weak self] in
             guard let self else { return }
             var found = 0
+            var lost = false
             for (index, candidate) in TVChannel.uhf.enumerated() {
                 if Task.isCancelled { break }
+                // Übernommen (Plan, andere Seite)? Sonst liefe die Schleife blind
+                // weiter und meldete am Ende „Antenne prüfen“ (wie DAB, Review 05.11.2026).
+                guard self.device?.isReceiving(for: self) == true else { lost = true; break }
                 self.scanStatus = String(localized: "Kanal \(candidate.name) (\(candidate.megahertz) MHz) · \(found) gefunden")
                 self.scanProgress = Double(index) / Double(TVChannel.uhf.count)
                 self.tune(candidate)
@@ -388,10 +392,13 @@ final class TVModel {
             self.scanning = false
             self.scanProgress = 1
             let withServices = self.muxes.filter { !$0.services.isEmpty }.count
-            self.scanStatus = cancelled ? String(localized: "Suchlauf abgebrochen")
+            self.scanStatus = lost ? String(localized: "Suchlauf abgebrochen – ein anderer Empfänger hat den HackRF übernommen")
+                : cancelled ? String(localized: "Suchlauf abgebrochen")
                 : (found == 0 ? String(localized: "Kein Fernsehsignal gefunden – prüfe die Antenne (470–694 MHz).")
                               : String(localized: "\(found) Kanäle gefunden, \(withServices) davon mit lesbaren Sendern"))
-            if let previousService, let mux = self.muxes.first(where: { $0.services.contains { $0.id == previousService } }),
+            if lost {
+                // Nicht zurückstimmen: der Strom gehört jetzt einem anderen.
+            } else if let previousService, let mux = self.muxes.first(where: { $0.services.contains { $0.id == previousService } }),
                let target = TVChannel.uhf.first(where: { $0.number == mux.channel }) {
                 self.tune(target, service: previousService)
             } else {

@@ -3,6 +3,199 @@
 All notable changes to PortaPack Manager. Versions follow
 [Semantic Versioning](https://semver.org).
 
+## 1.3.0 – 2026-11-05
+
+### Added
+
+- **Radiosonde wind profile:** the sonde drifts with the wind – a new “Wind”
+  view shows wind speed and direction over altitude during ascent, taken from
+  the sonde's GPS speed and course. Remote Access shows the wind speed profile
+  too.
+- **Everything else a radiosonde sends:** pressure (RS41-SGP), GPS satellites,
+  exact model, mainboard and firmware, configured frequency, shutdown
+  countdown and extra instruments such as ozonesondes (XDATA: OIF411, ECC, CFH)
+  – shown only when a sonde actually sends them, on the Mac, in Remote Access,
+  on SondeHub and via MQTT. Pressure, satellites and ozone cell current are
+  archived; the history adds a pressure chart, an ozone profile and the share
+  of frames received.
+
+- **Aircraft squawk and emergencies:** the aircraft list shows the transponder
+  code; an aircraft reporting an emergency or squawking 7700, 7600 or 7500 is
+  shown in red, on the Mac and in Remote Access, and triggers a notification.
+- **What the autopilot is flying:** selected altitude and heading, pressure
+  setting (QNH), active autopilot modes, ADS-B version and position accuracy
+  in the aircraft's info card.
+
+- **AIS rescue aircraft, emergency beacons and safety messages:** SAR aircraft
+  appear with altitude and an aircraft symbol, AIS-SART, man-overboard and EPIRB
+  beacons with an SOS symbol – an active beacon triggers a notification.
+  Plain-text safety messages are listed on the AIS page.
+
+- **Tire pressure:** sensors in the Toyota format now show pressure and
+  temperature, also sent to Home Assistant.
+
+- **ACARS/VDL2 archive:** datalink messages are now stored, and the search on
+  the ACARS page also finds older messages by text, registration or flight.
+
+- **Wi-Fi frames:** the device list shows which network each device is
+  connected to and the maker, model or name that routers and phones reveal via
+  WPS; deauth and disassociation frames are listed with their reason, with a
+  warning when a deauth attack is likely.
+
+- **Meshtastic:** traceroutes with SNR per hop, neighbor links on the map,
+  waypoints, range tests, detection sensors, paxcounters, acknowledgements and
+  every kind of telemetry (air quality, power, local statistics, wind and rain
+  …) – each kept separately per node.
+
+- **APRS via the ISS:** packets from the ISS and NO-44 digipeaters are decoded
+  like on the APRS page, and their positions appear on a new map.
+
+- **DAB+ and FM artist and title:** stations that tag them (DL Plus on DAB+,
+  RadioText+ on FM) show “♪ Artist – Title”, also in Remote Access and the
+  phone's lock screen.
+- **DAB+ slideshow:** pictures the station sends along (logo, cover art,
+  news) appear on the DAB+ page.
+- **DAB+ alternatives:** the DAB+ page shows where the current programme also
+  runs, as reported by the station: other ensembles and FM frequencies.
+- **DAB+ programme guide:** if the ensemble sends one (SPI/EPG), the DAB+
+  page lists the current show with its description and the next ones.
+
+- **Zigbee meters and newer Aqara devices:** energy, power, voltage and current
+  now use each device's own multiplier and divisor, and Aqara's manufacturer
+  cluster (0xFCC0) is read like the older Xiaomi attribute.
+
+- **Z-Wave:** door locks, thermostat and fan state, colors, pulse meters,
+  configuration parameters, associations, sensor alarms, scenes and the list
+  of supported command classes – user codes only as “slot in use”, never the
+  code itself.
+
+- **EnOcean:** light, presence, CO₂, room panel, meter, contact and valve
+  actuator profiles, window handles (F6-10-00), universal teach-in (UTE) and
+  VLD switching/dimming actuators with energy readings (D2-01) and blinds
+  (D2-05).
+
+- **Homematic wall thermostat:** HM-TC-IT-WM-W-EU status (actual and set
+  temperature, battery, mode), thermostat group updates and battery warnings
+  in acknowledgements.
+
+- **Remote ID:** a drone's emergency self-ID is shown in red; the details add
+  altitude and speed accuracy and the operating altitude range.
+
+- **ACARS:** more OOOI labels (landing, arrival, diversion …) and the ground
+  station squitter's network, location and frequency.
+
+- **Airband noise reduction:** noisy transmissions are cleaned up while you
+  listen – the app learns each channel's noise in speech pauses and removes it,
+  keeping only the speech band (Medium by default, Strong for very noisy ones).
+
+- **Bluetooth:** AirPods/Beats battery levels, AirTag battery, SwitchBot
+  thermometers, and every BTHome v2 object.
+
+- **APRS:** telemetry with channel names, units and conversion, message
+  numbers and acknowledgements, raw NMEA positions, rain and solar radiation.
+
+- **Pager (DAPNET):** time signals, Skyper rubric news in plain text,
+  transmitter IDs and DX cluster calls are named and decoded.
+
+- **Wireless M-Bus compact frames:** meters that send only values (CI 0x79)
+  are decoded once the app has seen one full frame from them; error and alarm
+  frames show their code.
+
+- **Aircraft on the ground:** taxiing aircraft at airports appear on the map
+  with taxi speed and heading, marked “on the ground”.
+
+- **Mode S Enhanced Surveillance:** radar replies now add callsign (also for
+  aircraft without ADS-B), selected altitude, heading, indicated and true
+  airspeed, Mach, bank angle – and the wind at the aircraft's altitude.
+
+- **AIS weather stations:** coastal weather and tide stations (IMO 289
+  met/hydro) show wind, temperature, pressure, visibility, water level,
+  current, waves and water temperature.
+
+- **DFM radiosondes:** temperature and battery voltage for DFM-09 and DFM-17,
+  and a more precise model name.
+
+- **DAB+ announcements and station time:** traffic, news, warnings and other
+  announcements running in the ensemble are shown with the station carrying
+  them, plus the time sent by the station.
+
+- **TV programme guide:** what's on now and next, the station's channel
+  number and its time.
+
+- **LoRaWAN:** MAC commands (battery and link margin from device status), ADR
+  and acknowledgement flags, and Cayenne LPP payloads in plain text.
+
+- **ACARS weather:** METAR reports in datalink messages are broken down into
+  wind, visibility, clouds, temperature and QNH; TAF forecasts show their
+  validity.
+
+- **METEOR recording time:** the status shows when the first and last image
+  lines were taken, from the satellite's onboard clock.
+
+- **More weather stations:** Fine Offset WH24/WH65B/WS69 (Ecowitt, Froggit,
+  Misol and others) with wind, rain, UV and light, the WH25/WH32 indoor and
+  outdoor sensors, WH2/WH5/Telldus thermometers and Oregon Scientific
+  THGR122N/228N/968, THN132N and THGR810.
+
+### Changed
+
+- **Tables:** right-click a column header to hide or show columns; the layout
+  is remembered per table, and spare width is now shared among all columns
+  instead of truncating some.
+- **Aircraft info card** stays at the left edge of the map instead of
+  following the selected aircraft.
+- **More accurate radiosonde humidity:** the RS41 humidity now uses the
+  manufacturer's method (heated-sensor temperature, pressure correction) once
+  the calibration data is complete, instead of an empirical approximation.
+
+- **Short radiosonde flights leave the archive:** flights with fewer than 100
+  reports (a random catch at the edge of range) no longer appear in the archive
+  and are deleted once they have been silent for six hours.
+
+### Fixed
+
+- **Crash on Z-Wave sensor alarms** with sensor type 0xFF (any R1/R2 frame
+  `9C 02 xx FF`), and a crash on DVB-T2 time-offset tables (TOT) shorter than
+  14 bytes.
+- **APRS raw NMEA** accepted `inf`/`1e5` as coordinates, which emptied the APRS
+  tab in Remote Access for an hour; coordinates are now digits only and
+  range-checked.
+- **AIS weather stations:** wave height, wave period and water temperature were
+  read from the wrong bits (they are now at 277/285/327 as in IMO SN.1/Circ.289).
+- **Mode-S Comm-B identification (BDS 2,0)** accepted any reply as a callsign;
+  invalid characters now reject it. Global CPR positions with latitudes beyond
+  ±90° are discarded.
+- **Firmware rescue (SPI)** checks the device's board ID against the chosen
+  device type – a HackRF One image could be written to a HackRF Pro. The
+  `hackrf` command is retried when the Mayhem console comes back, and
+  installing is blocked while an SD transfer runs. SD downloads are CRC-checked.
+- **English texts:** 17 German keys had conflicting translations; “Fahrt” for
+  ships no longer reads “Airspeed”, “Netz” no longer “Mains”.
+- **Remote Access:** a timer of an old connection could cut a new one;
+  `/api/mode` gets 60 s more; quick taps no longer start several mode switches;
+  viewers no longer see plan switches. AIS→UDP forwarding tracks the connection
+  state and counts only successful sends. The SondeHub antenna field is empty
+  by default (it is published).
+- **Archive:** a corrupt full-text index is rebuilt instead of setting the whole
+  archive aside; restoring a backup checks the database before copying files;
+  recording names from backups are confined to the recordings folder; failed
+  writes keep sightings in memory.
+- **Reception plan:** a manual start during the sonde listening pause now asks
+  and skips the window; device-unresponsive and stream-lost cases are no longer
+  reported as “taken over”.
+- **Control panel** no longer re-renders the whole page several times a second
+  (counters and levels moved into child views on all pages); FT8 clock and
+  ACARS sorting likewise.
+- **DAB programme guide:** files are no longer re-parsed on every carousel
+  round; size limits apply while collecting; `defaultContentId` is honoured.
+- **Homematic smoke, water and motion detectors:** every sensor event was
+  shown as a window contact – a smoke alarm read “open”. The app now learns
+  the model from the device info and shows smoke alarm, dry/damp/wet and
+  motion with brightness.
+- **LoRaWAN:** the documentation no longer claims that OTAA joins are read
+  along – join accepts are downlinks the receiver cannot hear. For OTAA
+  devices, enter the session keys from your network server.
+
 ## 1.2.0 – 2026-11-04
 
 ### Added

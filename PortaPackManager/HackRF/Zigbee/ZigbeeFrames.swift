@@ -457,6 +457,16 @@ struct ZCLMessage: Sendable, Equatable {
     var command: UInt8
     var summary: String
     var readings: [String]
+    /// Rohe Attribute eines Berichts bzw. einer Leseantwort – für Werte, die
+    /// erst mit gerätebezogenen Faktoren stimmen (`readings(cluster:factors:)`).
+    var attributes: [ZCL.Attribute] = []
+
+    /// Messwerte mit den Faktoren eines Geräts neu beschreiben (Zähler,
+    /// elektrische Messung); ohne Faktoren gleich `readings`.
+    func readings(cluster: UInt16, factors: [UInt32: Int64]) -> [String] {
+        guard !attributes.isEmpty, !factors.isEmpty, ZCL.scaledAttributes[cluster] != nil else { return readings }
+        return attributes.compactMap { ZCL.describe(cluster: cluster, ($0.id, $0.value), factors: factors) }
+    }
 
     static func parse(_ b: [UInt8], cluster: UInt16) -> ZCLMessage? {
         guard b.count >= 3 else { return nil }
@@ -479,12 +489,11 @@ struct ZCLMessage: Sendable, Equatable {
             }
         } else {
             switch command {
-            case 0x0A:
-                message.summary = String(localized: "Attributbericht")
-                message.readings = ZCL.records(payload, withStatus: false).compactMap { ZCL.describe(cluster: cluster, $0) }
-            case 0x01:
-                message.summary = String(localized: "Leseantwort")
-                message.readings = ZCL.records(payload, withStatus: true).compactMap { ZCL.describe(cluster: cluster, $0) }
+            case 0x0A, 0x01:
+                message.summary = command == 0x0A ? String(localized: "Attributbericht") : String(localized: "Leseantwort")
+                let records = ZCL.records(payload, withStatus: command == 0x01)
+                message.attributes = records.map { ZCL.Attribute(id: $0.0, value: $0.1) }
+                message.readings = records.compactMap { ZCL.describe(cluster: cluster, $0) }
             case 0x00: message.summary = String(localized: "Attribute lesen")
             case 0x02: message.summary = String(localized: "Attribute schreiben")
             case 0x06: message.summary = String(localized: "Berichte einrichten")
@@ -505,6 +514,42 @@ enum ZCL {
         case raw([UInt8])
     }
 
+    struct Attribute: Sendable, Equatable {
+        let id: UInt16
+        let value: Value
+    }
+
+    /// Messwerte, deren Einheit erst ein Faktorpaar des Geräts festlegt:
+    /// Messattribut → (Multiplikator, Divisor). Zähler 0x0702: Summe und
+    /// Leistung in kWh bzw. kW; elektrische Messung 0x0B04: V, A, W.
+    static let scaledAttributes: [UInt16: [UInt16: (multiplier: UInt16, divisor: UInt16)]] = [
+        0x0702: [0x0000: (0x0301, 0x0302), 0x0400: (0x0301, 0x0302)],
+        0x0B04: [0x0505: (0x0600, 0x0601), 0x0508: (0x0602, 0x0603), 0x050B: (0x0604, 0x0605)],
+    ]
+
+    /// Schlüssel eines Faktors je Gerät.
+    static func factorKey(cluster: UInt16, attribute: UInt16) -> UInt32 { UInt32(cluster) << 16 | UInt32(attribute) }
+
+    /// Faktorattribute (Multiplikator/Divisor) einer Nachricht, als Schlüssel → Wert.
+    static func factors(in attributes: [Attribute], cluster: UInt16) -> [UInt32: Int64] {
+        guard let scaled = scaledAttributes[cluster] else { return [:] }
+        let ids = Set(scaled.values.flatMap { [$0.multiplier, $0.divisor] })
+        var out: [UInt32: Int64] = [:]
+        for attribute in attributes where ids.contains(attribute.id) {
+            if case let .int(v) = attribute.value, v > 0 { out[factorKey(cluster: cluster, attribute: attribute.id)] = v }
+        }
+        return out
+    }
+
+    /// Wert mal Multiplikator durch Divisor, wenn das Gerät wenigstens einen genannt hat.
+    static func scaled(_ value: Double, cluster: UInt16, attribute: UInt16, factors: [UInt32: Int64]) -> Double? {
+        guard let pair = scaledAttributes[cluster]?[attribute] else { return nil }
+        let multiplier = factors[factorKey(cluster: cluster, attribute: pair.multiplier)]
+        let divisor = factors[factorKey(cluster: cluster, attribute: pair.divisor)]
+        guard multiplier != nil || divisor != nil else { return nil }
+        return value * Double(multiplier ?? 1) / Double(divisor ?? 1)
+    }
+
     static let clusterNames: [UInt16: String] = [
         0x0000: "Basis", 0x0001: "Stromversorgung", 0x0003: "Identifizieren", 0x0004: "Gruppen",
         0x0005: "Szenen", 0x0006: "Ein/Aus", 0x0008: "Helligkeit", 0x000A: "Zeit",
@@ -513,7 +558,7 @@ enum ZCL {
         0x0400: "Helligkeitsmessung", 0x0402: "Temperatur", 0x0403: "Luftdruck", 0x0405: "Luftfeuchte",
         0x0406: "Anwesenheit", 0x040D: "CO₂", 0x042A: "Feinstaub", 0x0500: "Alarmzone (IAS)",
         0x0702: "Zähler", 0x0B04: "Elektrische Messung", 0x0B05: "Diagnose", 0x1000: "Touchlink",
-        0xEF00: "Tuya",
+        0xEF00: "Tuya", 0xFCC0: "Aqara",
     ]
 
     static func clusterName(_ id: UInt16) -> String {
@@ -578,14 +623,21 @@ enum ZCL {
         return Int(max(-1e15, min(1e15, v)))
     }
 
-    /// Bekannte Messwerte in Klartext, sonst Kennung = Wert.
-    static func describe(cluster: UInt16, _ record: (UInt16, Value)) -> String? {
+    /// Bekannte Messwerte in Klartext, sonst Kennung = Wert. `factors`:
+    /// Multiplikatoren/Divisoren des Geräts (siehe `scaledAttributes`).
+    static func describe(cluster: UInt16, _ record: (UInt16, Value), factors: [UInt32: Int64] = [:]) -> String? {
         let (id, value) = record
         // Xiaomi/Aqara: Attribut 0xFF01 (Zeichenkette) bzw. 0xFF02 (Struktur) im
-        // Basis-Cluster trägt einen TLV-Block mit Batterie, Temperatur usw.
-        if cluster == 0x0000, id == 0xFF01 || id == 0xFF02, case let .raw(bytes) = value {
+        // Basis-Cluster trägt einen TLV-Block mit Batterie, Temperatur usw.;
+        // neuere Aqara-Geräte schicken denselben Block als 0x00F7 im Herstellercluster 0xFCC0.
+        if (cluster == 0x0000 && (id == 0xFF01 || id == 0xFF02)) || (cluster == 0xFCC0 && id == 0x00F7),
+           case let .raw(bytes) = value {
             let parts = Xiaomi.readings(bytes)
             return parts.isEmpty ? nil : parts.joined(separator: ", ")
+        }
+        // Faktorattribute selbst sind kein Messwert.
+        if let scaled = scaledAttributes[cluster], scaled.values.contains(where: { $0.multiplier == id || $0.divisor == id }) {
+            return nil
         }
         let number: Double? = {
             switch value {
@@ -595,6 +647,16 @@ enum ZCL {
             }
         }()
         if case let .int(v) = value, v == -32768 || v == 0xFFFF && cluster != 0x0000 { return nil }   // ungültig
+        if let v = number, let scaled = scaled(v, cluster: cluster, attribute: id, factors: factors) {
+            switch (cluster, id) {
+            case (0x0702, 0x0000): return String(format: "Zähler %.3f kWh", scaled)
+            case (0x0702, 0x0400): return String(format: "%.0f W", scaled * 1000)
+            case (0x0B04, 0x0505): return String(format: "%.1f V", scaled)
+            case (0x0B04, 0x0508): return String(format: "%.3f A", scaled)
+            case (0x0B04, 0x050B): return String(format: "%.1f W", scaled)
+            default: break
+            }
+        }
         switch (cluster, id, number) {
         case (0x0402, 0, let v?): return String(format: "%.2f °C", v / 100)
         case (0x0405, 0, let v?): return String(format: "%.1f %% rF", v / 100)

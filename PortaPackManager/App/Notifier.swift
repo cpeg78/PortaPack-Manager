@@ -55,6 +55,9 @@ final class Notifier {
     var notifyDSC = UserDefaults.standard.object(forKey: "notifyDSC") as? Bool ?? true {
         didSet { UserDefaults.standard.set(notifyDSC, forKey: "notifyDSC") }
     }
+    var notifyAircraftEmergency = UserDefaults.standard.object(forKey: "notifyAircraftEmergency") as? Bool ?? true {
+        didSet { UserDefaults.standard.set(notifyAircraftEmergency, forKey: "notifyAircraftEmergency") }
+    }
 
     /// Letzte Zustellung oder Fehler, für die Einstellungen.
     private(set) var lastResult: String?
@@ -131,6 +134,24 @@ final class Notifier {
         post(key: "dsc-\(key)", title: String(localized: "Seefunk-Notruf (DSC)"), body: body)
     }
 
+    /// Flugzeug meldet einen Notfall (TC 28 oder Squawk 7500/7600/7700) – je
+    /// Flugzeug und Art einmal am Tag.
+    func aircraftEmergency(_ plane: Aircraft, kind: String) {
+        guard notifyAircraftEmergency else { return }
+        let name = plane.callsign ?? plane.icaoHex
+        let squawk = plane.squawkText.map { " (Squawk \($0))" } ?? ""
+        post(key: "adsb-\(plane.icaoHex)-\(kind)", title: String(localized: "Flugzeug meldet Notfall"),
+             body: String(localized: "\(name): \(kind)\(squawk). Mehr auf der Seite „Flugzeuge (ADS-B)“."))
+    }
+
+    /// AIS-Notsender (SART, MOB, EPIRB) sendet „aktiv“ – je Sender einmal am Tag.
+    /// Ohne MMSI und Position: die gehen nicht an ntfy (wie beim DSC-Notruf).
+    func aisBeacon(_ vessel: AISVessel) {
+        guard notifyDSC, let beacon = vessel.beacon else { return }
+        post(key: "ais-\(vessel.mmsi)", title: String(localized: "Seenot-Notsender aktiv"),
+             body: String(localized: "\(beacon.text) sendet. Mehr auf der Seite „Schiffe (AIS)“."))
+    }
+
     func testMessage() {
         post(key: "test-\(Date().timeIntervalSince1970)", title: "PortaPack Manager", body: String(localized: "Testnachricht – Benachrichtigungen kommen an."))
     }
@@ -158,7 +179,9 @@ final class Notifier {
                 deviceMissingSince = nil
             }
         }
-        sent = sent.filter { now.timeIntervalSince($0.value) < 86_400 }
+        // Nur bei Änderung zuweisen – `didSet` schreibt sonst alle 30 s die UserDefaults.
+        let pruned = sent.filter { now.timeIntervalSince($0.value) < 86_400 }
+        if pruned.count != sent.count { sent = pruned }
     }
 
     /// Satelliten-Termine des Plans, deren Aufgang in den nächsten zehn

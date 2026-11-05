@@ -39,7 +39,11 @@ done
 
 if (( BUILD )); then
     cd "$PROJECT_DIR"
-    if [[ ! -d "$APP_NAME.xcodeproj" || project.yml -nt "$APP_NAME.xcodeproj/project.pbxproj" ]]; then
+    # xcodegen schreibt die Dateiliste fest: eine neue .swift-Datei ohne Änderung an
+    # project.yml fehlte sonst im Build („cannot find … in scope“, Review 05.11.2026).
+    PBXPROJ="$APP_NAME.xcodeproj/project.pbxproj"
+    if [[ ! -d "$APP_NAME.xcodeproj" || project.yml -nt "$PBXPROJ" ]] \
+            || [[ -n "$(find PortaPackManager PortaPackManagerTests -name '*.swift' -newer "$PBXPROJ" -print -quit 2>/dev/null)" ]]; then
         echo "› Xcode-Projekt erzeugen"
         xcodegen generate --quiet
     fi

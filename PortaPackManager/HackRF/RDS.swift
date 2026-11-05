@@ -15,6 +15,9 @@ struct RDSInfo: Sendable, Equatable {
     var clock: Date?
     var localOffsetMinutes: Int?
     var alternativeFrequencies: Set<Double> = []
+    /// RadioText+ (ODA 0x4BD7): Markierungen im Radiotext und ob das Stück läuft.
+    var radioTextPlusMarkers: [RadioTextPlus.Marker] = []
+    var radioTextPlusRunning = false
     var groups = 0
     var blocksGood = 0
     var blocksBad = 0
@@ -29,6 +32,11 @@ struct RDSInfo: Sendable, Equatable {
         String(radioText.prefix { $0 != "\r" }.map { $0 ?? " " }).trimmingCharacters(in: .whitespaces)
     }
 
+    /// Markierte Stücke des aktuellen Radiotexts, solange das Stück läuft.
+    var radioTextPlus: [RadioTextTag] {
+        radioTextPlusRunning ? RadioTextPlus.tags(in: radioTextString, markers: radioTextPlusMarkers) : []
+    }
+
     var programTypeName: String? {
         programType.flatMap { RDSInfo.programTypeNames.indices.contains($0) ? RDSInfo.programTypeNames[$0] : nil }
     }
@@ -41,7 +49,7 @@ struct RDSInfo: Sendable, Equatable {
 
     /// Programmarten nach RDS (Europa).
     static let programTypeNames = [
-        String(localized: "Keine Angabe"), String(localized: "Nachrichten"), String(localized: "Aktuelles"),
+        String(localized: "Keine Angabe"), String(localized: "pty.news", defaultValue: "Nachrichten"), String(localized: "Aktuelles"),
         String(localized: "Information"), String(localized: "Sport"), String(localized: "Bildung"),
         String(localized: "Hörspiel"), String(localized: "Kultur"), String(localized: "Wissenschaft"),
         String(localized: "Unterhaltung"), String(localized: "Pop"), String(localized: "Rock"),
@@ -58,7 +66,8 @@ struct RDSInfo: Sendable, Equatable {
 // MARK: - Bits → Blöcke → Gruppen
 
 /// Synchronisiert auf 26-Bit-Blöcke, prüft die Prüfwörter und wertet die
-/// Gruppen 0A/0B (Sendername, AF), 2A/2B (Radiotext) und 4A (Uhrzeit) aus.
+/// Gruppen 0A/0B (Sendername, AF), 2A/2B (Radiotext), 3A (Anwendungen) und
+/// 4A (Uhrzeit) aus, dazu RadioText+ in der per 3A angekündigten Gruppe.
 /// Erwartet die Bits nach der Biphase-Entscheidung, aber noch differentiell
 /// kodiert – die Differenzdekodierung passiert hier.
 struct RDSDecoder: Sendable {
@@ -82,6 +91,10 @@ struct RDSDecoder: Sendable {
     private var recentErrors: [Bool] = []
     private var group: [UInt16?] = [nil, nil, nil, nil]
     private var radioTextFlag: Bool?
+    /// Gruppe, in der RadioText+ läuft (Typ · 2 + Version B), laut Gruppe 3A.
+    private var radioTextPlusGroup: Int?
+    /// Kennung der RadioText+-Anwendung (Open Data Application).
+    static let radioTextPlusAID: UInt16 = 0x4BD7
 
     /// Rest der Polynomdivision eines 26-Bit-Worts – bei fehlerfreiem Block das Offsetwort.
     static func syndrome(_ word: UInt32) -> UInt32 {
@@ -163,6 +176,7 @@ struct RDSDecoder: Sendable {
     mutating func clearInfo() {
         info = RDSInfo()
         radioTextFlag = nil
+        radioTextPlusGroup = nil
     }
 
     mutating func push(_ rawBit: UInt8) {
@@ -235,6 +249,10 @@ struct RDSDecoder: Sendable {
         info.programType = Int((b >> 5) & 0x1F)
         let c = group[2], d = group[3]
 
+        if let rtPlus = radioTextPlusGroup, rtPlus == type << 1 | (versionB ? 1 : 0), let c, let d {
+            radioTextPlus(b, c, d)
+            return
+        }
         switch (type, versionB) {
         case (0, _):
             info.trafficAnnouncement = b & 0x10 != 0
@@ -273,6 +291,9 @@ struct RDSDecoder: Sendable {
                     info.radioText[index + 3] = Self.character(UInt8(d & 0xFF))
                 }
             }
+        case (3, false):
+            // Anmeldung einer Open Data Application: Block D = Kennung, Block B = Gruppe.
+            if d == Self.radioTextPlusAID { radioTextPlusGroup = Int(b & 0x1F) }
         case (4, false):
             guard let c, let d else { return }
             let mjd = (Int(b & 0x03) << 15) | Int(c >> 1)
@@ -287,6 +308,19 @@ struct RDSDecoder: Sendable {
         default:
             break
         }
+    }
+
+    /// RadioText+-Gruppe (RDS Forum R06/040): B = … Toggle, Running, Art 1
+    /// (Bits 5–3); C = Art 1 (Bits 2–0), Anfang 1 (6), Länge 1 (6), Art 2 (Bit 5);
+    /// D = Art 2 (Bits 4–0), Anfang 2 (6), Länge 2 (5). Längen zählen ab 0.
+    private mutating func radioTextPlus(_ b: UInt16, _ c: UInt16, _ d: UInt16) {
+        let type1 = Int(b & 0x07) << 3 | Int(c >> 13)
+        let start1 = Int(c >> 7 & 0x3F), length1 = Int(c >> 1 & 0x3F) + 1
+        let type2 = Int(c & 0x01) << 5 | Int(d >> 11)
+        let start2 = Int(d >> 5 & 0x3F), length2 = Int(d & 0x1F) + 1
+        info.radioTextPlusRunning = b & 0x08 != 0
+        info.radioTextPlusMarkers = [.init(type: type1, start: start1, length: length1),
+                                     .init(type: type2, start: start2, length: length2)]
     }
 
     /// RDS-Zeichensatz (IEC 62106, Tabelle E.1): ASCII plus Akzentzeichen.

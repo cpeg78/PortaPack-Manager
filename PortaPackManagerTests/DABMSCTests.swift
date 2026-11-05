@@ -125,6 +125,112 @@ struct DABMSCTests {
         #expect(decoder.dynamicLabel == "Jetzt läuft: Testsong – Interpret")
     }
 
+    /// Eine DL-Datengruppe (Präfix + Feld + CRC) als PAD-Folge an den Dekoder.
+    private func feed(_ decoder: DABPADDecoder, prefix: [UInt8], field: [UInt8]) -> Bool {
+        var group = prefix + field
+        let crc = DABCRC.ccitt(group)
+        group += [UInt8(crc >> 8), UInt8(crc & 0xFF)]
+        var changed = false
+        for (k, start) in stride(from: 0, to: group.count, by: 16).enumerated() {
+            let part = Array(group[start..<min(start + 16, group.count)])
+            changed = decoder.process(pad: pad(subfield: k == 0 ? 2 : 3, data: part, lengthIndex: 4), exactLength: false) || changed
+        }
+        return changed
+    }
+
+    /// MOT-Datengruppe (Typ 3 Kopf, 4 Rumpf) mit Segment-, Nutzerzugriffs- und Segmentkopf samt CRC.
+    private func motGroup(type: Int, segment: Int, last: Bool, transportID: Int, data: [UInt8]) -> [UInt8] {
+        var g: [UInt8] = [0x70 | UInt8(type), 0x00,
+                          (last ? 0x80 : 0) | UInt8(segment >> 8), UInt8(segment & 0xFF),
+                          0x12, UInt8(transportID >> 8), UInt8(transportID & 0xFF),
+                          UInt8(data.count >> 8), UInt8(data.count & 0xFF)] + data
+        let crc = DABCRC.ccitt(g)
+        g += [UInt8(crc >> 8), UInt8(crc & 0xFF)]
+        return g
+    }
+
+    /// MOT-Kopf: Rumpfgröße, Kopfgröße, Inhaltstyp 2 (Bild) / Untertyp 1 (JPEG), ContentName.
+    private func motHeader(bodySize: Int, name: String) -> [UInt8] {
+        let nameField = [UInt8(0xF0)] + Array(name.utf8)
+        let parameters = [UInt8(0xC0 | 0x0C), UInt8(nameField.count)] + nameField
+        let headerSize = 7 + parameters.count
+        let bits = UInt64(bodySize) << 28 | UInt64(headerSize) << 15 | UInt64(2) << 9 | 1
+        return (0..<7).map { UInt8(truncatingIfNeeded: bits >> (8 * (6 - $0))) } + parameters
+    }
+
+    @Test("MOT: Datengruppe zerlegt Segment- und Nutzerzugriffskopf, verwirft falsche CRC")
+    func motDataGroup() throws {
+        var raw = motGroup(type: 4, segment: 3, last: true, transportID: 0x1234, data: [1, 2, 3])
+        let group = try #require(DABDataGroup(raw))
+        #expect(group == DABDataGroup(raw))
+        #expect(group.type == 4 && group.segment == 3 && group.last && group.transportID == 0x1234)
+        #expect(group.payload == [1, 2, 3])
+        raw[9] ^= 0xFF
+        #expect(DABDataGroup(raw) == nil)
+    }
+
+    @Test("MOT: Kopf und Rumpf in beliebiger Reihenfolge ergeben das Bild samt Namen")
+    func motAssembler() throws {
+        let body: [UInt8] = [0xFF, 0xD8] + (0..<98).map { UInt8($0) }
+        var assembler = DABMOTAssembler()
+        let groups = [motGroup(type: 4, segment: 1, last: true, transportID: 7, data: Array(body[50...])),
+                      motGroup(type: 3, segment: 0, last: true, transportID: 7, data: motHeader(bodySize: body.count, name: "bild.jpg")),
+                      motGroup(type: 4, segment: 0, last: false, transportID: 7, data: Array(body[..<50]))]
+        var result: DABMOTObject?
+        for g in groups {
+            #expect(result == nil)
+            result = assembler.add(try #require(DABDataGroup(g)))
+        }
+        let object = try #require(result)
+        #expect(object.body == body)
+        #expect(object.name == "bild.jpg")
+        #expect(object.imageKind == "jpeg")
+        // Ein unvollständiges Objekt einer anderen Kennung stört nicht.
+        #expect(assembler.add(try #require(DABDataGroup(motGroup(type: 4, segment: 0, last: true, transportID: 8, data: [0])))) == nil)
+    }
+
+    @Test("MOT im X-PAD: Längenangabe (Typ 1), Start (12) und Fortsetzung (13) liefern das Diashow-Bild")
+    func motSlideViaPAD() throws {
+        let body: [UInt8] = [0xFF, 0xD8] + [UInt8](repeating: 0x55, count: 40)
+        let decoder = DABPADDecoder()
+        for raw in [motGroup(type: 3, segment: 0, last: true, transportID: 9, data: motHeader(bodySize: body.count, name: "a.jpg")),
+                    motGroup(type: 4, segment: 0, last: true, transportID: 9, data: body)] {
+            var dgli = [UInt8(raw.count >> 8 & 0x3F), UInt8(raw.count & 0xFF)]
+            let crc = DABCRC.ccitt(dgli)
+            dgli += [UInt8(crc >> 8), UInt8(crc & 0xFF)]
+            decoder.process(pad: pad(subfield: 1, data: dgli, lengthIndex: 0), exactLength: false)
+            for (k, start) in stride(from: 0, to: raw.count, by: 16).enumerated() {
+                let part = Array(raw[start..<min(start + 16, raw.count)])
+                decoder.process(pad: pad(subfield: k == 0 ? 12 : 13, data: part, lengthIndex: 4), exactLength: false)
+            }
+        }
+        #expect(decoder.slideNumber == 1)
+        #expect(decoder.slide?.body == body)
+        #expect(decoder.slide?.name == "a.jpg")
+    }
+
+    @Test("DL Plus: Interpret und Titel aus den Markierungen, nur für den passenden Lauftext")
+    func dlPlus() {
+        let decoder = DABPADDecoder()
+        let text = Array("Pink Floyd - Time".utf8)
+        // Zwei Segmente (höchstens 16 Zeichen je Segment), Toggle 1, Zeichensatz UTF-8.
+        _ = feed(decoder, prefix: [0x80 | 0x40 | 15, 0xF0], field: Array(text.prefix(16)))
+        _ = feed(decoder, prefix: [0x80 | 0x20 | UInt8(text.count - 16 - 1), 0x10], field: Array(text.dropFirst(16)))
+        #expect(decoder.dynamicLabel == "Pink Floyd - Time")
+        // DL-Plus-Befehl: C = 1, Befehl 2; Link 1, Länge 7 − 1; CId 0, Item running, 2 Markierungen.
+        let command: [UInt8] = [0x04 | 0x01, UInt8(RadioTextPlus.artist), 0, 9, UInt8(RadioTextPlus.title), 13, 3]
+        #expect(feed(decoder, prefix: [0x80 | 0x10 | 0x02, 0x80 | UInt8(command.count - 1)], field: command))
+        #expect(decoder.itemRunning)
+        #expect(decoder.dlPlusTags == [RadioTextTag(type: RadioTextPlus.artist, text: "Pink Floyd"),
+                                       RadioTextTag(type: RadioTextPlus.title, text: "Time")])
+        #expect(RadioTextPlus.nowPlaying(decoder.dlPlusTags) == "Pink Floyd – Time")
+        // Befehl für den anderen Lauftext (Link 0) gilt nicht.
+        let other = DABPADDecoder()
+        _ = feed(other, prefix: [0x80 | 0x40 | 0x20 | 4, 0xF0], field: Array("Hallo".utf8))
+        _ = feed(other, prefix: [0x80 | 0x10 | 0x02, UInt8(command.count - 1)], field: command)
+        #expect(other.dlPlusTags.isEmpty)
+    }
+
     @Test("AAC (LC und HE): Ton kommt mit dem 960/1024-Ausgleich heraus", arguments: [false, true])
     func aacTone(he: Bool) throws {
         // AudioToolbox kodiert 1024er-Rahmen; der Dekoder nimmt 960er an und

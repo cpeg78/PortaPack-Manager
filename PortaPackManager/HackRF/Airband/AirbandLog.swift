@@ -79,7 +79,7 @@ struct AirbandLog: Sendable {
     func search(userInput: String, limit: Int = 200) async -> [AirbandTransmission] {
         let input = userInput.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !input.isEmpty else { return [] }
-        let match = Self.ftsQuery(input)
+        let match = FullTextSearch.query(input)
         let sign = input.uppercased().filter { !$0.isWhitespace && $0 != "-" }
         let looksLikeCallsign = sign.count >= 4 && sign.count <= 8 && sign.allSatisfy { $0.isLetter || $0.isNumber }
         return (try? await database.read { db -> [AirbandTransmission] in
@@ -90,18 +90,6 @@ struct AirbandLog: Sendable {
             }
             return result
         }) ?? []
-    }
-
-    /// Freitext → FTS5-Abfrage ohne Sonderzeichen: jedes Wort in Anführungszeichen
-    /// (sonst wären „118.005“ oder „-“ Syntaxfehler), das letzte als Präfix.
-    static func ftsQuery(_ input: String) -> String {
-        let words = input.split(whereSeparator: \.isWhitespace)
-            .map { $0.filter { $0 != "\"" } }
-            .filter { $0.contains { $0.isLetter || $0.isNumber } }
-        guard !words.isEmpty else { return "" }
-        return words.enumerated().map { k, word in
-            "\"\(word)\"" + (k == words.count - 1 ? "*" : "")
-        }.joined(separator: " ")
     }
 
     /// Abschrift eines Eintrags setzen (Rohtext der Spracherkennung, dazu ein erkanntes Rufzeichen).
@@ -118,11 +106,22 @@ struct AirbandLog: Sendable {
         return (try? await database.read { try $0.recentCallsigns(since: since, limit: limit) }) ?? []
     }
 
-    func recordingURL(_ name: String) -> URL { recordingsFolder.appendingPathComponent(name) }
+    /// Nur ein nackter Dateiname ohne Verzeichnisanteil – der Name kommt aus der
+    /// Datenbank bzw. aus einer eingespielten Sicherung, und `../x` hätte beim
+    /// Kürzen des Verlaufs eine fremde Datei gelöscht (Review 05.11.2026).
+    static func safeRecordingName(_ name: String) -> String? {
+        guard !name.isEmpty, !name.contains("/"), !name.contains("\\"), name != ".", name != "..",
+              !name.hasPrefix(".") else { return nil }
+        return name
+    }
+
+    func recordingURL(_ name: String) -> URL? {
+        Self.safeRecordingName(name).map { recordingsFolder.appendingPathComponent($0) }
+    }
 
     func deleteRecording(of transmission: AirbandTransmission) {
-        guard let name = transmission.recording else { return }
-        try? FileManager.default.removeItem(at: recordingURL(name))
+        guard let name = transmission.recording, let url = recordingURL(name) else { return }
+        try? FileManager.default.removeItem(at: url)
     }
 
     /// Leert den ganzen Verlauf samt aller Mitschnitte (auch älterer Einträge).
@@ -130,7 +129,7 @@ struct AirbandLog: Sendable {
         for item in list { deleteRecording(of: item) }
         let folder = recordingsFolder
         database.write("Flugfunk-Verlauf leeren") { db in
-            for name in try db.transmissionRecordings() {
+            for name in try db.transmissionRecordings().compactMap(Self.safeRecordingName) {
                 try? FileManager.default.removeItem(at: folder.appendingPathComponent(name))
             }
             try db.run("DELETE FROM airband_transmissions")
@@ -143,9 +142,9 @@ struct AirbandLog: Sendable {
         formatter.locale = Locale(identifier: "en_US_POSIX")
         formatter.dateFormat = "yyyy-MM-dd'_'HH-mm-ss"
         let base = "\(formatter.string(from: transmission.start))_\(AirbandGrid.channelName(transmission.index))"
-        if Self.writeAAC(samples, rate: 16_000, to: recordingURL(base + ".m4a")) { return base + ".m4a" }
+        if Self.writeAAC(samples, rate: 16_000, to: recordingsFolder.appendingPathComponent(base + ".m4a")) { return base + ".m4a" }
         do {
-            try Self.wav(samples, rate: 16_000).write(to: recordingURL(base + ".wav"), options: .atomic)
+            try Self.wav(samples, rate: 16_000).write(to: recordingsFolder.appendingPathComponent(base + ".wav"), options: .atomic)
             return base + ".wav"
         } catch {
             return nil

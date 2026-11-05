@@ -134,6 +134,15 @@ struct AISMessage: Sendable, Equatable {
     var courseDegrees: Double?
     var heading: Int?
     var rateOfTurn: Double?
+    /// Drehrate über 5°/30 s ohne Zahlenwert: +1 nach Steuerbord, −1 nach Backbord.
+    var rateOfTurnOverRange: Int?
+    /// Drehrate als Text: Zahl in °/min oder „> 5°/30 s“ mit Richtung.
+    var rateOfTurnText: String? {
+        if let rateOfTurnOverRange {
+            return rateOfTurnOverRange > 0 ? String(localized: "> 5°/30 s nach Steuerbord") : String(localized: "> 5°/30 s nach Backbord")
+        }
+        return rateOfTurn.map { String(format: "%.1f°/min", $0) }
+    }
     var latitude: Double?
     var longitude: Double?
     var name: String?
@@ -147,6 +156,14 @@ struct AISMessage: Sendable, Equatable {
     var eta: AISETA?
     var aidType: Int?
     var isBaseStation = false
+    /// Meldung 9: Such- und Rettungsluftfahrzeug, Höhe über Grund in m.
+    var isSARAircraft = false
+    var altitudeMeters: Int?
+    /// Meldung 12 (an `safetyDestination`) bzw. 14 (an alle): Sicherheitstext.
+    var safetyText: String?
+    var safetyDestination: Int?
+    /// Meldung 8 mit DAC 1/FI 31: Wetter und Gewässer einer Messstation.
+    var weather: AISWeather?
 
     static func decode(_ bits: AISBits) -> AISMessage? {
         guard let type = bits.unsigned(0, 6), let mmsi = bits.unsigned(8, 30), bits.count >= 38 else { return nil }
@@ -155,14 +172,41 @@ struct AISMessage: Sendable, Equatable {
         case 1, 2, 3:
             guard bits.count >= 168 else { return nil }
             m.status = bits.unsigned(38, 4)
+            // −128 = nicht verfügbar; ±127 heißt „schneller als 5°/30 s“ ohne
+            // Zahlenwert (ITU-R M.1371, Review 05.11.2026).
             if let rot = bits.signed(42, 8), rot != -128 {
-                let v = Double(rot) / 4.733
-                m.rateOfTurn = (v < 0 ? -1 : 1) * v * v
+                if abs(rot) == 127 {
+                    m.rateOfTurnOverRange = rot > 0 ? 1 : -1
+                } else {
+                    let v = Double(rot) / 4.733
+                    m.rateOfTurn = (v < 0 ? -1 : 1) * v * v
+                }
             }
             m.speedKnots = speed(bits.unsigned(50, 10))
             (m.longitude, m.latitude) = position(lon: bits.signed(61, 28), lat: bits.signed(89, 27))
             m.courseDegrees = course(bits.unsigned(116, 12))
             m.heading = heading(bits.unsigned(128, 9))
+        case 9:
+            // SAR-Luftfahrzeug: Höhe 12 Bit (4095 = unbekannt), Fahrt in ganzen Knoten.
+            guard bits.count >= 168 else { return nil }
+            m.isSARAircraft = true
+            m.altitudeMeters = bits.unsigned(38, 12).flatMap { $0 == 4095 ? nil : $0 }
+            m.speedKnots = bits.unsigned(50, 10).flatMap { $0 == 1023 ? nil : Double($0) }
+            (m.longitude, m.latitude) = position(lon: bits.signed(61, 28), lat: bits.signed(89, 27))
+            m.courseDegrees = course(bits.unsigned(116, 12))
+        case 12:
+            guard bits.count >= 78 else { return nil }
+            m.safetyDestination = bits.unsigned(40, 30)
+            m.safetyText = bits.text(72, bits.count - 72)
+        case 14:
+            guard bits.count >= 46 else { return nil }
+            m.safetyText = bits.text(40, bits.count - 40)
+        case 8:
+            // Binärer Rundruf: DAC (10 Bit), FI (6 Bit), Daten ab Bit 56.
+            guard bits.count >= 56, bits.unsigned(40, 10) == 1, bits.unsigned(50, 6) == 31,
+                  let weather = AISWeather(bits) else { break }
+            m.weather = weather
+            (m.longitude, m.latitude) = (weather.longitude, weather.latitude)
         case 4, 11:
             guard bits.count >= 168 else { return nil }
             m.isBaseStation = type == 4
@@ -250,6 +294,7 @@ struct AISMessage: Sendable, Equatable {
         let names = [String(localized: "unter Maschine"), String(localized: "vor Anker"), String(localized: "manövrierunfähig"),
                      String(localized: "manövrierbehindert"), String(localized: "tiefgangbehindert"), String(localized: "festgemacht"),
                      String(localized: "auf Grund"), String(localized: "beim Fischen"), String(localized: "unter Segel")]
+        if status == 14 { return String(localized: "Notsender aktiv") }
         return status < names.count ? names[status] : nil
     }
 
@@ -339,6 +384,12 @@ struct AISVessel: Identifiable, Sendable, Equatable {
     var eta: AISETA?
     var isBaseStation = false
     var isAidToNavigation = false
+    var isSARAircraft = false
+    var altitudeMeters: Int?
+    /// Letzte Wetter-/Pegelmeldung (Messstation, AIS 8 DAC 1/FI 31).
+    var weather: AISWeather?
+    /// Letzter Sicherheitstext (Meldung 12/14) dieses Senders.
+    var safetyText: String?
     var trail: [Point] = []
     var messages = 0
     var lastSeen = Date()
@@ -348,10 +399,145 @@ struct AISVessel: Identifiable, Sendable, Equatable {
 
     /// Kurs zum Zeichnen: Steuerkurs, sonst Kurs über Grund.
     var displayHeading: Double? { heading.map(Double.init) ?? courseDegrees }
+
+    /// Art des Senders für Tabelle, Infokarte, Archiv und Fernzugriff.
+    var kindText: String? {
+        if let beacon { return beacon.text }
+        if isSARAircraft { return String(localized: "Rettungsflugzeug (SAR)") }
+        if weather != nil, shipType == nil { return String(localized: "Wetterstation") }
+        if isBaseStation { return String(localized: "Basisstation") }
+        if isAidToNavigation { return String(localized: "Seezeichen") }
+        return AISMessage.shipTypeText(shipType)
+    }
+
+    /// Notsender nach MMSI (ITU-R M.585): 970… AIS-SART, 972… MOB, 974… EPIRB.
+    var beacon: AISBeacon? { AISBeacon(mmsi: mmsi) }
+
+    /// Notsender im Einsatz: Status 14 oder „… ACTIVE“ (Tests senden „… TEST“).
+    var beaconActive: Bool {
+        guard beacon != nil else { return false }
+        return status == 14 || (safetyText?.uppercased().contains("ACTIVE") ?? false)
+    }
+}
+
+/// Art eines AIS-Notsenders.
+enum AISBeacon: Sendable, Equatable {
+    case sart, manOverboard, epirb
+
+    init?(mmsi: Int) {
+        switch mmsi / 1_000_000 {
+        case 970: self = .sart
+        case 972: self = .manOverboard
+        case 974: self = .epirb
+        default: return nil
+        }
+    }
+
+    var text: String {
+        switch self {
+        case .sart: String(localized: "Notsender (AIS-SART)")
+        case .manOverboard: String(localized: "Mensch über Bord (MOB)")
+        case .epirb: String(localized: "Seenotfunkbake (EPIRB)")
+        }
+    }
+}
+
+/// Wetter und Gewässer (IMO SN.1/Circ.289, „Met/Hydro“, AIS 8 DAC 1/FI 31;
+/// Bitlage wie gpsd „AIVDM/AIVDO protocol decoding“). Nicht verfügbare Werte
+/// tragen feste Kennzahlen und werden `nil`.
+struct AISWeather: Sendable, Equatable {
+    var longitude: Double?
+    var latitude: Double?
+    /// Tag/Stunde/Minute (UTC) der Messung.
+    var time: String?
+    var windKnots: Int?
+    var gustKnots: Int?
+    var windFrom: Int?
+    var airTemperature: Double?
+    var humidity: Int?
+    var dewPoint: Double?
+    var pressure: Int?
+    var visibilityNM: Double?
+    var waterLevel: Double?
+    var currentKnots: Double?
+    var currentDirection: Int?
+    var waveHeight: Double?
+    var wavePeriod: Int?
+    var waterTemperature: Double?
+
+    init?(_ b: AISBits) {
+        // Länge: letztes genutztes Feld endet bei 337 (Wassertemperatur); volle
+        // Meldung 360 Bit. Bitlagen ab 277 nach IMO SN.1/Circ.289 (gpsd
+        // `dac1fid31`: drei Strömungsschichten à 22 Bit, dann Wellen) – Review
+        // 05.11.2026: vorher 305/313/340 (lagen in Schwell und Salzgehalt).
+        guard b.count >= 337 else { return nil }
+        func value(_ start: Int, _ length: Int, unavailable: Int) -> Int? {
+            b.unsigned(start, length).flatMap { $0 == unavailable ? nil : $0 }
+        }
+        func signed(_ start: Int, _ length: Int, unavailable: Int) -> Int? {
+            b.signed(start, length).flatMap { $0 == unavailable ? nil : $0 }
+        }
+        // Lage in 1/1000 Minute: 181°/91° = nicht verfügbar.
+        if let lon = b.signed(56, 25), let lat = b.signed(81, 24) {
+            let x = Double(lon) / 60_000, y = Double(lat) / 60_000
+            if abs(x) <= 180, abs(y) <= 90 { (longitude, latitude) = (x, y) }
+        }
+        if let day = value(106, 5, unavailable: 0), let hour = value(111, 5, unavailable: 24), let minute = value(116, 6, unavailable: 60) {
+            time = String(format: "%02d. %02d:%02d UTC", day, hour, minute)
+        }
+        windKnots = value(122, 7, unavailable: 127)
+        gustKnots = value(129, 7, unavailable: 127)
+        windFrom = value(136, 9, unavailable: 360).flatMap { $0 < 360 ? $0 : nil }
+        airTemperature = signed(154, 11, unavailable: -1024).map { Double($0) / 10 }
+        humidity = value(165, 7, unavailable: 101)
+        dewPoint = signed(172, 10, unavailable: 501).map { Double($0) / 10 }
+        pressure = value(182, 9, unavailable: 511).flatMap { $0 == 0 || $0 > 402 ? nil : $0 + 799 }
+        visibilityNM = value(194, 8, unavailable: 127).flatMap { $0 > 126 ? nil : Double($0) / 10 }
+        waterLevel = value(202, 12, unavailable: 4001).flatMap { $0 > 4000 ? nil : Double($0) / 100 - 10 }
+        currentKnots = value(216, 8, unavailable: 255).flatMap { $0 > 250 ? nil : Double($0) / 10 }
+        currentDirection = value(224, 9, unavailable: 360).flatMap { $0 < 360 ? $0 : nil }
+        waveHeight = value(277, 8, unavailable: 255).flatMap { $0 > 250 ? nil : Double($0) / 10 }
+        wavePeriod = value(285, 6, unavailable: 63).flatMap { $0 > 60 ? nil : $0 }
+        waterTemperature = signed(327, 10, unavailable: 501).flatMap { $0 < -100 || $0 > 500 ? nil : Double($0) / 10 }
+        guard windKnots != nil || airTemperature != nil || pressure != nil || waterLevel != nil || waterTemperature != nil else { return nil }
+    }
+
+    /// Kurzfassung für Tabelle und Infokarte.
+    var summary: String {
+        var parts: [String] = []
+        if let wind = windKnots {
+            var text = String(format: String(localized: "Wind %.0f km/h"), Double(wind) * 1.852)
+            if let from = windFrom { text += String(localized: " aus \(from)°") }
+            if let gust = gustKnots { text += String(format: String(localized: ", Böen %.0f km/h"), Double(gust) * 1.852) }
+            parts.append(text)
+        }
+        if let t = airTemperature { parts.append(String(format: "%.1f °C", t)) }
+        if let h = humidity { parts.append("\(h) %") }
+        if let p = pressure { parts.append("\(p) hPa") }
+        if let v = visibilityNM { parts.append(String(format: String(localized: "Sicht %.1f sm"), v)) }
+        if let w = waterLevel { parts.append(String(format: String(localized: "Pegel %+.2f m"), w)) }
+        if let c = currentKnots { parts.append(String(format: String(localized: "Strom %.1f kn"), c) + (currentDirection.map { " → \($0)°" } ?? "")) }
+        if let h = waveHeight { parts.append(String(format: String(localized: "Wellen %.1f m"), h) + (wavePeriod.map { " / \($0) s" } ?? "")) }
+        if let t = waterTemperature { parts.append(String(format: String(localized: "Wasser %.1f °C"), t)) }
+        return parts.joined(separator: ", ")
+    }
+}
+
+/// Sicherheitsmeldung (AIS 12/14) im Verlauf.
+struct AISSafetyMessage: Identifiable, Sendable, Equatable {
+    let id: Int
+    let date: Date
+    let mmsi: Int
+    /// Empfänger bei Meldung 12, sonst an alle.
+    let destination: Int?
+    let text: String
 }
 
 struct AISTracker {
     private(set) var vessels: [Int: AISVessel] = [:]
+    /// Sicherheitsmeldungen, neueste zuletzt; Wiederholungen binnen 10 min nur einmal.
+    private(set) var safetyMessages: [AISSafetyMessage] = []
+    static let maxSafetyMessages = 200
 
     mutating func ingest(_ m: AISMessage, channel: String, at date: Date = Date()) {
         var v = vessels[m.mmsi] ?? AISVessel(mmsi: m.mmsi)
@@ -371,6 +557,23 @@ struct AISTracker {
         }
         if m.isBaseStation { v.isBaseStation = true }
         if m.type == 21 { v.isAidToNavigation = true }
+        if let weather = m.weather { v.weather = weather }
+        if m.isSARAircraft {
+            v.isSARAircraft = true
+            v.altitudeMeters = m.altitudeMeters
+            v.speedKnots = m.speedKnots
+            v.courseDegrees = m.courseDegrees
+        }
+        if let text = m.safetyText {
+            v.safetyText = text
+            let repeated = safetyMessages.last { $0.mmsi == m.mmsi && $0.text == text && $0.destination == m.safetyDestination }
+                .map { date.timeIntervalSince($0.date) < 600 } ?? false
+            if !repeated {
+                safetyMessages.append(AISSafetyMessage(id: (safetyMessages.last?.id ?? 0) + 1, date: date, mmsi: m.mmsi,
+                                                       destination: m.safetyDestination, text: text))
+                if safetyMessages.count > Self.maxSafetyMessages { safetyMessages.removeFirst() }
+            }
+        }
         if [1, 2, 3, 18, 19].contains(m.type) {
             v.status = m.status ?? v.status
             v.speedKnots = m.speedKnots

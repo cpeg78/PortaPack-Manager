@@ -106,9 +106,19 @@ enum EnOcean {
         ]
         switch rorg {
         case 0xF6:
-            frame.summary = rocker(data[0], status: status)
-            frame.deviceType = String(localized: "Taster (F6-02)")
-            frame.values.append(SmartHomeValue(name: "Gedrückt", unit: "", value: data[0] & 0x10 != 0 ? 1 : 0))
+            // Fenstergriffe (F6-10-00) senden C0/D0/E0/F0 mit T21 = 1, NU = 0 – wie
+            // „mehrere Tasten“ eines Tasters; ohne Profil nur vermutet.
+            let handle = handlePosition(data[0])
+            if let handle, eep == "F6-10-00" || (eep == nil && status & 0x30 == 0x20) {
+                frame.summary = String(localized: "Fenstergriff: \(handle.text)")
+                frame.values.append(SmartHomeValue(name: "Griff", unit: "%", value: handle.openPercent))
+                frame.deviceType = eep == nil ? String(localized: "Fenstergriff (F6-10-00, vermutet)") : String(localized: "Fenstergriff (F6-10-00)")
+                frame.deviceTypeGuessed = eep == nil
+            } else {
+                frame.summary = rocker(data[0], status: status)
+                frame.deviceType = String(localized: "Taster (F6-02)")
+                frame.values.append(SmartHomeValue(name: "Gedrückt", unit: "", value: data[0] & 0x10 != 0 ? 1 : 0))
+            }
         case 0xD5:
             let closed = data[0] & 0x01 != 0
             if data[0] & 0x08 == 0 {
@@ -141,10 +151,77 @@ enum EnOcean {
                 frame.summary = frame.values.isEmpty ? String(localized: "Daten \(SmartHomeHex.string(data))")
                     : frame.values.map { "\($0.label) \($0.formatted)" }.joined(separator: ", ")
             }
+        case 0xD4 where data.count == 7:
+            // Universal Teach-in: DB6 Befehl, DB5 Kanäle, DB4/DB3 Hersteller, DB2 TYPE, DB1 FUNC, DB0 RORG.
+            let profile = String(format: "%02X-%02X-%02X", data[6], data[5], data[4])
+            let manufacturer = Int(data[3] & 0x07) << 8 | Int(data[2])
+            frame.summary = String(localized: "Anlernen (UTE): Profil \(profile), Hersteller \(String(format: "0x%03X", manufacturer))")
+            frame.deviceType = profile
+            frame.deviceTypeFromInfo = true
+            frame.fields.append(.init(name: "EEP", value: profile))
+        case 0xD2:
+            if let eep, eep.hasPrefix("D2-01") {
+                (frame.summary, frame.values) = vldSwitch(data)
+                frame.deviceType = String(localized: "Aktor (\(eep))")
+            } else if let eep, eep.hasPrefix("D2-05") {
+                (frame.summary, frame.values) = vldBlind(data)
+                frame.deviceType = String(localized: "Rollladen (\(eep))")
+            } else {
+                frame.summary = String(localized: "VLD-Daten \(SmartHomeHex.string(data)) – Profil unbekannt")
+            }
         default:
             frame.summary = String(localized: "Daten \(SmartHomeHex.string(data))")
         }
         return frame
+    }
+
+    /// Ein Profil, das die App deuten kann (Liste oder VLD-Familie D2-01/D2-05).
+    static func isSupported(_ eep: String) -> Bool {
+        supportedProfiles.contains(eep) || eep.hasPrefix("D2-01-") || eep.hasPrefix("D2-05-")
+    }
+
+    /// D2-01 (Schalt-/Dimmaktoren): Befehl im unteren Halbbyte von DB0.
+    /// 0x4 Zustand: Kanal (Bits 0–4), Ausgang 0–100 % (127 = ungültig);
+    /// 0x7 Messwert: Einheit (Bits 5–7: Ws, Wh, kWh, W, kW), Kanal, Wert 32 Bit.
+    static func vldSwitch(_ d: [UInt8]) -> (String, [SmartHomeValue]) {
+        guard let first = d.first else { return ("", []) }
+        switch first & 0x0F {
+        case 0x4 where d.count >= 3:
+            let channel = Int(d[1] & 0x1F), output = Int(d[2] & 0x7F)
+            guard output <= 100 else { return (String(localized: "Kanal \(channel): Zustand unbekannt"), []) }
+            let text = output == 0 ? String(localized: "aus") : output == 100 ? String(localized: "ein") : "\(output) %"
+            return (String(localized: "Kanal \(channel): \(text)"),
+                    [SmartHomeValue(name: "Pegel Kanal \(channel)", unit: "%", value: Double(output), label: String(localized: "Pegel Kanal \(channel)"))])
+        case 0x7 where d.count >= 6:
+            let unit = Int(d[1] >> 5), channel = Int(d[1] & 0x1F)
+            let raw = Double(UInt32(d[2]) << 24 | UInt32(d[3]) << 16 | UInt32(d[4]) << 8 | UInt32(d[5]))
+            let value: SmartHomeValue
+            switch unit {
+            case 0: value = SmartHomeValue(name: "Energie", unit: "kWh", value: raw / 3_600_000)
+            case 1: value = SmartHomeValue(name: "Energie", unit: "kWh", value: raw / 1000)
+            case 2: value = SmartHomeValue(name: "Energie", unit: "kWh", value: raw)
+            case 3: value = SmartHomeValue(name: "Leistung", unit: "W", value: raw)
+            case 4: value = SmartHomeValue(name: "Leistung", unit: "W", value: raw * 1000)
+            default: return (String(localized: "Kanal \(channel): Messwert"), [])
+            }
+            return (String(localized: "Kanal \(channel): \(value.label) \(value.formatted)"), [value])
+        default:
+            return (String(localized: "Befehl \(Int(first & 0x0F))"), [])
+        }
+    }
+
+    /// D2-05 (Rollläden): Antwort Befehl 0x4 – Position und Lamellenwinkel 0–100 % (127 unbekannt).
+    static func vldBlind(_ d: [UInt8]) -> (String, [SmartHomeValue]) {
+        guard d.count >= 4, d[3] & 0x0F == 0x4 else { return (String(localized: "Rollladen-Befehl"), []) }
+        let position = Int(d[0] & 0x7F), angle = Int(d[1] & 0x7F)
+        guard position <= 100 else { return (String(localized: "Position unbekannt"), []) }
+        var values = [SmartHomeValue(name: "Rollladen geschlossen", unit: "%", value: Double(position))]
+        var text = String(localized: "\(position) % geschlossen")
+        if angle <= 100 {
+            values.append(SmartHomeValue(name: "Lamellenwinkel", unit: "%", value: Double(angle)))
+            text += String(localized: ", Lamellen \(angle) %")
+        }
+        return (text, values)
     }
 
     /// F6-02-xx: Wippentaster.
@@ -161,6 +238,16 @@ enum EnOcean {
         return pressed ? String(localized: "\(Int(d >> 5)) Tasten gedrückt") : String(localized: "Tasten losgelassen")
     }
 
+    /// F6-10-00: Stellung des Fenstergriffs (0 = zu, 50 = gekippt, 100 = offen).
+    static func handlePosition(_ d: UInt8) -> (text: String, openPercent: Double)? {
+        switch d & 0xF0 {
+        case 0xF0: (String(localized: "geschlossen"), 0)
+        case 0xD0: (String(localized: "gekippt"), 50)
+        case 0xC0, 0xE0: (String(localized: "offen"), 100)
+        default: nil
+        }
+    }
+
     /// Anlerntelegramm 4BS (Variante 2): FUNC, TYPE, Hersteller.
     static func teachIn(_ d: [UInt8]) -> (eep: String, manufacturer: Int?)? {
         guard d.count == 4, d[3] & 0x80 != 0 else { return nil }
@@ -168,6 +255,22 @@ enum EnOcean {
         let type = (d[0] & 0x03) << 5 | d[1] >> 3
         let manufacturer = Int(d[1] & 0x07) << 8 | Int(d[2])
         return (String(format: "A5-%02X-%02X", function, type), manufacturer)
+    }
+
+    /// A5-12-xx Zähler (AMR): 24-Bit-Stand, DB0 Bit 2 = aktueller Wert statt Summe,
+    /// Bits 0–1 = Teiler 1/10/100/1000. Einheit je Typ: Impulse, kWh/W, m³/l/s.
+    static func meterValue(_ d: [UInt8], type: Int) -> SmartHomeValue {
+        let raw = Double(Int(d[0]) << 16 | Int(d[1]) << 8 | Int(d[2]))
+        let value = raw / [1, 10, 100, 1000][Int(d[3] & 0x03)]
+        let current = d[3] & 0x04 != 0
+        switch type {
+        case 0x01: return current ? SmartHomeValue(name: "Leistung", unit: "W", value: value)
+                                  : SmartHomeValue(name: "Energie", unit: "kWh", value: value)
+        case 0x02, 0x03:
+            return current ? SmartHomeValue(name: "Durchfluss", unit: "l/s", value: value)
+                           : SmartHomeValue(name: type == 0x02 ? "Gas" : "Wasser", unit: "m³", value: value)
+        default: return SmartHomeValue(name: "Zähler", unit: "", value: value)
+        }
     }
 
     /// Bereiche der Temperaturfühler A5-02-01 … 0B und 10 … 1B (255 = Minimum).
@@ -183,7 +286,10 @@ enum EnOcean {
                                     "A5-02-07", "A5-02-08", "A5-02-09", "A5-02-0A", "A5-02-0B",
                                     "A5-02-10", "A5-02-11", "A5-02-12", "A5-02-13", "A5-02-14", "A5-02-15",
                                     "A5-02-16", "A5-02-17", "A5-02-18", "A5-02-19", "A5-02-1A", "A5-02-1B",
-                                    "A5-04-01", "A5-04-02"]
+                                    "A5-04-01", "A5-04-02", "A5-06-01", "A5-06-02", "A5-07-01", "A5-08-01",
+                                    "A5-09-04", "A5-10-01", "A5-10-02", "A5-10-03", "A5-10-04", "A5-10-05", "A5-10-06",
+                                    "A5-12-00", "A5-12-01", "A5-12-02", "A5-12-03", "A5-14-01", "A5-20-01", "F6-10-00",
+                                    "D2-01-00", "D2-01-12", "D2-05-00"]
 
     /// 4BS-Daten (DB3 … DB0) nach Profil.
     static func fourBS(_ d: [UInt8], eep: String) -> [SmartHomeValue] {
@@ -205,6 +311,42 @@ enum EnOcean {
             if d[3] & 0x02 != 0 {
                 values.insert(SmartHomeValue(name: "Temperatur", unit: "°C", value: ((Double(d[2]) * 80 / 250 - 20) * 10).rounded() / 10), at: 0)
             }
+            return values
+        case (0x06, 0x01), (0x06, 0x02):
+            // Helligkeit: zwei Messbereiche, DB0 Bit 0 wählt (0 = ILL1 in DB1, 1 = ILL2 in DB2).
+            let wide = type == 0x01
+            let lux = d[3] & 0x01 == 0
+                ? (wide ? 600 + Double(d[2]) * (60_000 - 600) / 255 : Double(d[2]) * 1020 / 255)
+                : (wide ? 300 + Double(d[1]) * (30_000 - 300) / 255 : Double(d[1]) * 510 / 255)
+            return [SmartHomeValue(name: "Helligkeit", unit: "lx", value: lux.rounded()),
+                    SmartHomeValue(name: "Batterie", unit: "V", value: (Double(d[0]) * 5.1 / 255 * 100).rounded() / 100)]
+        case (0x07, 0x01):
+            var values = [SmartHomeValue(name: "Bewegung", unit: "", value: d[2] >= 128 ? 1 : 0)]
+            if d[3] & 0x01 != 0, d[0] <= 250 { values.append(SmartHomeValue(name: "Batterie", unit: "V", value: Double(d[0]) / 50)) }
+            return values
+        case (0x08, 0x01):
+            return [SmartHomeValue(name: "Helligkeit", unit: "lx", value: (Double(d[1]) * 510 / 255).rounded()),
+                    SmartHomeValue(name: "Temperatur", unit: "°C", value: (Double(d[2]) * 51 / 255 * 10).rounded() / 10)]
+        case (0x09, 0x04):
+            var values = [SmartHomeValue(name: "CO₂", unit: "ppm", value: Double(d[1]) * 10)]
+            if d[3] & 0x04 != 0 { values.append(SmartHomeValue(name: "Luftfeuchte", unit: "%", value: Double(d[0]) / 2)) }
+            if d[3] & 0x02 != 0 { values.append(SmartHomeValue(name: "Temperatur", unit: "°C", value: (Double(d[2]) * 51 / 255 * 10).rounded() / 10)) }
+            return values
+        case (0x10, 0x01...0x06):
+            // Raumbediengerät: Temperatur 0–40 °C fallend kodiert, Sollwertsteller 0–100 %.
+            return [SmartHomeValue(name: "Temperatur", unit: "°C", value: ((255 - Double(d[2])) * 40 / 255 * 10).rounded() / 10),
+                    SmartHomeValue(name: "Sollwertsteller", unit: "%", value: (Double(d[1]) * 100 / 255).rounded())]
+        case (0x12, 0x00...0x03):
+            return [meterValue(d, type: type)]
+        case (0x14, 0x01):
+            var values = [SmartHomeValue(name: "Kontakt offen", unit: "", value: d[3] & 0x01 == 0 ? 1 : 0)]
+            if d[0] <= 250 { values.append(SmartHomeValue(name: "Batterie", unit: "V", value: Double(d[0]) / 50)) }
+            return values
+        case (0x20, 0x01):
+            // Stellantrieb (z. B. Heizkörperventil): Ventil %, Temperatur 0–40 °C; DB2 Bit 0 = Batterie schwach.
+            var values = [SmartHomeValue(name: "Ventil", unit: "%", value: Double(min(d[0], 100))),
+                          SmartHomeValue(name: "Temperatur", unit: "°C", value: (Double(d[2]) * 40 / 255 * 10).rounded() / 10)]
+            if d[1] & 0x10 != 0 { values.append(SmartHomeValue(name: "Batterie schwach", unit: "", value: 1)) }
             return values
         default:
             return []

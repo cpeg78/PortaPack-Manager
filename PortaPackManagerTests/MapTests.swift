@@ -350,6 +350,8 @@ struct MapTests {
         let coordinator = LeafletCoordinator()
         let controller = MapController()
         coordinator.controller = controller
+        // Keine Kachelebene: der Test spricht sonst mit tile.openstreetmap.org (Review 05.11.2026).
+        coordinator.defaultOptions.tiles = false
         let webView = LeafletMap.makeWebView(coordinator)
         let window = NSWindow(contentRect: NSRect(x: -4000, y: -4000, width: 640, height: 420),
                               styleMask: [.borderless], backing: .buffered, defer: false)
@@ -422,7 +424,12 @@ struct MapTests {
         // Herauszoomen dünnt aus, Hineinzoomen setzt wieder mehr Pfeile.
         func arrows(atZoom zoom: Double) async throws -> Int {
             _ = await eval("PPM.map().setZoom(\(zoom), {animate: false}); return 0")
-            try await Task.sleep(for: .milliseconds(300))
+            // Auf die Zoomstufe warten statt fest zu schlafen (flakig unter Last).
+            for _ in 0..<40 {
+                if await eval("return PPM.map().getZoom()") as? Double == zoom { break }
+                try await Task.sleep(for: .milliseconds(50))
+            }
+            try await Task.sleep(for: .milliseconds(50))
             return await eval("return PPM.arrowCount('sh:1/trail')") as? Int ?? -1
         }
         let near = try await arrows(atZoom: 12)

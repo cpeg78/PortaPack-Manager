@@ -9,6 +9,10 @@ enum SmartHome868Decoder {
         var wmbusKeys: [String: [UInt8]] = [:]
         /// EnOcean: Sender-ID → Profil („A5-02-05“).
         var enoceanProfiles: [String: String] = [:]
+        /// Homematic: Absender → Modellnummer aus der Geräteinfo.
+        var homematicModels: [String: UInt16] = [:]
+        /// wM-Bus: gelernte Datensatzköpfe je Formatsignatur (Kompaktrahmen).
+        var wmbusFormats: [UInt16: [UInt8]] = [:]
     }
 
     static let channelRate = SmartHomeFrontEnd.channelRate
@@ -22,14 +26,16 @@ enum SmartHome868Decoder {
             if config.radios.contains(.enocean), length < 20_000 {
                 let bits = SmartHomeDemod.askBits(burst, samplesPerBit: channelRate / EnOcean.bitRate)
                 frames += EnOcean.frames(inBits: bits).map { frame in
-                    guard let profile = config.enoceanProfiles[frame.address], frame.bytes.first == 0xA5,
+                    // Gelerntes bzw. gewähltes Profil nur, wenn es zur Telegrammart passt (A5-…, F6-…).
+                    guard let profile = config.enoceanProfiles[frame.address], let rorg = frame.bytes.first,
+                          profile.hasPrefix(String(format: "%02X-", rorg)),
                           let reparsed = EnOcean.parse(frame.bytes, eep: profile) else { return frame }
                     return reparsed
                 }
             }
             if config.radios.contains(.homematic), length > 4_000 {
                 for bits in SmartHomeDemod.fskBits(burst, samplesPerBit: channelRate / Homematic.bitRate, cutoffHz: 50_000) {
-                    frames += Homematic.frames(inBits: bits)
+                    frames += Homematic.frames(inBits: bits, models: config.homematicModels)
                     if !frames.isEmpty { break }
                 }
             }
@@ -55,17 +61,18 @@ enum SmartHome868Decoder {
             guard config.radios.contains(.wmbus), length > 400 else { break }
             // fskBits liefert beide Polaritäten; WMBus prüft selbst beide – eine reicht.
             if let bits = SmartHomeDemod.fskBits(burst, samplesPerBit: channelRate / WMBus.chipRate).first {
-                frames += WMBus.frames(inBits: bits, keys: config.wmbusKeys)
+                frames += WMBus.frames(inBits: bits, keys: config.wmbusKeys, formats: config.wmbusFormats)
             }
         }
         return frames
     }
 }
 
-/// EnOcean-Profile je Sender, begrenzt: Anlerntelegramme kommen frei
-/// fälschbar aus der Luft – ohne Grenze wüchse die Tabelle (und jede
-/// Änderung wäre eine UserDefaults-Schreibung). Älteste fliegen zuerst.
-struct EnOceanProfileBook: Equatable {
+/// Gelernte Profile je Sender (EnOcean-EEP, Homematic-Modell), begrenzt:
+/// Anlerntelegramme und Geräteinfos kommen frei fälschbar aus der Luft – ohne
+/// Grenze wüchse die Tabelle (und jede Änderung wäre eine UserDefaults-
+/// Schreibung). Älteste fliegen zuerst.
+struct LearnedProfileBook: Equatable {
     static let defaultCapacity = 200
     private(set) var profiles: [String: String] = [:]
     /// Sender in Reihenfolge der letzten Änderung, ältester zuerst.
@@ -112,6 +119,8 @@ final class SmartHome868Model {
     static let radiosKey = "smartHome868Radios"
     static let profilesKey = "smartHome868EnOceanProfiles"
     static let profileOrderKey = "smartHome868EnOceanProfileOrder"
+    static let homematicModelsKey = "smartHome868HomematicModels"
+    static let homematicModelOrderKey = "smartHome868HomematicModelOrder"
     /// Gelernte Profile höchstens so oft speichern (s).
     static let profileWriteInterval: TimeInterval = 30
 
@@ -131,7 +140,9 @@ final class SmartHome868Model {
     private(set) var error: String?
     private(set) var wmbusKeys: [WMBusKey] = WMBusKeyStore.load()
     var enoceanProfiles: [String: String] { profileBook.profiles }
-    private var profileBook: EnOceanProfileBook
+    private var profileBook: LearnedProfileBook
+    /// Homematic: Absender → Modellnummer (vier Hex-Ziffern).
+    private var homematicModelBook: LearnedProfileBook
     @ObservationIgnored private var lastProfileWrite = Date.distantPast
     @ObservationIgnored private var profileWriteTask: Task<Void, Never>?
 
@@ -148,6 +159,9 @@ final class SmartHome868Model {
         var receptions: [SmartHomeReception] = []
         var recent: [(key: [UInt8], date: Date)] = []
         var learnedProfiles: [String: String] = [:]
+        var learnedModels: [String: UInt16] = [:]
+        /// Formatsignatur → Kopfbytes aus vollständigen wM-Bus-Rahmen (nur im Speicher, begrenzt).
+        var wmbusFormats: [UInt16: [UInt8]] = [:]
         var nextID = 0
         var bursts = 0
         var noise: [SmartHomeChannel: Double] = [:]
@@ -163,7 +177,11 @@ final class SmartHome868Model {
                 lock.withLock { self.noise = noise }
                 return
             }
-            let config = lock.withLock { self.config }
+            let config = lock.withLock {
+                var config = self.config
+                config.wmbusFormats = wmbusFormats
+                return config
+            }
             let results = bursts.map { ($0, SmartHome868Decoder.decode($0, config: config)) }
             lock.withLock {
                 self.noise = noise
@@ -182,6 +200,10 @@ final class SmartHome868Model {
             recent.append((frame.bytes, burst.date))
             if frame.radio == .enocean, let eep = frame.fields.first(where: { $0.name == "EEP" })?.value {
                 learnedProfiles[frame.address] = eep
+            }
+            if let model = Homematic.model(in: frame) { learnedModels[frame.address] = model }
+            if let headers = frame.wmbusFormat, wmbusFormats.count < 200 || wmbusFormats[WMBus.crc16(headers)] != nil {
+                wmbusFormats[WMBus.crc16(headers)] = headers
             }
             receptions.append(SmartHomeReception(id: nextID, date: burst.date, frequencyMHz: burst.channel.frequencyMHz,
                                                  rssiDB: burst.powerDB, snrDB: burst.snrDB, frame: frame))
@@ -226,16 +248,21 @@ final class SmartHome868Model {
     init() {
         let stored = UserDefaults.standard.stringArray(forKey: Self.radiosKey)
         radios = stored.map { Set($0.compactMap(SmartHomeRadio.init(rawValue:))) } ?? Set(SmartHomeRadio.allCases)
-        profileBook = EnOceanProfileBook(
+        profileBook = LearnedProfileBook(
             profiles: (UserDefaults.standard.dictionary(forKey: Self.profilesKey) as? [String: String]) ?? [:],
             order: UserDefaults.standard.stringArray(forKey: Self.profileOrderKey) ?? [])
+        homematicModelBook = LearnedProfileBook(
+            profiles: (UserDefaults.standard.dictionary(forKey: Self.homematicModelsKey) as? [String: String]) ?? [:],
+            order: UserDefaults.standard.stringArray(forKey: Self.homematicModelOrderKey) ?? [])
         syncConfig()
     }
 
     private func syncConfig() {
         var keys: [String: [UInt8]] = [:]
         for entry in wmbusKeys { keys[entry.meterID] = entry.key }
-        let config = SmartHome868Decoder.Config(radios: radios, wmbusKeys: keys, enoceanProfiles: enoceanProfiles)
+        let models = homematicModelBook.profiles.compactMapValues { UInt16($0, radix: 16) }
+        let config = SmartHome868Decoder.Config(radios: radios, wmbusKeys: keys, enoceanProfiles: enoceanProfiles,
+                                                homematicModels: models)
         shared.lock.withLock { shared.config = config }
     }
 
@@ -267,10 +294,12 @@ final class SmartHome868Model {
     }
 
     private func poll() {
-        let (devices, receptions, nextID, bursts, noise, learned) = shared.lock.withLock {
-            let learned = shared.learnedProfiles
+        let (devices, receptions, nextID, bursts, noise, learned, models) = shared.lock.withLock {
+            let learned = shared.learnedProfiles, models = shared.learnedModels
             shared.learnedProfiles = [:]
-            return (Array(shared.devices.values), shared.receptions, shared.nextID, shared.bursts, shared.noise, learned)
+            shared.learnedModels = [:]
+            return (Array(shared.devices.values), shared.receptions, shared.nextID, shared.bursts, shared.noise,
+                    learned, models)
         }
         let sorted = devices.sorted { $0.lastSeen > $1.lastSeen }
         if sorted != self.devices {
@@ -285,8 +314,12 @@ final class SmartHome868Model {
         noiseDB = noise
         // Aus Anlerntelegrammen gelernte EnOcean-Profile übernehmen.
         var changed = false
-        for (id, eep) in learned where EnOcean.supportedProfiles.contains(eep) {
+        for (id, eep) in learned where EnOcean.isSupported(eep) {
             if profileBook.set(eep, for: id) { changed = true }
+        }
+        // Homematic-Modelle aus Geräteinfos: deuten später Sensorereignisse.
+        for (id, model) in models {
+            if homematicModelBook.set(String(format: "%04X", model), for: id) { changed = true }
         }
         if changed { storeProfiles(throttled: true) }
     }
@@ -387,6 +420,8 @@ final class SmartHome868Model {
         lastProfileWrite = Date()
         UserDefaults.standard.set(profileBook.profiles, forKey: Self.profilesKey)
         UserDefaults.standard.set(profileBook.order, forKey: Self.profileOrderKey)
+        UserDefaults.standard.set(homematicModelBook.profiles, forKey: Self.homematicModelsKey)
+        UserDefaults.standard.set(homematicModelBook.order, forKey: Self.homematicModelOrderKey)
     }
 
     // MARK: - Messwerte

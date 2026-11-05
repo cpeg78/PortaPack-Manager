@@ -15,6 +15,10 @@ enum RemoteSondes {
         let serial: String; let type: String; let frequency: Double
         let lat: Double?; let lon: Double?; let altitude: Int?; let verticalSpeed: Double?
         let temperature: Double?; let humidity: Double?
+        /// Nur wenn die Sonde sie sendet: Druck (hPa, RS41-SGP), GPS-Satelliten,
+        /// Abschalt-Countdown (s), Zusatzinstrument (Kennung, Zellstrom µA, Pumpe °C).
+        let pressure: Double?; let sats: Int?; let countdown: Int?
+        let instrument: Int?; let ozone: Double?; let pumpTemp: Double?
         let burst: Bool; let age: Int
         let landing: Landing?
         let track: [[Double]]
@@ -29,11 +33,17 @@ enum RemoteSondes {
         let t: Double
         let lat: Double?; let lon: Double?; let alt: Int?
         let temp: Double?; let hum: Int?
+        /// Horizontalgeschwindigkeit (m/s) – der Wind, mit dem die Sonde treibt.
+        let ws: Double?
+        /// Druck (hPa) und Ozon-Zellstrom (µA), falls gemessen.
+        let p: Double?; let o3: Double?
     }
     struct Track: Encodable {
         let serial: String; let type: String
         let start: Double; let end: Double
         let peak: Int?; let burst: Bool; let total: Int
+        /// Anteil gehörter Rahmen in Prozent (RS41).
+        let coverage: Int?
         let points: [Sample]
     }
 
@@ -75,10 +85,15 @@ enum RemoteSondes {
                      guard let lat = round(p.lat, 1e5), let lon = round(p.lon, 1e5), p.alt.isFinite else { return nil }
                      return [lat, lon, p.alt.rounded()]
                  }
-                 return Live(serial: s.serial, type: r.model, frequency: (r.frequency / 1e3).rounded() / 1e3,
+                 let instrument = r.instruments.first
+                 return Live(serial: s.serial, type: r.configuration.subtype ?? r.model, frequency: (r.frequency / 1e3).rounded() / 1e3,
                              lat: round(r.latitude, 1e5), lon: round(r.longitude, 1e5), altitude: int(r.altitude),
                              verticalSpeed: round(r.verticalSpeed, 10), temperature: round(r.temperature, 10),
-                             humidity: round(r.humidity, 1), burst: s.burst,
+                             humidity: round(r.humidity, 1), pressure: round(r.pressure, 10), sats: r.satellites,
+                             countdown: r.configuration.activeCountdown.map { max(0, $0 - Int(now.timeIntervalSince(s.lastSeen))) },
+                             instrument: instrument?.id,
+                             ozone: round(instrument?.cellCurrent, 1000), pumpTemp: round(instrument?.pumpTemperature, 10),
+                             burst: s.burst,
                              age: max(0, Int(now.timeIntervalSince(s.lastSeen))), landing: landing, track: track)
              })
     }
@@ -87,9 +102,11 @@ enum RemoteSondes {
     nonisolated static func track(_ flight: SondeFlight) -> Track {
         Track(serial: flight.serial, type: flight.type, start: ms(flight.first), end: ms(flight.last),
               peak: int(flight.peak?.altitude), burst: flight.burst, total: flight.samples.count,
+              coverage: flight.frameCoverage.map { Int(($0 * 100).rounded()) },
               points: thin(flight.samples).map {
                   Sample(t: ms($0.date), lat: round($0.latitude, 1e5), lon: round($0.longitude, 1e5), alt: int($0.altitude),
-                         temp: round($0.temperature, 10), hum: int($0.humidity))
+                         temp: round($0.temperature, 10), hum: int($0.humidity), ws: round($0.windSpeed, 10),
+                         p: round($0.pressure, 10), o3: round($0.ozoneCurrent, 1000))
               })
     }
 

@@ -10,6 +10,8 @@ struct AirbandView: View {
 }
 
 private struct AirbandPage: View {
+    @StoredColumns("airband.2") private var columns2: TableColumnCustomization<AirbandTransmission>
+    @StoredColumns("airband.1") private var columns: TableColumnCustomization<AirbandChannel>
     @Environment(DeviceSession.self) private var session
     @Bindable var model: AirbandModel
     @State private var player = AirbandPlayer()
@@ -52,26 +54,26 @@ private struct AirbandPage: View {
     // MARK: - Kanalliste
 
     private var channelTable: some View {
-        Table(model.channels) {
+        Table(model.channels, columnCustomization: $columns) {
             TableColumn("") { channel in
                 Image(systemName: model.audible == channel.index ? "speaker.wave.2.fill" : (model.channelOpen.contains(channel.index) ? "waveform" : "circle"))
                     .foregroundStyle(model.audible == channel.index ? .green : (model.channelOpen.contains(channel.index) ? .orange : .secondary.opacity(0.4)))
-            }.width(22)
+            }.width(min: 28, ideal: 22).customizationID("spalte")
             TableColumn("Kanal") { channel in
                 Text(channel.channelName).monospacedDigit()
                     .foregroundStyle(model.window.covers(channel.index) ? .primary : .secondary)
                     .help(String(format: "%.5f MHz", channel.mhz))
-            }.width(64)
+            }.width(min: 38, ideal: 64).customizationID("kanal")
             TableColumn("Name") { channel in
                 ChannelNameField(name: channel.name) { model.rename(channel.index, to: $0) }
-            }
+            }.customizationID("name")
             TableColumn("Pegel") { channel in
                 if let excess = model.channelExcess[channel.index] {
                     ExcessBar(db: excess, open: model.channelOpen.contains(channel.index))
                 } else {
                     Text(model.running ? "außerhalb" : "–").font(.caption).foregroundStyle(.secondary)
                 }
-            }.width(min: 80, ideal: 110)
+            }.width(min: 80, ideal: 110).customizationID("pegel")
             TableColumn("") { channel in
                 HStack(spacing: 6) {
                     Button { model.togglePriority(channel.index) } label: {
@@ -98,7 +100,7 @@ private struct AirbandPage: View {
                         .accessibilityLabel("Aus der Liste entfernen")
                 }
                 .buttonStyle(.borderless)
-            }.width(100)
+            }.width(min: 60, ideal: 100).customizationID("spalte-2")
         }
         .overlay {
             if model.channels.isEmpty {
@@ -150,17 +152,17 @@ private struct AirbandPage: View {
                 guard !Task.isCancelled else { return }
                 searchResults = found
             }
-            Table(shownHistory, selection: $historySelection) {
+            Table(shownHistory, selection: $historySelection, columnCustomization: $columns2) {
                 TableColumn("Zeit") { item in
                     Text(item.start, format: .dateTime.day().month().hour().minute().second()).monospacedDigit()
-                }.width(min: 100, ideal: 120)
-                TableColumn("Kanal") { item in Text(AirbandGrid.channelName(item.index)).monospacedDigit() }.width(64)
-                TableColumn("Name") { item in Text(item.name) }.width(min: 50, ideal: 80)
+                }.width(min: 100, ideal: 120).customizationID("zeit")
+                TableColumn("Kanal") { item in Text(AirbandGrid.channelName(item.index)).monospacedDigit() }.width(min: 38, ideal: 64).customizationID("kanal")
+                TableColumn("Name") { item in Text(item.name) }.width(min: 50, ideal: 80).customizationID("name")
                 TableColumn("Text") { item in
                     AirbandTranscriptCell(item: item, pending: model.transcription.isPending(item.id))
-                }.width(min: 120, ideal: 320)
-                TableColumn("Dauer") { item in Text(String(format: "%.1f s", item.duration)).monospacedDigit() }.width(56)
-                TableColumn("Pegel") { item in Text(String(format: "+%.0f dB", item.peakDB)).monospacedDigit() }.width(56)
+                }.width(min: 120, ideal: 320).customizationID("text")
+                TableColumn("Dauer") { item in Text(String(format: "%.1f s", item.duration)).monospacedDigit() }.width(min: 34, ideal: 56).customizationID("dauer")
+                TableColumn("Pegel") { item in Text(String(format: "+%.0f dB", item.peakDB)).monospacedDigit() }.width(min: 34, ideal: 56).customizationID("pegel")
                 TableColumn("Mitschnitt") { item in
                     if let url = model.recordingURL(item) {
                         Button {
@@ -172,7 +174,7 @@ private struct AirbandPage: View {
                         .help(player.playing == item.id ? "Wiedergabe stoppen" : "Mitschnitt abspielen")
                         .accessibilityLabel(player.playing == item.id ? "Wiedergabe stoppen" : "Mitschnitt abspielen")
                     }
-                }.width(70)
+                }.width(min: 42, ideal: 70).customizationID("mitschnitt")
             }
             .contextMenu(forSelectionType: AirbandTransmission.ID.self) { ids in
                 if let id = ids.first, let item = shownHistory.first(where: { $0.id == id }) {
@@ -252,6 +254,11 @@ private struct AirbandPage: View {
                 LabeledContent("Lautstärke") {
                     Slider(value: $model.volume, in: 0...1)
                 }
+                Picker("Rauschminderung", selection: $model.noiseReduction) {
+                    ForEach(NoiseReduction.allCases) { Text($0.title).tag($0) }
+                }
+                .pickerStyle(.segmented)
+                .help("Lernt das Rauschen in den Sprechpausen und zieht es ab, dazu nur das Sprachband (250–3000 Hz). „Stark“ hilft bei sehr verrauschten Sprüchen, kann Stimmen aber dünner klingen lassen. Mitschnitte und Abschrift bleiben unbearbeitet.")
                 LabeledContent("Rauschsperre \(Int(model.squelchDB)) dB") {
                     Slider(value: $model.squelchDB, in: 3...20, step: 1)
                 }
@@ -545,6 +552,7 @@ final class AirbandPlayer {
 /// Funde des Suchlaufs als eigene Ansicht: Sie beobachtet nur Funde und
 /// Kanalliste, nicht die Pegel, die die Seite mehrmals pro Sekunde neu zeichnen.
 private struct AirbandFindingsSection: View {
+    @StoredColumns("airband.3") private var columns3: TableColumnCustomization<AirbandFinding>
     let model: AirbandModel
     /// Sortierung per Spaltenkopf (Vorgabe: meiste Sprüche zuerst).
     @State private var findingsOrder: [ColumnSort<AirbandFinding>] = {
@@ -578,23 +586,23 @@ private struct AirbandFindingsSection: View {
                 .help("Kanäle mit weniger Sprüchen ausblenden")
             }
             .padding([.horizontal, .top], 8)
-            Table(shown, selection: $findingsSelection, sortOrder: $findingsOrder) {
-                TableColumn("Kanal", sortUsing: ColumnSort("kanal") { $0.index }) { item in Text(AirbandGrid.channelName(item.index)).monospacedDigit() }.width(64)
-                TableColumn("Sprüche", sortUsing: ColumnSort("sprueche") { $0.activity.transmissions }) { item in Text("\(item.activity.transmissions)").monospacedDigit() }.width(56)
-                TableColumn("Belegt", sortUsing: ColumnSort("belegt") { $0.activity.openSeconds }) { item in Text(String(format: "%.0f s", item.activity.openSeconds)).monospacedDigit() }.width(56)
-                TableColumn("Pegel", sortUsing: ColumnSort("pegel") { $0.activity.peakDB }) { item in Text(String(format: "+%.0f dB", item.activity.peakDB)).monospacedDigit() }.width(56)
+            Table(shown, selection: $findingsSelection, sortOrder: $findingsOrder, columnCustomization: $columns3) {
+                TableColumn("Kanal", sortUsing: ColumnSort("kanal") { $0.index }) { item in Text(AirbandGrid.channelName(item.index)).monospacedDigit() }.width(min: 38, ideal: 64).customizationID("kanal")
+                TableColumn("Sprüche", sortUsing: ColumnSort("sprueche") { $0.activity.transmissions }) { item in Text("\(item.activity.transmissions)").monospacedDigit() }.width(min: 34, ideal: 56).customizationID("spruche")
+                TableColumn("Belegt", sortUsing: ColumnSort("belegt") { $0.activity.openSeconds }) { item in Text(String(format: "%.0f s", item.activity.openSeconds)).monospacedDigit() }.width(min: 34, ideal: 56).customizationID("belegt")
+                TableColumn("Pegel", sortUsing: ColumnSort("pegel") { $0.activity.peakDB }) { item in Text(String(format: "+%.0f dB", item.activity.peakDB)).monospacedDigit() }.width(min: 34, ideal: 56).customizationID("pegel")
                 TableColumn("Hinweis", sortUsing: ColumnSort("hinweis", text: { findingHint($0) })) { item in
                     if item.activity.looksContinuous {
                         Text("Dauerträger (ATIS?) oder Störung").font(.caption).foregroundStyle(.orange)
                     } else if AirbandGrid.possiblySpur(item.index) {
                         Text("glatte MHz – evtl. Störlinie").font(.caption).foregroundStyle(.secondary)
                     }
-                }
+                }.customizationID("hinweis")
                 TableColumn("In Liste", sortUsing: ColumnSort("liste") { item in model.channels.contains { $0.index == item.index } ? 0 : 1 }) { item in
                     if model.channels.contains(where: { $0.index == item.index }) {
                         Image(systemName: "checkmark").foregroundStyle(.secondary)
                     }
-                }.width(60)
+                }.width(min: 36, ideal: 60).customizationID("in-liste")
             }
             .contextMenu(forSelectionType: AirbandFinding.ID.self) { ids in
                 let missing = shown.filter { item in ids.contains(item.id) && !model.channels.contains { $0.index == item.index } }

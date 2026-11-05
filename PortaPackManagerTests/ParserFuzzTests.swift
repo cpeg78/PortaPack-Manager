@@ -395,6 +395,10 @@ struct ParserFuzzTests {
             "!5330.00N/00950.00E>-12/+12", "!5330.00N/00950.00E>090/0x1", "!5330.00N/00950.00E>.../...",
             "!5330.00N/00950.00E>090/010/A=1e9999", "!5330.00N/00950.00E>/A=inf000", "!5330.00N/00950.00E>/A=nan000",
             "!5330.00N/00950.00E>/A=-00123", "!5330.00N/00950.00E>/A=+00123", "!53inf.0N/00950.00E>", "!001e999N/00950.00E>",
+            // Rohes NMEA (Review 05.11.2026): Gradteil lief vorher durch `Double()`.
+            "$GPGGA,120000,5330.00,N,inf0.00,E,1,08,1.0,10.0,M,0,M,,", "$GPRMC,120000,A,5330.00,N,1e50.00,E,10,90,051126,,",
+            "$GPRMC,120000,A,nan0.00,N,00950.00,E,10,90,051126,,", "$GPRMC,120000,A,9930.00,N,00950.00,E,10,90,051126,,",
+            "$GPRMC,120000,A,5399.00,N,00950.00,E,10,90,051126,,",
             "!5330.00N/009nan.0E>", "!53 0.  N/00950.00E>inf/inf", "=5330.00N/00950.00E_inf/nang005t-05h99b1e999",
             ";OBJEKT   *111111z5330.00N/00950.00E>inf/inf",
         ]
@@ -407,6 +411,11 @@ struct ParserFuzzTests {
             }
             tracker.ingest(packet, at: now)
         }
+        // Unmögliche Breiten/Längen aus NMEA ergeben keine Position.
+        for info in ["$GPRMC,120000,A,9930.00,N,00950.00,E,10,90,051126,,", "$GPRMC,120000,A,5399.00,N,00950.00,E,10,90,051126,,"] {
+            #expect(APRSPacket.parse(tnc2: "DL8ABC>APRS:" + info)?.latitude == nil, Comment(rawValue: info))
+        }
+        #expect(APRSPacket.parse(tnc2: "DL8ABC>APRS:$GPRMC,120000,A,5330.00,N,00950.00,E,10,90,051126,,")?.longitude == 9 + 50.0 / 60)
         // Gültige Werte bleiben erhalten.
         let ok = APRSPacket.parse(tnc2: "DL1ABC>APRS:!5330.00N/00950.00E>090/010/A=-00123")
         #expect(ok?.courseDegrees == 90)
@@ -492,6 +501,25 @@ struct ParserFuzzTests {
             _ = DABSubchannelDecoder(subchannel: sub)
         }
         for index in [-1, 0, 63, 64, 1000] { _ = DABSubchannel(id: 0, startCU: 0, sizeCU: 10, protection: .uep(tableIndex: index)).puncturing }
+        _ = ensemble.programmeGuideComponent
+
+        // Programmführer: Pakete, MOT-Verzeichnis und SPI-Binärformat mit Zufallsbytes.
+        var guide = DABProgrammeGuide()
+        guide.reset(address: 1)
+        var carousel = DABMOTCarousel()
+        for _ in 0..<Self.runs(3000) {
+            var frame = rng.bytes(rng.int(0...96))
+            if !frame.isEmpty { frame[0] = frame[0] & 0xFC }
+            guide.process(frame)
+            let element = [UInt8(rng.int(0x02...0x36))] + rng.bytes(rng.int(0...40))
+            if let root = SPIBinary.parse(element) { _ = SPIBinary.programmes(root, fallbackService: 1) }
+            _ = SPIBinary.time(rng.bytes(rng.int(0...7)))
+            _ = SPIBinary.serviceID(rng.bytes(rng.int(0...6)))
+            _ = DABMOTCarousel.parseDirectory(rng.bytes(rng.int(0...60)))
+            if let group = DABDataGroup([0x70 | UInt8(rng.int(3...6)), 0] + rng.bytes(rng.int(0...30))) {
+                _ = carousel.add(group)
+            }
+        }
 
         let superframe = DABPlusSuperframeDecoder()
         for _ in 0..<Self.runs(2000) {
@@ -557,6 +585,14 @@ struct ParserFuzzTests {
             let c = counters[pid, default: 0]
             counters[pid] = c + 1
             demux.process(Self.tsPacket(pid: pid, start: start, counter: c, payload: payload))
+        }
+        // TOT/TDT/EIT/NIT mit gültiger CRC in jeder Kurzlänge 0…20 Byte Rumpf
+        // (Review 05.11.2026: TOT mit Rumpf 9/10 Byte trappte am Bereich 10..<8).
+        for table in [UInt8(0x73), 0x70, 0x4E, 0x40, 0x42, 0x00] {
+            for n in 0...20 {
+                let pid = [0x73: 0x14, 0x70: 0x14, 0x4E: 0x12, 0x40: 0x10, 0x42: 0x11, 0x00: 0][table]!
+                send(pid, true, [0] + Self.section(table: table, body: rng.bytes(n)))
+            }
         }
         // PAT mit PMT auf 0x20, PMT mit Video 0x100 und Audio 0x101.
         send(0, true, [0] + Self.section(table: 0x00, body: [0x00, 0x01, 0xE0, 0x20]))
@@ -968,6 +1004,570 @@ struct ParserFuzzTests {
             _ = WMBus.frames(inBits: WMBus.syncBits + bits([l] + rng.bytes(140)), keys: keys)
             let stripped = WMBus.stripFormatB([l] + rng.bytes(140))
             #expect((stripped == nil) == (l < 0x82))
+        }
+    }
+
+    // MARK: - Deutungsschicht direkt (Review 05.11.2026, P6)
+    //
+    // Die Tests oben füttern Rahmensucher mit Prüfsumme (CRC/XOR) – dahinter
+    // kommt fast nie etwas an; ein echter Absturz (`ZWave.describe` bei
+    // Sensortyp 0xFF) blieb so unentdeckt. Hier bekommen die Deutungsschichten
+    // Zufallsbytes ohne Prüfsumme, und alle Textausgaben (`summary`, `fields`,
+    // `values`, `rows`, `formatted` …) werden abgerufen, damit Formatierungen mitlaufen.
+
+    @Test("Z-Wave: alle Befehlsklassen samt Mehrkanal-, Mehrfach-, CRC- und Überwachungshülle direkt")
+    func zwaveDescribe() {
+        var rng = Self.rng(40)
+        let classes = Array(ZWave.classNames.keys).sorted()
+        func command(_ depth: Int, _ rng: inout FuzzRNG) -> [UInt8] {
+            let cc = rng.chance(0.8) ? classes[rng.int(0...(classes.count - 1))] : rng.byte()
+            var p = [cc, rng.chance(0.7) ? UInt8(rng.int(0...0x14)) : rng.byte()] + rng.bytes(upTo: 12)
+            if depth < 3 {
+                switch rng.int(0...9) {
+                case 0: p = [0x60, 0x0D, rng.byte(), rng.byte()] + command(depth + 1, &rng)
+                case 1:
+                    let inner = (0..<rng.int(0...3)).map { _ in command(depth + 1, &rng) }
+                    p = [0x8F, 0x01, UInt8(inner.count)] + inner.flatMap { [UInt8(truncatingIfNeeded: $0.count)] + $0 }
+                case 2: p = [0x56, 0x01] + command(depth + 1, &rng) + rng.bytes(2)
+                case 3: p = [0x6C, 0x01, rng.byte(), rng.byte()] + command(depth + 1, &rng)
+                default: break
+                }
+            }
+            return p
+        }
+        for _ in 0..<Self.runs(20_000) {
+            let c = ZWave.describe(command(0, &rng))
+            _ = (c.className, c.summary, c.deviceType, c.encrypted)
+            _ = c.values.map { "\($0.label) \($0.formatted)" }
+            _ = c.fields.map { "\($0.name)=\($0.value)" }
+        }
+        // Einzelbausteine mit jedem Typbyte (0xFF stürzte in `sensorReading` ab).
+        for type in 0...255 {
+            let t = UInt8(type)
+            _ = (ZWave.binarySensorName(t), ZWave.lockModeText(t), ZWave.genericClass(t), ZWave.headerTypeName(t))
+            _ = (ZWave.notificationTypeName(t), ZWave.notificationTypeKey(t))
+            for _ in 0..<Self.runs(20) {
+                _ = ZWave.sensorReading(type: t, [rng.byte()] + rng.bytes(upTo: 5)).map(\.formatted)
+                _ = ZWave.meterReading([t] + rng.bytes(upTo: 8)).map(\.formatted)
+                _ = ZWave.scaledValue([t] + rng.bytes(upTo: 5))
+                _ = ZWave.notification([t] + rng.bytes(upTo: 8))
+            }
+        }
+    }
+
+    @Test("Homematic: alle Nachrichtentypen direkt, verwürfelte Rahmen, gelernte Modelle")
+    func homematicDescribe() {
+        var rng = Self.rng(41)
+        let types = Array(Homematic.typeNames.keys).sorted()
+        let models = Array(Homematic.modelNames.keys).sorted()
+        let kinds: [Homematic.SensorKind?] = [nil, .contact, .water, .smoke, .motion]
+        var book = LearnedProfileBook(capacity: 50)
+        var learned: [String: UInt16] = [:]
+        for n in 0..<Self.runs(20_000) {
+            let type = rng.chance(0.8) ? types[rng.int(0...(types.count - 1))] : rng.byte()
+            let payload = rng.bytes(upTo: 20)
+            var frame = SmartHomeFrame(radio: .homematic, mode: "", address: "", kind: "", summary: "", checksumOK: true, bytes: [])
+            Homematic.describe(type: type, payload, sensor: kinds[n % 5], into: &frame)
+            _ = (frame.summary, frame.deviceType, frame.kind)
+            _ = frame.values.map(\.formatted) + frame.fields.map(\.value)
+            let source = rng.chance(0.5) ? [0x12, 0x34, UInt8(n % 4)] : rng.bytes(3)
+            var message = SmartHomeTestFrames.homematic(counter: rng.byte(), flags: rng.byte(), type: type,
+                                                        source: source, target: rng.bytes(3), payload: payload)
+            if n % 7 == 0 { message = Self.mutate(message, &rng) }
+            let enc = Homematic.scramble(message)
+            if let parsed = Homematic.parse(enc: enc, models: learned) {
+                _ = parsed.values.map(\.formatted) + parsed.fields.map { "\($0.name)=\($0.value)" }
+                if let model = Homematic.model(in: parsed) {
+                    learned[parsed.address] = model
+                    book.set(String(model), for: parsed.address)
+                }
+                _ = book[parsed.address]
+            }
+            if enc.count >= 10 { _ = Homematic.parseIP(enc).fields.map(\.value) }
+            _ = (Homematic.flagText(rng.byte()), Homematic.modeText(rng.byte()), Homematic.typeText(rng.byte()))
+            _ = Homematic.SensorKind(model: models[rng.int(0...(models.count - 1))])
+            _ = Homematic.SensorKind(model: UInt16(truncatingIfNeeded: rng.next()))
+        }
+        #expect(book.profiles.count <= 50)
+        _ = LearnedProfileBook(profiles: ["a": "1", "b": "2"], order: ["x", "b", "b"], capacity: 0)
+    }
+
+    @Test("EnOcean: Telegramme aller RORGs mit und ohne Profil direkt")
+    func enoceanParse() {
+        var rng = Self.rng(42)
+        let rorgs: [UInt8] = [0xF6, 0xD5, 0xA5, 0xD4, 0xD2, 0xD1, 0x30, 0x31, 0xA6, 0xC5, 0xC6, 0xC7]
+        let profiles: [String?] = [nil, "F6-10-00", "F6-02-01", "D5-00-01", "D2-01-12", "D2-05-00", "D2-01", "A5-04-01",
+                                   "A5-02-05", "A5-09-04", "A5-12-01", "XX-YY-ZZ", ""] + EnOcean.supportedProfiles.map { Optional($0) }
+        for n in 0..<Self.runs(20_000) {
+            let rorg = n % 5 == 0 ? rng.byte() : rorgs[rng.int(0...(rorgs.count - 1))]
+            let length: Int = switch rorg {
+            case 0xF6, 0xD5: 1
+            case 0xA5: rng.chance(0.9) ? 4 : rng.int(0...6)
+            case 0xD4: rng.chance(0.9) ? 7 : rng.int(0...9)
+            default: rng.int(0...14)
+            }
+            var t = [rorg] + rng.bytes(length) + rng.bytes(4) + [rng.byte(), rng.byte()]
+            if n % 11 == 0 { t = Self.mutate(t, &rng) }
+            let eep = profiles[rng.int(0...(profiles.count - 1))]
+            if let frame = EnOcean.parse(t, eep: eep) {
+                _ = (frame.summary, frame.deviceType, frame.kind)
+                _ = frame.values.map(\.formatted) + frame.fields.map(\.value)
+            }
+            // Bausteine mit den Längen, die `parse` ihnen gibt.
+            let d = rng.bytes(4)
+            for eep in EnOcean.supportedProfiles { _ = EnOcean.fourBS(d, eep: eep).map(\.formatted) }
+            _ = EnOcean.fourBS(d, eep: eep ?? "A5-02-05")
+            _ = EnOcean.vldSwitch(rng.bytes(rng.int(1...10))).1.map(\.formatted)
+            _ = EnOcean.vldBlind(rng.bytes(rng.int(1...6))).1.map(\.formatted)
+            _ = (EnOcean.rocker(rng.byte(), status: rng.byte()), EnOcean.handlePosition(rng.byte()), EnOcean.teachIn(d))
+            _ = EnOcean.meterValue(d, type: rng.int(-1...20)).formatted
+            _ = EnOcean.temperatureRange(type: rng.int(-1...40))
+            _ = (EnOcean.rorgName(rng.byte()), EnOcean.dataLength(rorg: rng.byte(), total: rng.int(0...40)))
+        }
+    }
+
+    /// Ein zufälliger wM-Bus-Datensatz mit fester Länge (DIF/DIFE/VIF/VIFE + Wert).
+    static func wmbusRecord(_ rng: inout FuzzRNG) -> [UInt8] {
+        let codings: [(UInt8, Int)] = [(0x01, 1), (0x02, 2), (0x03, 3), (0x04, 4), (0x05, 4), (0x06, 6), (0x07, 8),
+                                       (0x09, 1), (0x0A, 2), (0x0B, 3), (0x0C, 4), (0x0E, 6)]
+        let (dif, length) = codings[rng.int(0...(codings.count - 1))]
+        var r: [UInt8] = [dif | UInt8(rng.int(0...3) << 4) | (rng.chance(0.2) ? 0x40 : 0)]
+        if rng.chance(0.2) { r[0] |= 0x80; r.append(rng.byte() & 0x7F) }
+        let vif = rng.chance(0.1) ? 0xFD : rng.byte()
+        r.append(vif)
+        if vif & 0x80 != 0 { r.append(rng.byte() & 0x7F) }
+        return r + rng.bytes(length)
+    }
+
+    @Test("wM-Bus: Anwendungsschicht mit Schlüssel – Modus 5/7, ELL, AFL, Kompaktrahmen, Techem, Alarme")
+    func wmbusApplication() {
+        var rng = Self.rng(43)
+        let key = SmartHomeTestFrames.omsKey
+        let keys = ["12345678": key]
+        let ident: [UInt8] = [0x78, 0x56, 0x34, 0x12]
+        func records(_ rng: inout FuzzRNG) -> [UInt8] {
+            rng.chance(0.5) ? rng.bytes(upTo: 40) : (0..<rng.int(0...6)).flatMap { _ in Self.wmbusRecord(&rng) }
+        }
+        func pad16(_ p: [UInt8]) -> [UInt8] { p + [UInt8](repeating: 0x2F, count: (16 - p.count % 16) % 16) }
+        /// Kurzer Kopf (CI 0x7A) oder langer Kopf (CI 0x72) mit Sicherheitsmodus 0/5/7.
+        func tpl(_ rng: inout FuzzRNG, manufacturer: [UInt8], address: [UInt8], mode: Int, counter: [UInt8]?) -> [UInt8] {
+            let acc = rng.byte(), status = rng.chance(0.7) ? 0 : rng.byte()
+            let long = rng.chance(0.3)
+            var head: [UInt8] = long ? [0x72] + ident + manufacturer + [address[4], address[5]] : [0x7A]
+            let payload = pad16([0x2F, 0x2F] + records(&rng))
+            let blocks = min(15, payload.count / 16)
+            head += [acc, status, UInt8(blocks << 4), UInt8(mode)]
+            switch mode {
+            case 5:
+                let iv = manufacturer + address + [UInt8](repeating: acc, count: 8)
+                return head + WMBus.aesCBCEncrypt(key: key, iv: iv, Array(payload.prefix(blocks * 16))) + rng.bytes(upTo: 6)
+            case 7:
+                let kdf = rng.chance(0.8) ? 1 : rng.int(0...3)
+                head.append(UInt8(kdf << 4))
+                let base = (counter ?? [0, 0, 0, 0]) + Array(address.prefix(4)) + [UInt8](repeating: 0x07, count: 7)
+                let encryptionKey = kdf == 1 ? LoRaWANCrypto.cmac(key: key, [0x00] + base) : key
+                let cipher = WMBus.aesCBCEncrypt(key: encryptionKey, iv: [UInt8](repeating: 0, count: 16), Array(payload.prefix(blocks * 16)))
+                return head + cipher + rng.bytes(upTo: 6)
+            default:
+                return head + records(&rng)
+            }
+        }
+        for n in 0..<Self.runs(12_000) {
+            let manufacturer: [UInt8] = n % 9 == 0 ? [0x68, 0x50] : (rng.chance(0.5) ? [0x93, 0x15] : rng.bytes(2))
+            let type: UInt8 = n % 9 == 0 ? 0x80 : rng.byte()
+            let header: [UInt8] = [rng.byte(), rng.chance(0.8) ? 0x44 : rng.byte()] + manufacturer + ident + [rng.byte(), type]
+            let address = Array(header[4...9])
+            var app: [UInt8]
+            switch n % 9 {
+            case 0:
+                app = [rng.chance(0.5) ? 0xA0 : 0xA2, [0x01, 0x11, 0x0F, rng.byte()][rng.int(0...3)]] + rng.bytes(rng.int(10...24))
+            case 1:
+                app = tpl(&rng, manufacturer: manufacturer, address: address, mode: 5, counter: nil)
+            case 2:
+                // AFL mit Zähler und MAC, dann Modus 7 (MAC passend oder nicht).
+                let counter = rng.bytes(4), mcl: UInt8 = [0x05, 0x03, 0x04, 0x06, 0x07, 0x08, 0x00][rng.int(0...6)]
+                let inner = tpl(&rng, manufacturer: manufacturer, address: address, mode: 7, counter: counter)
+                let macLength = [3: 2, 4: 4, 5: 8, 6: 12, 7: 16, 8: 12][Int(mcl & 0x0F)] ?? 0
+                var mac = rng.bytes(macLength)
+                if rng.chance(0.5), macLength > 0 {
+                    let base = counter + Array(address.prefix(4)) + [UInt8](repeating: 0x07, count: 7)
+                    mac = Array(LoRaWANCrypto.cmac(key: LoRaWANCrypto.cmac(key: key, [0x01] + base), [mcl] + counter + inner).prefix(macLength))
+                }
+                let afl: [UInt8] = [0x00, 0x2C, mcl] + counter + mac
+                app = [0x90, UInt8(afl.count)] + afl + inner
+            case 3:
+                // ELL mit Sitzungsnummer, AES-CTR, CRC davor.
+                let cc = rng.byte(), sn = rng.bytes(3) + [0x20 | rng.byte() & 0x1F]
+                let inner = [0x78] + records(&rng)
+                let crc = WMBus.crc16(inner)
+                let plain = [UInt8(crc & 0xFF), UInt8(crc >> 8)] + inner
+                let iv = manufacturer + address + [cc] + sn + [0, 0, 0]
+                app = [0x8D, cc, rng.byte()] + sn + WMBus.aesCTR(key: key, iv: iv, plain)
+            case 4:
+                app = [0x8C, rng.byte(), rng.byte(), 0x78] + records(&rng)
+            case 5:
+                // Kompaktrahmen zu gelernten Köpfen.
+                let full = (1...rng.int(1...5)).flatMap { _ in Self.wmbusRecord(&rng) }
+                guard let headers = WMBus.formatHeaders(full) else { app = [0x79] + rng.bytes(upTo: 20); break }
+                let signature = WMBus.crc16(headers)
+                let values = rng.chance(0.7) ? rng.bytes(full.count - headers.count) : rng.bytes(upTo: 40)
+                app = [0x79, UInt8(signature & 0xFF), UInt8(signature >> 8), rng.byte(), rng.byte()] + values
+                var frame = SmartHomeFrame(radio: .wmbus, mode: "", address: "", kind: "", summary: "", checksumOK: true, bytes: [])
+                WMBus.compact(Array(app.dropFirst()), formats: [signature: headers], into: &frame)
+                _ = frame.values.map(\.formatted) + frame.fields.map(\.value) + [frame.summary]
+                let frames = [signature: headers]
+                if let parsed = WMBus.parse(header + app, mode: "T1", keys: keys, formats: frames) {
+                    _ = parsed.values.map(\.formatted) + parsed.fields.map(\.value) + [parsed.summary, parsed.deviceType]
+                }
+            case 6:
+                app = [rng.chance(0.5) ? 0x70 : 0x71] + rng.bytes(upTo: 4)
+            case 7:
+                app = tpl(&rng, manufacturer: manufacturer, address: address, mode: [0, 5, 7, 1, 13][rng.int(0...4)], counter: nil)
+            default:
+                app = rng.bytes(upTo: 30)
+            }
+            var data = header + app
+            if n % 13 == 0 { data = Self.mutate(data, &rng) }
+            if let frame = WMBus.parse(data, mode: ["T1", "C1 · Format A", "C1 · Format B"][n % 3], keys: keys) {
+                _ = (frame.summary, frame.deviceType, frame.kind, frame.address, frame.encrypted)
+                _ = frame.values.map { "\($0.label) \($0.formatted)" } + frame.fields.map { "\($0.name)=\($0.value)" }
+                _ = frame.wmbusFormat
+            }
+            _ = WMBus.parse(data, mode: "T1", keys: [:])
+        }
+        // Datensätze, VIF-Bedeutung, Zahlen und Daten einzeln.
+        for _ in 0..<Self.runs(6000) {
+            let payload = rng.chance(0.5) ? rng.bytes(upTo: 60) : (0..<rng.int(0...8)).flatMap { _ in Self.wmbusRecord(&rng) }
+            for r in WMBus.parseRecords(payload) { _ = (r.name, r.unit, r.value, r.text) }
+            var frame = SmartHomeFrame(radio: .wmbus, mode: "", address: "", kind: "", summary: "", checksumOK: true, bytes: [])
+            WMBus.records(payload, into: &frame)
+            _ = frame.values.map(\.formatted) + frame.fields.map(\.value) + [frame.summary]
+            if let headers = WMBus.formatHeaders(payload) { _ = WMBus.expand(headers: headers, data: rng.bytes(upTo: 60)) }
+            _ = WMBus.vifMeaning([rng.byte()] + rng.bytes(upTo: 3))
+            _ = WMBus.number(rng.bytes(upTo: 10), coding: rng.int(0...15))
+            _ = WMBus.dateText(rng.bytes(rng.chance(0.5) ? 2 : 4))
+            _ = (WMBus.statusText(rng.byte()), WMBus.deviceType(rng.byte()), WMBus.controlName(rng.byte()), WMBus.ciName(rng.byte()))
+            _ = WMBus.manufacturer(UInt16(truncatingIfNeeded: rng.next()))
+            var techem = frame
+            _ = WMBus.techemHeatCostAllocator([[0x01, 0x11, 0x0F][rng.int(0...2)]] + rng.bytes(rng.int(12...20)), into: &techem)
+            _ = techem.values.map(\.formatted) + techem.fields.map(\.value) + [techem.summary]
+        }
+    }
+
+    // MARK: Mode S, Comm-B
+
+    @Test("Mode S: alle DF, Höhen- und Squawk-Felder, Comm-B-Register direkt und über den Tracker")
+    func modeSAndCommB() {
+        var rng = Self.rng(44)
+        var tracker = AircraftTracker()
+        tracker.receiver = (53.5, 9.9)
+        let start = Date(timeIntervalSince1970: 1_800_000_000)
+        for n in 0..<Self.runs(20_000) {
+            let now = start.addingTimeInterval(Double(n) / 10)
+            // DF beliebig, Prüfsumme gültig – auch Nicht-ADS-B-Formate durch `decode`.
+            var bytes = [UInt8(rng.int(0...31) << 3) | rng.byte() & 7] + rng.bytes(10) + [0, 0, 0]
+            let crc = ADSBDemodulator.crc24(Array(bytes.prefix(11)) + [0, 0, 0])
+            bytes[11] = UInt8(crc >> 16 & 0xFF); bytes[12] = UInt8(crc >> 8 & 0xFF); bytes[13] = UInt8(crc & 0xFF)
+            if let message = ADSBDemodulator.decode(bytes, now: now) { tracker.ingest(message) }
+            // Mode S kurz und lang mit beliebigem DF.
+            let short = rng.chance(0.5)
+            let modeS = short ? rng.bytes(7) : rng.bytes(14)
+            let icao = UInt32(rng.int(0...0xFFFFFF))
+            if let message = ADSBDemodulator.decodeModeS(modeS, icao: icao & (rng.chance(0.5) ? 0xFF : 0xFFFFFF), now: now) {
+                tracker.ingest(message)
+            }
+            let field13 = rng.int(0...0x1FFF)
+            _ = (ADSBDemodulator.altitude13(field13), ADSBDemodulator.squawkDigits(id13: field13), ADSBDemodulator.altitude(field13 & 0xFFF))
+            _ = (ADSBDemodulator.gillhamHundreds(modeA: ADSBDemodulator.modeAOrder(field13)), ADSBDemodulator.surfaceSpeed(rng.int(0...130)))
+            let me = rng.bytes(7)
+            _ = (ADSBDemodulator.targetState(me), ADSBDemodulator.callsign(me), ADSBDemodulator.callsign(me, strict: true))
+            // Comm-B: Register einzeln, Zuordnung, Übernahme und Wind.
+            var mb = rng.bytes(7)
+            if rng.chance(0.3) { mb[0] = 0x20 }
+            var plane = Aircraft(icao: icao, lastSeen: now)
+            if rng.chance(0.7) { plane.track = Double(rng.int(0...359)); plane.groundSpeed = Double(rng.int(0...600)); plane.altitude = rng.int(-1000...50_000) }
+            _ = CommB.identification(mb)
+            for register in [CommB.verticalIntention(mb), CommB.trackAndTurn(mb), CommB.headingAndSpeed(mb), CommB.infer(mb, plane: plane)] {
+                register?.apply(to: &plane, at: now)
+            }
+            var state = plane.commB
+            if rng.chance(0.5) {
+                state.trueAirspeed = Double(rng.int(0...700)); state.heading = Double(rng.int(-10...370))
+                state.trackDate = now.addingTimeInterval(-Double(rng.int(0...60))); state.headingDate = now.addingTimeInterval(-Double(rng.int(0...60)))
+                state.groundSpeed = rng.chance(0.5) ? Double(rng.int(0...700)) : nil; state.trueTrack = rng.chance(0.5) ? Double(rng.int(0...359)) : nil
+            }
+            _ = CommB.wind(state, plane: plane, at: now)
+        }
+        #expect(tracker.aircraft.count <= 20_000)
+    }
+
+    // MARK: Radiosonden
+
+    /// Entwürfelter RS41-Rahmen mit Blöcken, deren Block-CRC stimmt (Inhalt zufällig).
+    static func rs41Frame(_ rng: inout FuzzRNG, serial: String) -> [UInt8] {
+        var frame = RS41.header + [UInt8](repeating: 0, count: 48) + [rng.chance(0.8) ? 0x0F : rng.byte()]
+        let ids: [UInt8] = [0x79, 0x7A, 0x7B, 0x7C, 0x7D, 0x7E, 0x76, 0x7F, 0x80, rng.byte()]
+        for _ in 0..<rng.int(1...8) {
+            let id = ids[rng.int(0...(ids.count - 1))]
+            var data: [UInt8]
+            switch id {
+            case 0x79:
+                data = rng.bytes(rng.chance(0.9) ? rng.int(40...48) : rng.int(0...39))
+                if data.count >= 10 { data.replaceSubrange(2..<10, with: Array(serial.utf8.prefix(8)) + [UInt8](repeating: 0, count: max(0, 8 - serial.utf8.count))) }
+                if data.count > 23, rng.chance(0.9) { data[23] = UInt8(rng.int(0...50)) }
+            case 0x7A: data = rng.bytes(rng.chance(0.9) ? rng.int(36...42) : rng.int(0...35))
+            case 0x7E: data = [rng.byte()] + (0..<rng.int(0...40)).map { _ in rng.chance(0.9) ? UInt8(rng.int(0x30...0x46)) : rng.byte() }
+            case 0x7C: data = rng.bytes(rng.int(0...30))
+            case 0x7B: data = rng.bytes(rng.int(0...21))
+            default: data = rng.bytes(upTo: 60)
+            }
+            frame += SondeSignal.block(id, data)
+            if rng.chance(0.1) { frame += rng.bytes(upTo: 6) }    // kaputter Block dazwischen
+        }
+        return frame
+    }
+
+    @Test("RS41: Blöcke mit gültiger CRC erreichen Kalibrierung, Messwerte, Druck, Feuchte und XDATA")
+    func rs41Blocks() {
+        var rng = Self.rng(45)
+        var calibration: [String: RS41.Calibration] = [:]
+        let serials = ["T1234567", "U7654321", "V0000001"]
+        for n in 0..<Self.runs(6000) {
+            let letters = Array("ABCXYZ019;= ")
+            let serial = n % 4 == 0 ? String((0..<rng.int(0...9)).map { _ in letters[rng.int(0...(letters.count - 1))] }) : serials[n % 3]
+            var frame = Self.rs41Frame(&rng, serial: serial)
+            if n % 17 == 0 { frame = Self.mutate(frame, &rng) }
+            if let report = RS41.parse(frame, calibration: &calibration) {
+                _ = (report.configuration.subtype, report.configuration.activeCountdown, report.instruments.map(\.name))
+                _ = (report.temperature, report.humidity, report.pressure, report.ozoneCurrent, report.gpsTime)
+            }
+        }
+        // Volle Kalibrierung mit Zufallsbytes (Float-Bitmuster: NaN, ∞, winzig) direkt.
+        for _ in 0..<Self.runs(3000) {
+            var cal = RS41.Calibration()
+            cal.bytes = rng.bytes(cal.bytes.count)
+            cal.received = (0..<51).map { _ in rng.chance(0.9) }
+            cal.countdownFrame = rng.chance(0.5) ? rng.int(0...70_000) : nil
+            let config = RS41.configuration(cal, frame: rng.chance(0.5) ? rng.int(-5...70_000) : nil)
+            _ = (config.subtype, config.activeCountdown)
+            var report = SondeReport(kind: .rs41, serial: "T1234567", model: "RS41")
+            RS41.applyMeasurements(rng.bytes(rng.int(36...42)), calibration: cal, to: &report)
+            _ = (report.temperature, report.humidity, report.pressure, report.humiditySensorTemperature)
+            let f = UInt32(truncatingIfNeeded: rng.next()) & 0xFF_FFFF, f1 = UInt32(truncatingIfNeeded: rng.next()) & 0xFF_FFFF, f2 = UInt32(truncatingIfNeeded: rng.next()) & 0xFF_FFFF
+            _ = RS41.pressure(f, f1, f2, fx: rng.int(-100_000...100_000), cal: cal)
+            _ = RS41.correctedHumidity(f, f1, f2, t: Double(rng.int(-90...60)), th: Double(rng.int(-90...90)),
+                                       p: [0, -1, 1013, 5, .nan, .infinity][rng.int(0...5)], cal: cal)
+            _ = RS41.standardPressure(Double(rng.int(-1000...90_000)))
+        }
+        for _ in 0..<Self.runs(3000) {
+            let hexLetters = Array("0123456789ABCDEF#Ig")
+            let hex = (0..<rng.int(0...30)).map { _ in hexLetters[rng.int(0...(hexLetters.count - 1))] }
+            let ids = ["0101", "0501", "0801", "05", "", "0501XXXXXXXXXXXXXXXXI"]
+            for instrument in SondeInstrument.parse(ids[rng.int(0...5)] + String(hex)) { _ = instrument.name }
+            _ = SondeInstrument.merge(SondeInstrument.parse(String(hex)), with: SondeInstrument.parse("0101" + String(hex)))
+        }
+    }
+
+    @Test("DFM: Rahmen mit gültigem Hamming-Code und Zufallsinhalt")
+    func dfmFrames() {
+        var rng = Self.rng(46)
+        let decoder = DFMDecoder()
+        for _ in 0..<Self.runs(4000) {
+            let bits = { (n: Int, rng: inout FuzzRNG) -> [UInt8] in (0..<n).map { _ in UInt8(rng.next() & 1) } }
+            var chips = SondeSignal.dfmFrame(conf: bits(28, &rng), dat1: bits(52, &rng), dat2: bits(52, &rng))
+            if rng.chance(0.2) { for _ in 0..<rng.int(1...4) { chips[rng.int(0...(chips.count - 1))] ^= 1 } }
+            for report in decoder.process(chips: chips + bits(rng.int(0...20), &rng)) {
+                _ = (report.serial, report.model, report.gpsTime, report.temperature, report.heading)
+            }
+            _ = DFMDecoder.fl24(rng.int(0...0xFF_FFFF))
+        }
+    }
+
+    // MARK: Funksensoren
+
+    /// Zufällige Bitzeilen wie aus dem Slicer, mit Wiederholungen und Sync-Pulsen.
+    static func sensorBits(_ rng: inout FuzzRNG) -> SensorBitBuffer {
+        var buffer = SensorBitBuffer()
+        let template = (0..<rng.int(0...120)).map { _ in UInt8(rng.next() & 1) }
+        for row in 0..<rng.int(1...14) {
+            if row > 0 {
+                if rng.chance(0.3) { buffer.addSync() } else { buffer.addRow() }
+            }
+            let bits = rng.chance(0.6) ? template : (0..<rng.int(0...200)).map { _ in UInt8(rng.next() & 1) }
+            for bit in bits { buffer.add(rng.chance(0.01) ? bit ^ 1 : bit) }
+        }
+        return buffer
+    }
+
+    @Test("Funksensoren: alle Dekoder direkt mit zufälligen Bitzeilen und Impulsfolgen")
+    func sensorDecoders() {
+        var rng = Self.rng(47)
+        for _ in 0..<Self.runs(6000) {
+            let bits = Self.sensorBits(&rng)
+            let readings: [SensorReading?] = [
+                SensorDecoders.nexus(bits), SensorDecoders.prologue(bits), SensorDecoders.inFactory(bits),
+                SensorDecoders.lacrosseTX141(bits), SensorDecoders.bresser5in1(bits), SensorDecoders.bresser6in1(bits),
+                SensorDecoders.bresser7in1(bits), SensorDecoders.lacrosseIT(bits, model: "LaCrosse-TX29IT"),
+                SensorDecoders.lacrosseIT(bits, model: "LaCrosse-TX35DTHIT"), SensorDecoders.fineOffsetWH24(bits),
+                SensorDecoders.fineOffsetWH25(bits), SensorDecoders.fineOffsetWH2(bits), SensorDecoders.oregonV21(bits),
+                SensorDecoders.oregonV3(bits), SensorDecoders.tpms(bits),
+                SensorDecoders.bresser5in1(message: rng.bytes(upTo: 30)), SensorDecoders.bresser6in1(message: rng.bytes(upTo: 30)),
+                SensorDecoders.bresser7in1(message: rng.bytes(upTo: 30)),
+            ]
+            for reading in readings.compactMap({ $0 }) {
+                _ = (reading.key, reading.integrity, reading.extra.map { SensorReading.extraLabel($0.key) + $0.value })
+            }
+            _ = (SensorDecoders.reflectNibbles(rng.bytes(upTo: 8)), SensorDecoders.oregonChecksumOK(rng.bytes(upTo: 12), nibbles: rng.int(0...24)))
+        }
+        // Impulsfolgen durch Slicer und alle Dekoder.
+        for _ in 0..<Self.runs(1500) {
+            let count = rng.int(0...300)
+            let unit = [52, 124, 250, 500, 1000, 2000][rng.int(0...5)]
+            let train = SensorPulseTrain(modulation: rng.chance(0.5) ? .ook : .fsk,
+                                         pulses: (0..<count).map { _ in rng.chance(0.8) ? unit * rng.int(1...4) + rng.int(-30...30) : rng.int(0...20_000) },
+                                         gaps: (0..<count).map { _ in rng.chance(0.8) ? unit * rng.int(1...4) + rng.int(-30...30) : rng.int(0...30_000) })
+            _ = SensorDecoders.decode(train).map(\.key)
+            _ = train.durationMicroseconds
+        }
+    }
+
+    // MARK: RDS
+
+    @Test("RDS: Zufallsbits, gültige Gruppen aller Typen mutiert, RadioText+ mit wilden Markierungen")
+    func rdsGroups() {
+        var rng = Self.rng(48)
+        func block(_ data: UInt16, offset: Int) -> [UInt8] {
+            let word = (UInt32(data) << 10) | RDSDecoder.checkword(data, offset: offset)
+            return (0..<26).reversed().map { UInt8((word >> UInt32($0)) & 1) }
+        }
+        var decoder = RDSDecoder()
+        for n in 0..<Self.runs(4000) {
+            var bits: [UInt8]
+            if n % 3 == 0 {
+                bits = (0..<rng.int(0...300)).map { _ in UInt8(rng.next() & 1) }
+            } else {
+                let versionB = rng.chance(0.3)
+                let b = UInt16(rng.int(0...15) << 12) | (versionB ? 0x0800 : 0) | UInt16(rng.int(0...0x7FF))
+                let c = rng.chance(0.2) ? RDSDecoder.radioTextPlusAID : UInt16(truncatingIfNeeded: rng.next())
+                let pi: UInt16 = rng.chance(0.8) ? 0xD3C2 : UInt16(truncatingIfNeeded: rng.next())
+                bits = block(pi, offset: 0) + block(b, offset: 1) + block(c, offset: versionB ? 3 : 2) + block(UInt16(truncatingIfNeeded: rng.next()), offset: 4)
+                for _ in 0..<rng.int(0...3) { bits[rng.int(0...(bits.count - 1))] ^= 1 }
+            }
+            var previous: UInt8 = 0
+            for bit in bits { previous ^= bit; decoder.push(previous) }
+            let info = decoder.info
+            _ = (info.programServiceText, info.radioTextString, info.radioTextPlus, info.clock, info.alternativeFrequencies)
+            _ = RadioTextPlus.nowPlaying(info.radioTextPlus)
+            if rng.chance(0.02) { decoder.clearInfo() }
+            if rng.chance(0.01) { decoder.reset() }
+        }
+        for _ in 0..<Self.runs(3000) {
+            let letters = Array("Queen – Bohemian Rhapsody ÄÖÜ\r ")
+            let text = String((0..<rng.int(0...70)).map { _ in letters[rng.int(0...(letters.count - 1))] })
+            let markers = (0..<rng.int(0...4)).map { _ in
+                RadioTextPlus.Marker(type: rng.int(-1...70), start: rng.int(-5...80), length: rng.int(-5...80))
+            }
+            let tags = RadioTextPlus.tags(in: text, markers: markers)
+            _ = (RadioTextPlus.nowPlaying(tags), tags.map { RadioTextPlus.name($0.type) ?? "" })
+        }
+        _ = RDSDecoder.character(rng.byte())
+    }
+
+    // MARK: DCF77, FLARM, Meshtastic, BLE, Wetter
+
+    @Test("DCF77: Hüllkurve mit Zufall, NaN und ∞ stürzt den Sekundendekoder nicht ab")
+    func dcf77Feed() {
+        var rng = Self.rng(49)
+        let decoder = DCF77Decoder()
+        let start = Date(timeIntervalSince1970: 1_800_000_000)
+        var fed = 0
+        for _ in 0..<Self.runs(300) {
+            let samples: [Float] = (0..<rng.int(0...400)).map { _ in
+                switch rng.int(0...29) {
+                case 0: .nan
+                case 1: .infinity
+                case 2: -.infinity
+                default: Float(rng.int(0...1000)) / 1000
+                }
+            }
+            fed += samples.count
+            decoder.feed(samples, endDate: start.addingTimeInterval(Double(fed) / 100), delay: rng.chance(0.5) ? 0 : Double(rng.int(-5...5)))
+            _ = decoder.recentEnvelope(rng.int(0...600))
+        }
+        for _ in 0..<Self.runs(2000) {
+            let bits = (0..<rng.int(55...62)).map { _ in UInt8(rng.next() & 1) }
+            if case let .success(time) = DCF77Code.decode(bits, leapAnnounced: rng.chance(0.5)) {
+                _ = (time.date, time.weekdayName, time.zoneName, DCF77Code.encode(time))
+            }
+        }
+    }
+
+    @Test("FLARM: Sync mit Zufallsnutzbytes (CRC gültig und ungültig) und reine Zufalls-IQ")
+    func flarmPackets() {
+        var rng = Self.rng(50)
+        let demod = FLARMDemodulator()
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        for n in 0..<Self.runs(30) {
+            var payload = rng.bytes(FLARMLink.packetBytes - 2)
+            let crc = FLARMLink.crc16(payload[...])
+            payload += n % 2 == 0 ? [UInt8(crc >> 8), UInt8(crc & 0xFF)] : rng.bytes(2)
+            for packet in demod.process(FLARMTests.iq(bytes: FLARMLink.defaultSync + payload), now: now) { _ = packet.hex }
+            _ = demod.process(Data(rng.bytes(rng.int(0...20_000))), now: now)
+            _ = demod.noiseDB
+        }
+    }
+
+    @Test("Meshtastic: jede Portnummer direkt über den Protobuf-Dekoder, Texte abgerufen")
+    func meshtasticPortnums() {
+        var rng = Self.rng(51)
+        let ports = [1, 3, 4, 5, 8, 10, 34, 66, 67, 70, 71, 0, 2, 6, 7, 32, 64, 65, 68, 69, 72, 73, 256, -1, Int.max]
+        for n in 0..<Self.runs(20_000) {
+            let payload = n % 4 == 0 ? [UInt8(rng.int(1...15) << 3 | rng.int(0...5))] + rng.bytes(upTo: 40) : rng.bytes(upTo: 48)
+            let content = MeshtasticContent(portnum: n % 5 == 0 ? Int(truncatingIfNeeded: rng.next()) : ports[rng.int(0...(ports.count - 1))], payload: payload)
+            _ = content.summary
+            _ = (MeshtasticWaypoint(payload), MeshtasticNeighborInfo(payload), MeshtasticRoute(payload), MeshtasticTelemetry(payload))
+            _ = MeshtasticContent.routingError(rng.int(-1...300))
+        }
+    }
+
+    @Test("BLE: Dienstdaten, Herstellerdaten, SwitchBot und BTHome direkt mit Zufallsbytes")
+    func bleInterpreter() {
+        var rng = Self.rng(52)
+        let services: [UInt16] = [0xFCD2, 0x181A, 0xFEAA, 0xFE95, 0xFD3D, 0xFD6F, 0x181C]
+        let companies: [UInt16] = [0x004C, 0x0499, 0xEC88, 0x0969, 0x038F, 0x0059, 0x0822]
+        let appleTypes: [UInt8] = [0x02, 0x07, 0x12, 0x10, 0x0C, 0x05, 0x09, 0x0F]
+        for n in 0..<Self.runs(20_000) {
+            let data = rng.bytes(upTo: 40)
+            let service = n % 7 == 0 ? UInt16(truncatingIfNeeded: rng.next()) : services[rng.int(0...(services.count - 1))]
+            let company = n % 7 == 0 ? UInt16(truncatingIfNeeded: rng.next()) : companies[rng.int(0...(companies.count - 1))]
+            var manufacturerData = data
+            if company == 0x004C, !manufacturerData.isEmpty, rng.chance(0.7) { manufacturerData[0] = appleTypes[rng.int(0...(appleTypes.count - 1))] }
+            for result in [BLEInterpreter.serviceData(service, data), BLEInterpreter.manufacturer(company, manufacturerData),
+                           BLEInterpreter.switchBot(data), BLEInterpreter.bthome(data)].compactMap({ $0 }) {
+                _ = (result.kind, result.readings.map { "\($0.label)=\($0.value)" })
+            }
+        }
+    }
+
+    @Test("Wetter im ACARS-Text: Zufallstext aus dem METAR-Alphabet erreicht METAR- und TAF-Deutung")
+    func acarsWeather() {
+        var rng = Self.rng(53)
+        let alphabet = Array("ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 /=GKTMPSQAVRBCNOZ-+.")
+        let groups = ["METAR", "SPECI", "TAF", "AMD", "COR", "EDDH", "KJFK", "041320Z", "0412/0518", "25012G25KT", "VRB03KT", "00000MPS",
+                      "9999", "0500", "CAVOK", "FEW030", "BKN045CB", "OVC000", "VV001", "M02/M05", "08/M01", "99/99", "Q1013", "Q0000",
+                      "A3012", "A9999", "NOSIG", "TEMPO", "=", "\n", "999999Z", "RMK"]
+        for n in 0..<Self.runs(6000) {
+            var text = ""
+            for _ in 0..<rng.int(0...18) {
+                text += rng.chance(0.6) ? groups[rng.int(0...(groups.count - 1))] : String((0..<rng.int(0...8)).map { _ in alphabet[rng.int(0...(alphabet.count - 1))] })
+                text += rng.chance(0.9) ? " " : ""
+            }
+            if let report = ACARSWeather.metar(in: text) { _ = (report.summary, report.rows.map { "\($0.name)=\($0.value)" }) }
+            _ = ACARSWeather.taf(in: text)
+            let message = ACARSMessage(mode: "2", registration: "D-ABCD", acknowledge: "!", label: ["51", "52", "30", "54", "H1"][n % 5],
+                                       blockID: "3", text: text, continued: false)
+            let interpretation = ACARSInterpreter.interpret(message)
+            _ = (interpretation.summary, interpretation.rows.map(\.value), message.relevance)
         }
     }
 }

@@ -258,6 +258,30 @@ struct SondeTests {
         #expect(try #require(DFMDecoder.decodeBlock(bits, words: 13)) == data)
     }
 
+    @Test("DFM-09: Temperatur und Batterie aus den Messkanälen (dfm09mod: get_Temp, conf_out)")
+    func dfmTemperature() throws {
+        typealias S = SondeSignal
+        let serial = 123_456
+        // Messkanal: Kennung + 24 Bit (fl24 mit Exponent 0 = Ganzzahl).
+        func channel(_ id: Int, _ value: Int) -> [UInt8] { S.nibbles(id, bits: 4) + S.nibbles(value, bits: 24) }
+        let neutral = S.dat(5, 0, 0)
+        // 25 °C: R = (f − f1) / (f2 / Rf) = 5 kΩ bei Rf = 220 kΩ (DFM-09, Kanal 0xA).
+        let values = [0: 15_000, 1: 1, 2: 1, 3: 10_000, 4: 220_000, 5: 3300 << 4, 6: 230_000, 7: 1, 8: 1]
+        var frames: [[UInt8]] = [S.dfmFrame(conf: S.conf(half: 0, value: serial >> 16), dat1: neutral, dat2: neutral),
+                                 S.dfmFrame(conf: S.conf(half: 1, value: serial & 0xFFFF), dat1: neutral, dat2: neutral)]
+        frames += (0...8).map { S.dfmFrame(conf: channel($0, values[$0]!), dat1: neutral, dat2: neutral) }
+        frames += [S.dfmFrame(conf: S.conf(half: 0, value: serial >> 16),
+                              dat1: S.nibbles(0, bits: 16) + S.nibbles(2, bits: 8) + S.nibbles(7, bits: 8) + [UInt8](repeating: 0, count: 16) + S.nibbles(0, bits: 4),
+                              dat2: S.dat(1, 0, 12_000)),
+                   S.dfmFrame(conf: S.conf(half: 1, value: serial & 0xFFFF), dat1: S.dat(2, Int(51.5 * 1e7), 850), dat2: S.dat(3, Int(7.25 * 1e7), 27_000)),
+                   S.dfmFrame(conf: S.conf(half: 0, value: serial >> 16), dat1: S.dat(4, 432_100, 520), dat2: neutral)]
+        let report = try #require(DFMDecoder().process(chips: frames.flatMap { $0 }).last)
+        #expect(report.model == "DFM-09")
+        #expect(abs((report.temperature ?? 0) - 25) < 0.05)
+        #expect(report.batteryVolts == 3.3)
+        #expect(DFMDecoder.fl24(0x312_345) == Double(0x12_345) / 8)
+    }
+
     @Test("DFM-Folge liefert Seriennummer und Position")
     func dfmFrames() throws {
         var rng = SondeSignal.Random(state: 5)

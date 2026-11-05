@@ -44,6 +44,8 @@ enum RemoteRadioAPI {
         let rdsName: String?
         let rdsText: String?
         let programType: String?
+        /// RadioText+: „Interpret – Titel“, sofern der Sender es markiert.
+        let nowPlaying: String?
         let stereo: Bool
         let localMuted: Bool
         let favorites: [Favorite]
@@ -235,6 +237,7 @@ enum RemoteRadioAPI {
                     ?? (live ? text(model.rds.programServiceText) : nil),
             rdsText: live ? text(model.rds.radioTextString) : nil,
             programType: live ? model.rds.programTypeName : nil,
+            nowPlaying: live ? RadioTextPlus.nowPlaying(model.rds.radioTextPlus) : nil,
             stereo: live && model.stereo && model.pilotLocked,
             localMuted: model.localMuted,
             favorites: favorites.prefix(300).map { entry in

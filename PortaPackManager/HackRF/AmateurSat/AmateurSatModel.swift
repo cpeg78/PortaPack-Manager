@@ -16,6 +16,8 @@ struct AmateurFrame: Identifiable, Sendable {
     let text: String?
     let hex: String
     let bytes: Int
+    /// APRS-Inhalt (ISS-Digipeater, NO-44 …), wenn der Rahmen APRS trägt.
+    let aprs: APRSPacket?
 
     /// Liest Adressen, Pfad und Nutzdaten; Rahmen, die kein AX.25-UI-Rahmen
     /// sind, erscheinen nur als Hex.
@@ -30,13 +32,28 @@ struct AmateurFrame: Identifiable, Sendable {
             path = frame.path
             text = Self.printable(frame.info)
             hex = Self.hex(frame.info)
+            let packet = APRSPacket.parse(frame)
+            aprs = packet.kind == .other ? nil : packet
         } else {
             source = "–"
             destination = "–"
             path = ""
             text = nil
             hex = Self.hex(bytes)
+            aprs = nil
         }
+    }
+
+    /// Kurzfassung des APRS-Inhalts: Art, Position bzw. Objekt, Kommentar.
+    var aprsSummary: String? {
+        guard let aprs else { return nil }
+        var parts = [aprs.kind.title]
+        if let name = aprs.objectName { parts.append(name) }
+        if let lat = aprs.latitude, let lon = aprs.longitude { parts.append(String(format: "%.4f, %.4f", lat, lon)) }
+        if let weather = aprs.weather { parts.append(weather) }
+        let comment = aprs.comment.trimmingCharacters(in: .whitespaces)
+        if !comment.isEmpty { parts.append(comment) }
+        return parts.joined(separator: " · ")
     }
 
     static func hex(_ bytes: [UInt8]) -> String {

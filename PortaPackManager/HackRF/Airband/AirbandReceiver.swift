@@ -96,6 +96,8 @@ final class AirbandReceiver: @unchecked Sendable {
     var finderActive = false
     /// Nur Sprache zählt als Spruch (Verlauf und Suchlauf), siehe `AirbandVoiceDetector`.
     var speechOnly = true
+    /// Rauschminderung des hörbaren Tons (nicht für Mitschnitt und Abschrift).
+    var noiseReduction = NoiseReduction.off
 
     // Zustand (unter `lock` lesen)
     private(set) var audible: Int?
@@ -117,6 +119,8 @@ final class AirbandReceiver: @unchecked Sendable {
     private var lastAudible: Int?
     private var outputGain: Float = 0
     private var upsampleHistory: [Float] = []
+    /// Rauschminderung je Kanal – jeder Kanal hat sein eigenes Rauschbild.
+    private var denoisers: [Int: SpeechDenoiser] = [:]
     private let upsampleFilter = RadioDemodulator.lowpass(taps: 63, cutoff: 3_800, rate: 48_000)
 
     private struct ChannelAudio {
@@ -151,6 +155,7 @@ final class AirbandReceiver: @unchecked Sendable {
         var recordAudio: Bool
         var finderActive: Bool
         var speechOnly: Bool
+        var noiseReduction: NoiseReduction
         var stateGeneration: Int
         var activityGeneration: Int
     }
@@ -194,6 +199,7 @@ final class AirbandReceiver: @unchecked Sendable {
                 }
             }
             audio = [:]
+            denoisers = [:]
             finderOpen = [:]
             workAudible = nil
             lastAudible = nil
@@ -232,7 +238,7 @@ final class AirbandReceiver: @unchecked Sendable {
         let settings = lock.withLock {
             Settings(window: window, channels: channels, thresholdDB: thresholdDB, volume: volume, remoteTap: remoteTap, localMuted: localMuted, hold: hold,
                      recordAudio: recordAudio || transcribeAudio, finderActive: finderActive, speechOnly: speechOnly,
-                     stateGeneration: stateGeneration, activityGeneration: activityGeneration)
+                     noiseReduction: noiseReduction, stateGeneration: stateGeneration, activityGeneration: activityGeneration)
         }
         let result = work.withLock { () -> BlockResult? in
             // Inzwischen zurückgesetzt (neuer Ausschnitt): Block verwerfen.
@@ -369,7 +375,8 @@ final class AirbandReceiver: @unchecked Sendable {
         workAudible = AirbandSelector.choose(open: candidates, current: workAudible, hold: holdIndex)
         result.audible = workAudible
 
-        writeAudio(frames: out.frames, volume: settings.volume, remoteTap: settings.remoteTap, localMuted: settings.localMuted)
+        writeAudio(frames: out.frames, volume: settings.volume, remoteTap: settings.remoteTap, localMuted: settings.localMuted,
+                   noiseReduction: settings.noiseReduction)
         return result
     }
 
@@ -410,19 +417,33 @@ final class AirbandReceiver: @unchecked Sendable {
         return seconds >= AirbandVoiceDetector.minSeconds && voice.isSpeech
     }
 
+    /// Ton eines Kanals durch dessen Rauschminderung (aus: unverändert, Zustände verworfen).
+    private func denoised(_ block: [Float], channel: Int, _ noiseReduction: NoiseReduction) -> [Float] {
+        guard let floorDB = noiseReduction.floorDB else {
+            denoisers = [:]
+            return block
+        }
+        var denoiser = denoisers[channel] ?? SpeechDenoiser(floorDB: floorDB)
+        denoiser.floor = powf(10, floorDB / 20)
+        let out = denoiser.process(block)
+        denoisers[channel] = denoiser
+        return out
+    }
+
     /// Hörbaren Kanal auf 48 kHz bringen (×3, Tiefpass 3,8 kHz) und ausgeben;
     /// beim Wechsel ein- bzw. ausblenden. Ohne Kanal Stille, damit der
     /// Puffer gleichmäßig läuft.
-    private func writeAudio(frames: Int, volume: Float, remoteTap: (@Sendable ([Float]) -> Void)?, localMuted: Bool) {
+    private func writeAudio(frames: Int, volume: Float, remoteTap: (@Sendable ([Float]) -> Void)?, localMuted: Bool,
+                            noiseReduction: NoiseReduction) {
         guard let output else { return }
         var source: [Float]
         var target: Float = 1
         let audible = workAudible
         if let audible, let block = audio[audible]?.block, !block.isEmpty {
-            source = block
+            source = denoised(block, channel: audible, noiseReduction)
             if audible != lastAudible { outputGain = 0 }
         } else if let last = lastAudible, let block = audio[last]?.block, !block.isEmpty {
-            source = block
+            source = denoised(block, channel: last, noiseReduction)
             target = 0
         } else {
             source = [Float](repeating: 0, count: frames)

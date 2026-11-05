@@ -1,6 +1,7 @@
 import SwiftUI
 
 struct FLARMView: View {
+    @StoredColumns("flarm.1") private var columns: TableColumnCustomization<FLARMDetection>
     @Environment(DeviceSession.self) private var session
     /// Lebt im `ReceiverStore` – überlebt den Seitenwechsel samt laufendem Empfang.
     @Bindable private var model = ReceiverStore.shared.flarm
@@ -19,14 +20,14 @@ struct FLARMView: View {
     }
 
     private var table: some View {
-        Table(model.detections) {
-            TableColumn("Zeit") { Text($0.date, format: .dateTime.hour().minute().second()).monospacedDigit() }.width(64)
+        Table(model.detections, columnCustomization: $columns) {
+            TableColumn("Zeit") { Text($0.date, format: .dateTime.hour().minute().second()).monospacedDigit() }.width(min: 38, ideal: 64).customizationID("zeit")
             TableColumn("Prüfsumme") { d in
                 Image(systemName: d.crcValid ? "checkmark.circle.fill" : "xmark.circle")
                     .foregroundStyle(d.crcValid ? .green : .secondary)
-            }.width(40)
-            TableColumn("Pegel") { Text(String(format: "%.0f dBFS", $0.rssiDB)).monospacedDigit() }.width(70)
-            TableColumn("Rohdaten (verschlüsselt)") { Text($0.hex).font(.caption.monospaced()).lineLimit(1) }
+            }.width(min: 28, ideal: 40).customizationID("prufsumme")
+            TableColumn("Pegel") { Text(String(format: "%.0f dBFS", $0.rssiDB)).monospacedDigit() }.width(min: 42, ideal: 70).customizationID("pegel")
+            TableColumn("Rohdaten (verschlüsselt)") { Text($0.hex).font(.caption.monospaced()).lineLimit(1) }.customizationID("rohdaten-verschlusselt")
         }
         .overlay {
             if model.detections.isEmpty {
@@ -55,8 +56,7 @@ struct FLARMView: View {
                 ReceiverControls(model: model, device: session.hackRF)
             }
             Section(PanelSection.status) {
-                LabeledContent("Rahmen", value: String(localized: "\(model.total) · \(model.crcValidCount) ohne Prüfsummenfehler"))
-                if model.running { LabeledContent("Rauschen", value: String(format: "%.0f dBFS", model.noiseDB)) }
+                FLARMStatusRows(model: model)
             }
             Section(PanelSection.daten) {
                 CSVExportButton(fileName: "flarm", isEmpty: model.detections.isEmpty) { csvDocument() }
@@ -77,5 +77,17 @@ extension FLARMView {
                     rows: model.detections.map { d in
                         [.date(d.date), .flag(d.crcValid), .number(d.rssiDB, digits: 0), .text(d.hex)]
                     })
+    }
+}
+
+/// Zähler und Pegel als eigene Ansicht: sie ändern sich mehrmals je Sekunde,
+/// und im Bedienfeld selbst gelesen zeichneten sie das ganze Formular neu –
+/// das Scrollen ruckelte (Review 05.11.2026).
+private struct FLARMStatusRows: View {
+    let model: FLARMModel
+
+    var body: some View {
+        LabeledContent("Rahmen", value: String(localized: "\(model.total) · \(model.crcValidCount) ohne Prüfsummenfehler"))
+        if model.running { LabeledContent("Rauschen", value: String(format: "%.0f dBFS", model.noiseDB)) }
     }
 }

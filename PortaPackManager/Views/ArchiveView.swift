@@ -5,6 +5,7 @@ import SwiftUI
 /// Archiv der Sichtungen (Flugzeuge oder Schiffe) je Tag: Tabelle, Spur der
 /// Auswahl, CSV-Export.
 struct ArchiveView: View {
+    @StoredColumns("archive.1") private var columns: TableColumnCustomization<ArchiveSighting>
     let archive: TrafficArchive
     let aircraft: Bool
 
@@ -121,39 +122,39 @@ struct ArchiveView: View {
     }
 
     private var table: some View {
-        Table(rows, selection: $selection, sortOrder: $order) {
-            TableColumn(aircraft ? "Rufzeichen" : "Name", sortUsing: ColumnSort("name", text: { $0.name ?? $0.key })) { s in
+        Table(rows, selection: $selection, sortOrder: $order, columnCustomization: $columns) {
+            TableColumn(aircraft ? "Rufzeichen" : "Name", sortUsing: ColumnSort<ArchiveSighting>("name", text: { $0.name ?? $0.key })) { (s: ArchiveSighting) in
                 VStack(alignment: .leading, spacing: 0) {
                     Text(s.name ?? s.key).fontWeight(.medium)
                     Text(aircraft ? "ICAO \(s.key)" : "MMSI \(s.key)").font(.caption).foregroundStyle(.secondary)
                 }
-            }.width(min: 90, ideal: 120)
-            TableColumn(aircraft ? "Kennz." : "Rufz.", sortUsing: ColumnSort("kennzeichen", text: { $0.registration })) { s in Text(s.registration ?? "–") }.width(70)
-            TableColumn("Typ", sortUsing: ColumnSort("typ", text: { $0.type })) { s in Text(s.type ?? "–") }.width(min: 80, ideal: 150)
-            TableColumn(aircraft ? "Strecke" : "Ziel", sortUsing: ColumnSort("strecke", text: { $0.route })) { s in Text(s.route ?? "–") }.width(min: 80, ideal: 170)
-            TableColumn("Zeit", sortUsing: ColumnSort("zeit") { $0.last }) { s in
+            }.width(min: 90, ideal: 120).customizationID("spalte1")
+            TableColumn(aircraft ? "Kennz." : "Rufz.", sortUsing: ColumnSort<ArchiveSighting>("kennzeichen", text: { $0.registration })) { (s: ArchiveSighting) in Text(s.registration ?? "–") }.width(min: 42, ideal: 70).customizationID("spalte2")
+            TableColumn("Typ", sortUsing: ColumnSort<ArchiveSighting>("typ", text: { $0.type })) { (s: ArchiveSighting) in Text(s.type ?? "–") }.width(min: 80, ideal: 150).customizationID("typ")
+            TableColumn(aircraft ? "Strecke" : "Ziel", sortUsing: ColumnSort<ArchiveSighting>("strecke", text: { $0.route })) { (s: ArchiveSighting) in Text(s.route ?? "–") }.width(min: 80, ideal: 170).customizationID("spalte4")
+            TableColumn("Zeit", sortUsing: ColumnSort<ArchiveSighting>("zeit") { $0.last }) { (s: ArchiveSighting) in
                 Text((day == Self.allDays ? s.first.formatted(.dateTime.day().month(.twoDigits)) + " " : "")
                      + s.first.formatted(date: .omitted, time: .shortened) + "–" + s.last.formatted(date: .omitted, time: .shortened))
                     .monospacedDigit()
-            }.width(day == Self.allDays ? 135 : 95)
-            TableColumn(aircraft ? "Max. Höhe" : "Max. Fahrt", sortUsing: ColumnSort("max") { aircraft ? $0.maxAltitudeM.map(Double.init) : $0.maxSpeed }) { s in
+            }.width(day == Self.allDays ? 135 : 95).customizationID("zeit")
+            TableColumn(aircraft ? "Max. Höhe" : "Max. Fahrt", sortUsing: ColumnSort<ArchiveSighting>("max") { aircraft ? $0.maxAltitudeM.map(Double.init) : $0.maxSpeed }) { (s: ArchiveSighting) in
                 Text(aircraft ? (s.maxAltitudeM.map { "\($0) m" } ?? "–") : (s.maxSpeed.map { String(format: "%.1f kn", $0) } ?? "–"))
                     .monospacedDigit()
-            }.width(75)
-            TableColumn("Nächste", sortUsing: ColumnSort("naechste") { $0.minDistanceKm }) { s in Text(s.minDistanceKm.map { String(format: "%.0f km", $0) } ?? "–").monospacedDigit() }.width(60)
-            TableColumn("Gesehen", sortUsing: ColumnSort("gesehen") { Double(seenCounts[$0.key] ?? 1) }) { s in
+            }.width(min: 45, ideal: 75).customizationID("spalte6")
+            TableColumn("Nächste", sortUsing: ColumnSort<ArchiveSighting>("naechste") { $0.minDistanceKm }) { (s: ArchiveSighting) in Text(s.minDistanceKm.map { String(format: "%.0f km", $0) } ?? "–").monospacedDigit() }.width(min: 36, ideal: 60).customizationID("nachste")
+            TableColumn("Gesehen", sortUsing: ColumnSort<ArchiveSighting>("gesehen") { Double(seenCounts[$0.key] ?? 1) }) { (s: ArchiveSighting) in
                 let n = seenCounts[s.key] ?? 1
                 Text(verbatim: "\(n)×").monospacedDigit().foregroundStyle(n > 1 ? .primary : .secondary)
                     .help(day == Self.allDays ? "Sichtungen dieser Kennung über alle Tage" : "Sichtungen dieser Kennung an diesem Tag – eine neue beginnt nach über 30 Minuten Pause")
-            }.width(58)
+            }.width(min: 35, ideal: 58).customizationID("gesehen")
             if aircraft {
-                TableColumn("Anflüge", sortUsing: ColumnSort("anfluege") { Double($0.approaches) }) { s in
+                TableColumn("Anflüge", sortUsing: ColumnSort<ArchiveSighting>("anfluege") { Double($0.approaches) }) { (s: ArchiveSighting) in
                     let n = s.approaches
                     Text(n > 0 ? "\(n)" : "–").monospacedDigit()
                         .help("Wie oft die Maschine in dieser Sichtung in Bodennähe kam und wieder stieg – Platzrunden, Touch-and-go. Aus der Höhe der Spur (seit 29.10.2026 aufgezeichnet).")
-                }.width(55)
+                }.width(min: 33, ideal: 55).customizationID("anfluge")
             }
-            TableColumn("Msg", sortUsing: ColumnSort("msg") { $0.messages }) { s in Text("\(s.messages)").monospacedDigit() }.width(45)
+            TableColumn("Msg", sortUsing: ColumnSort<ArchiveSighting>("msg") { $0.messages }) { (s: ArchiveSighting) in Text("\(s.messages)").monospacedDigit() }.width(min: 28, ideal: 45).customizationID("msg")
         }
     }
 

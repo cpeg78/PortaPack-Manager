@@ -17,6 +17,15 @@ final class DABReceiver: @unchecked Sendable {
         var accessUnitsGood = 0
         var accessUnitsBad = 0
         var dynamicLabel = ""
+        /// DL Plus: markierte Stücke des Lauftexts, nur solange das Stück läuft.
+        var dlPlus: [RadioTextTag] = []
+        /// Diashow: letztes Bild (JPEG/PNG) und seine Laufnummer.
+        var slide: Data?
+        var slideNumber = 0
+        /// Programmführer: laufende und kommende Sendungen des gewählten Dienstes.
+        var programmes: [DABProgramme] = []
+        /// Ob das Ensemble einen Programmführer sendet und er mitgelesen wird.
+        var guideActive = false
         var framesDecoded = 0
         var failedSearches = 0
         var audioErrors = 0
@@ -35,6 +44,9 @@ final class DABReceiver: @unchecked Sendable {
     private let superframe = DABPlusSuperframeDecoder()
     private var audioDecoder: DABAudioDecoder?
     private let pad = DABPADDecoder()
+    /// Programmführer: eigener Unterkanal-Dekoder für die Paketdaten neben dem Ton.
+    private var guideDecoder: DABSubchannelDecoder?
+    private var guide = DABProgrammeGuide()
     private var mp2Buffer: [UInt8] = []
     private var mp2Errors = 0
 
@@ -45,6 +57,8 @@ final class DABReceiver: @unchecked Sendable {
         fic.resetStatistics()
         ensemble = DABEnsemble()
         stopService()
+        guideDecoder = nil
+        guide.reset(address: nil)
     }
 
     /// Wählt einen Dienst (oder `nil` für „nur Ensemble lesen“).
@@ -71,6 +85,17 @@ final class DABReceiver: @unchecked Sendable {
         subchannelDecoder = DABSubchannelDecoder(subchannel: subchannel)
     }
 
+    /// Richtet den Programmführer ein, sobald FIG 0/3 und 0/13 ihn nennen –
+    /// nur bei laufendem Dienst (der Suchlauf liest nur das Ensemble).
+    /// Ändert sich Unterkanal oder Adresse, wird neu begonnen.
+    private func prepareGuide() {
+        guard selectedServiceID != nil, let component = ensemble.programmeGuideComponent,
+              let subchannel = ensemble.subchannels[component.subchannelID] else { return }
+        if let guideDecoder, guideDecoder.subchannel == subchannel, guide.address == component.address { return }
+        guideDecoder = DABSubchannelDecoder(subchannel: subchannel)
+        guide.reset(address: component.address)
+    }
+
     // MARK: - Verarbeitung
 
     /// Verarbeitet einen IQ-Block vom HackRF (8,192 MS/s, int8).
@@ -84,6 +109,10 @@ final class DABReceiver: @unchecked Sendable {
         for frame in ofdm.process(re: re, im: im) {
             for fib in fic.decode(frame.fic) { ensemble.process(fib: fib) }
             prepareService()
+            prepareGuide()
+            if let guideDecoder {
+                for logical in guideDecoder.process(msc: frame.msc) { guide.process(logical) }
+            }
             if let subchannelDecoder, let service = selectedServiceID.flatMap({ ensemble.services[$0] }) {
                 // Unterkanal hat sich geändert (Rekonfiguration) → neu einrichten.
                 if let current = ensemble.subchannel(for: service), current != subchannelDecoder.subchannel {
@@ -209,6 +238,11 @@ final class DABReceiver: @unchecked Sendable {
         status.accessUnitsGood = superframe.accessUnitsGood
         status.accessUnitsBad = superframe.accessUnitsBad
         status.dynamicLabel = pad.dynamicLabel
+        status.dlPlus = pad.itemRunning ? pad.dlPlusTags : []
+        status.slideNumber = pad.slideNumber
+        status.slide = pad.slide.map { Data($0.body) }
+        status.guideActive = guideDecoder != nil
+        status.programmes = selectedServiceID.map { guide.upcoming(for: $0) } ?? []
         status.framesDecoded = ofdm.framesDecoded
         status.failedSearches = ofdm.failedSearches
         status.audioErrors = (audioDecoder?.errors ?? 0) + mp2Errors

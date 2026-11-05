@@ -4,6 +4,8 @@ import simd
 import os
 
 struct ZigbeeView: View {
+    @StoredColumns("zigbee.2") private var columns2: TableColumnCustomization<ZigbeePacket>
+    @StoredColumns("zigbee.1") private var columns: TableColumnCustomization<ZigbeeNode>
     static let log = Logger(subsystem: "de.christiangolz.portapackmanager", category: "Zigbee")
     /// Rohwerte sind in `zigbeeLeftTab` gespeichert – nicht ändern; angezeigt wird `title`.
     enum LeftTab: String, CaseIterable, Identifiable {
@@ -108,39 +110,39 @@ struct ZigbeeView: View {
     private static let byLastSeen = ColumnSort<ZigbeeNode>("zuletzt") { (n: ZigbeeNode) -> Date? in n.lastSeen }
 
     private var nodeTable: some View {
-        Table(model.nodes.sorted(by: nodeOrder), selection: $nodeSelection, sortOrder: $nodeOrder) {
+        Table(model.nodes.sorted(by: nodeOrder), selection: $nodeSelection, sortOrder: $nodeOrder, columnCustomization: $columns) {
             Group {
             TableColumn("Adresse", sortUsing: Self.byAddress) { node in
                 Text(String(format: "0x%04X", node.key.address)).font(.body.monospaced())
-            }.width(70)
+            }.width(min: 42, ideal: 70).customizationID("adresse")
             TableColumn("PAN", sortUsing: Self.byPAN) {
                 Text(String(format: "0x%04X", $0.key.pan)).font(.caption.monospaced())
-            }.width(60)
+            }.width(min: 36, ideal: 60).customizationID("pan")
             TableColumn("Name") { (node: ZigbeeNode) in
                 nameCell(node)
-            }.width(min: 90, ideal: 140)
+            }.width(min: 90, ideal: 140).customizationID("name")
             TableColumn("Typ", sortUsing: Self.byRole) { node in
                 typeCell(node)
-            }.width(min: 90, ideal: 130)
+            }.width(min: 90, ideal: 130).customizationID("typ")
             TableColumn("Versorgung", sortUsing: Self.byPower) { node in
                 powerCell(node)
-            }.width(70)
+            }.width(min: 42, ideal: 70).customizationID("versorgung")
             TableColumn("IEEE") { (node: ZigbeeNode) in
                 Text(node.ieee.map(ZigbeeFormat.ieee) ?? "–").font(.caption.monospaced()).foregroundStyle(.secondary)
-            }.width(min: 120, ideal: 150)
+            }.width(min: 120, ideal: 150).customizationID("ieee")
             }
             Group {
             TableColumn("Pegel", sortUsing: Self.byLevel) { node in
                 levelCell(node)
-            }.width(70)
+            }.width(min: 42, ideal: 70).customizationID("pegel")
             TableColumn("Gesendet", sortUsing: Self.bySent) { node in
                 Text("\(node.heard) / \(node.originated)").monospacedDigit()
                     .help("Selbst gefunkt / ausgelöst (auch über Router weitergeleitet)")
-            }.width(70)
-            TableColumn("Zustand") { (node: ZigbeeNode) in stateCell(node) }
+            }.width(min: 42, ideal: 70).customizationID("gesendet")
+            TableColumn("Zustand") { (node: ZigbeeNode) in stateCell(node) }.customizationID("zustand")
             TableColumn("Gehört", sortUsing: Self.byLastSeen) {
                 Text($0.lastSeen, style: .relative).foregroundStyle(.secondary)
-            }.width(80)
+            }.width(min: 48, ideal: 80).customizationID("gehort")
             }
         }
         .overlay {
@@ -307,22 +309,22 @@ struct ZigbeeView: View {
     }
 
     private func packetTable(_ log: [ZigbeePacket]) -> some View {
-        Table(log, selection: $packetSelection) {
-            TableColumn("Zeit") { Text($0.radio.date, format: .dateTime.hour().minute().second()).monospacedDigit() }.width(64)
-            TableColumn("Kanal") { Text("\($0.radio.channel)").monospacedDigit() }.width(40)
-            TableColumn("Pegel") { Text(String(format: "%.0f", $0.radio.rssiDB)).monospacedDigit() }.width(40)
+        Table(log, selection: $packetSelection, columnCustomization: $columns2) {
+            TableColumn("Zeit") { Text($0.radio.date, format: .dateTime.hour().minute().second()).monospacedDigit() }.width(min: 38, ideal: 64).customizationID("zeit")
+            TableColumn("Kanal") { Text("\($0.radio.channel)").monospacedDigit() }.width(min: 28, ideal: 40).customizationID("kanal")
+            TableColumn("Pegel") { Text(String(format: "%.0f", $0.radio.rssiDB)).monospacedDigit() }.width(min: 28, ideal: 40).customizationID("pegel")
             TableColumn("Von") { packet in
                 addressCell(packet.nwk?.source, mac: packet.mac?.source)
-            }.width(min: 60, ideal: 130)
+            }.width(min: 60, ideal: 130).customizationID("von")
             TableColumn("An") { packet in
                 addressCell(packet.nwk?.destination, mac: packet.mac?.destination)
-            }.width(min: 60, ideal: 130)
+            }.width(min: 60, ideal: 130).customizationID("an")
             TableColumn("Inhalt") { packet in
                 HStack(spacing: 4) {
                     if packet.encrypted { Image(systemName: "lock.fill").foregroundStyle(.secondary) }
                     Text(packet.summary).lineLimit(1)
                 }
-            }
+            }.customizationID("inhalt")
         }
         .contextMenu(forSelectionType: ZigbeePacket.ID.self) { ids in
             if let packet = model.log.first(where: { ids.contains($0.id) }) {
@@ -396,10 +398,7 @@ struct ZigbeeView: View {
                 ReceiverControls(model: model, device: session.hackRF)
             }
             Section(PanelSection.status) {
-                LabeledContent("Rahmen", value: model.frameRate > 0 ? String(format: "%d · %.1f/s", model.frameCount, model.frameRate) : "\(model.frameCount)")
-                LabeledContent("Prüfsummenfehler (FCS)", value: "\(model.crcErrors)")
-                // Leistung der auf ±128 normierten Abtastwerte im Kanal – also dBFS.
-                LabeledContent("Rauschen", value: String(format: "%.0f dBFS", model.noiseDB))
+                ZigbeeStatusRows(model: model)
             }
             Section("Netzwerkschlüssel") {
                 ForEach(model.keys) { entry in
@@ -510,9 +509,7 @@ struct ZigbeeView: View {
             }
             Section(PanelSection.daten) {
                 CSVExportButton(title: "Geräteliste als CSV sichern …", fileName: "zigbee-geraete", isEmpty: model.nodes.isEmpty) { csvDocument() }
-                Button("PCAP sichern …", action: exportPCAP)
-                    .disabled(model.frameCount == 0)
-                    .help("Das Protokoll als 802.15.4 mit FCS – in Wireshark mit hinterlegtem Netzwerkschlüssel entschlüsselt lesbar.")
+                ZigbeePCAPButton(model: model, action: exportPCAP)
             }
             Section(PanelSection.hinweis) {
                 LegalNotice()
@@ -1034,5 +1031,32 @@ extension ZigbeeView {
                                 .number(n.rssiDB, digits: 0), .integer(n.heard), .integer(n.originated), .text(state), .text(n.lastSummary),
                                 .flag(n.thread), .date(n.lastSeen)]
                     })
+    }
+}
+
+/// Zähler und Pegel als eigene Ansicht: sie ändern sich mehrmals je Sekunde,
+/// und im Bedienfeld selbst gelesen zeichneten sie das ganze Formular neu –
+/// das Scrollen ruckelte (Review 05.11.2026).
+private struct ZigbeeStatusRows: View {
+    let model: ZigbeeModel
+
+    var body: some View {
+        LabeledContent("Rahmen", value: model.frameRate > 0 ? String(format: "%d · %.1f/s", model.frameCount, model.frameRate) : "\(model.frameCount)")
+        LabeledContent("Prüfsummenfehler (FCS)", value: "\(model.crcErrors)")
+        // Leistung der auf ±128 normierten Abtastwerte im Kanal – also dBFS.
+        LabeledContent("Rauschen", value: String(format: "%.0f dBFS", model.noiseDB))
+    }
+}
+
+/// Der PCAP-Knopf liest `frameCount` (für „nichts zu sichern“) – als eigene
+/// Ansicht, damit nicht jeder Rahmen das ganze Formular neu zeichnet.
+private struct ZigbeePCAPButton: View {
+    let model: ZigbeeModel
+    let action: @MainActor () -> Void
+
+    var body: some View {
+        Button("PCAP sichern …", action: action)
+            .disabled(model.frameCount == 0)
+            .help("Das Protokoll als 802.15.4 mit FCS – in Wireshark mit hinterlegtem Netzwerkschlüssel entschlüsselt lesbar.")
     }
 }

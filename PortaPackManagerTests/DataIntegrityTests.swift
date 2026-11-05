@@ -160,9 +160,9 @@ struct DataIntegrityTests {
 
     @Test("EnOcean-Profile: höchstens 200, die ältesten fliegen zuerst")
     func enoceanProfileBook() {
-        var book = EnOceanProfileBook()
+        var book = LearnedProfileBook()
         for i in 0..<250 { book.set("A5-02-05", for: String(format: "%08X", i)) }
-        #expect(book.profiles.count == EnOceanProfileBook.defaultCapacity)
+        #expect(book.profiles.count == LearnedProfileBook.defaultCapacity)
         #expect(book["00000000"] == nil)
         #expect(book[String(format: "%08X", 249)] == "A5-02-05")
         // Erneutes Setzen frischt auf; gleicher Wert ändert nichts.
@@ -175,7 +175,7 @@ struct DataIntegrityTests {
         // Laden: ältere Stände ohne Reihenfolge und zu viele Einträge.
         var many: [String: String] = [:]
         for i in 0..<300 { many[String(format: "%08X", i)] = "A5-02-05" }
-        let loaded = EnOceanProfileBook(profiles: many, order: ["0000012B", "unbekannt"])
+        let loaded = LearnedProfileBook(profiles: many, order: ["0000012B", "unbekannt"])
         #expect(loaded.profiles.count == 200)
         #expect(loaded["0000012B"] == "A5-02-05")
         #expect(loaded.order.count == 200 && Set(loaded.order).count == 200)

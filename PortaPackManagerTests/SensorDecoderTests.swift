@@ -283,6 +283,85 @@ struct SensorSlicerTests {
         #expect(nrz.coding == .pcm)
         #expect(nrz.shortWidth == 100)
     }
+    /// CRC-8 0x31 anhängen (der Rest über alle Bytes wird dann 0).
+    private func withCRC(_ b: [UInt8]) -> [UInt8] { b + [SensorChecksum.crc8(b, polynomial: 0x31, initial: 0)] }
+    private func hexRow(_ bytes: [UInt8], bits: Int) -> SensorBitBuffer {
+        .parse("{\(bits)}" + bytes.map { String(format: "%02x", $0) }.joined())
+    }
+
+    @Test("Fine Offset WH24: Wind, Regen, UV, Licht nach rtl_433 (Bitlage, CRC, Faktoren)")
+    func fineOffsetWH24() throws {
+        // ID 0x42, Wind aus 270° (0x10E: 9. Bit in b[3]), 21,5 °C (615), 64 %, Wind 2,24 m/s (16/8·1,12),
+        // Böe 4,48 m/s (4·1,12), Regen 12 Kippungen = 3,6 mm, UV 1000 → UVI 2, Licht 12345,6 lx.
+        var b: [UInt8] = [0x24, 0x42, 0x0E, 0x80 | 0x02, 0x67, 64, 16, 4, 0x00, 12, 0x03, 0xE8, 0x01, 0xE2, 0x40]
+        b = withCRC(b)
+        b.append(b.reduce(0, &+))
+        // 48 Bit Präambel + 136 Nutzbits + 7 Rest = 191: WH24 heißt „Rest < 8 Bit“ (rtl_433).
+        let reading = try #require(SensorDecoders.fineOffsetWH24(hexRow([0xAA, 0xAA, 0xAA, 0xAA, 0x2D, 0xD4] + b + [0x00], bits: 191)))
+        #expect(reading.model == "Fineoffset-WH24" && reading.id == "66")
+        #expect(reading.temperatureC == 21.5 && reading.humidity == 64)
+        #expect(reading.windDirection == 270 && reading.windAverageMS == 2.2 && reading.windGustMS == 4.5)
+        #expect(reading.rainMM == 3.6 && reading.uvIndex == 2 && reading.lightLux == 12_345.6)
+        #expect(reading.batteryOK == true)
+        // Verfälscht → abgelehnt.
+        var broken = b; broken[5] ^= 1
+        #expect(SensorDecoders.fineOffsetWH24(hexRow([0xAA, 0xAA, 0xAA, 0xAA, 0x2D, 0xD4] + broken + [0x00], bits: 196)) == nil)
+    }
+
+    @Test("Fine Offset WH2 und WH5: Länge, CRC, Temperaturkodierung")
+    func fineOffsetWH2() throws {
+        // WH2: Typ 4, ID 0x5A, −3,2 °C (Vorzeichen-Betrag 0x820), 55 %.
+        let wh2 = withCRC([0x45, 0xA8, 0x20, 55])
+        let reading = try #require(SensorDecoders.fineOffsetWH2(hexRow([0xFF] + wh2, bits: 48)))
+        #expect(reading.model == "Fineoffset-WH2" && reading.id == "90")
+        #expect(reading.temperatureC == -3.2 && reading.humidity == 55)
+        // WH5: −40 °C versetzt (615 → 21,5 °C), 47 Bit mit 0xFE davor (7 Bit Präambel).
+        let wh5 = withCRC([0x45, 0xA2, 0x67, 40])
+        let bits = "1111111" + (wh5).map { String($0, radix: 2).leftPad(8) }.joined()
+        var buffer = SensorBitBuffer()
+        for c in bits { buffer.add(c == "1" ? 1 : 0) }
+        let five = try #require(SensorDecoders.fineOffsetWH2(buffer))
+        #expect(five.model == "Fineoffset-WH5" && five.temperatureC == 21.5)
+    }
+
+    /// Oregon-Nachricht aus Nibbles (wie nach `reflect_nibbles`) mit Prüfsumme an Nibble 15.
+    private func oregonMessage(sensor: UInt16, channel: UInt8, house: UInt8, temperature: Double, humidity: Int) -> [UInt8] {
+        let t = Int((abs(temperature) * 10).rounded())
+        var m: [UInt8] = [UInt8(sensor >> 8), UInt8(sensor & 0xFF), channel << 4 | house & 0x0F, house & 0xF0,
+                          UInt8(t % 10) << 4 | UInt8(t / 10 % 10), UInt8(t / 100 % 10) << 4 | (temperature < 0 ? 0x08 : 0),
+                          UInt8(humidity % 10) << 4 | UInt8(humidity / 10), 0, 0, 0]
+        var sum = 0
+        for i in stride(from: 0, to: 14, by: 2) { sum += Int(m[i >> 1] >> 4) + Int(m[i >> 1] & 0x0F) }
+        sum += Int(m[7] >> 4)
+        m[7] = m[7] & 0xF0 | UInt8(sum & 0x0F)
+        m[8] = UInt8(sum & 0xF0)
+        return m
+    }
+
+    @Test("Oregon Scientific v2.1 (THGR122N) und v3 (THGR810): Rahmung, Prüfsumme, BCD-Werte")
+    func oregon() throws {
+        let m = oregonMessage(sensor: 0x1D20, channel: 2, house: 0xA7, temperature: -4.6, humidity: 81)
+        #expect(SensorDecoders.oregonChecksumOK(m, nibbles: 15))
+        // v2.1: Präambel 0xFF 55 55, Sync 55 99, dann jedes Datenbit als Manchester-Paar (76 Datenbits).
+        let air = SensorDecoders.reflectNibbles(m)
+        var buffer = SensorBitBuffer()
+        for byte in [0xFF, 0x55, 0x55, 0x55, 0x99] as [UInt8] { for k in 0..<8 { buffer.add((byte >> (7 - k)) & 1) } }
+        for n in 0..<76 {
+            let bit = (air[n >> 3] >> (7 - UInt8(n & 7))) & 1
+            buffer.add(bit == 1 ? 0 : 1); buffer.add(bit)
+        }
+        buffer.add(1); buffer.add(1)      // Ende: kein gültiges Paar
+        let reading = try #require(SensorDecoders.oregonV21(buffer))
+        #expect(reading.model == "Oregon-THGR122N" && reading.channel == 2 && reading.id == String(0xA7))
+        #expect(reading.temperatureC == -4.6 && reading.humidity == 81 && reading.batteryOK == true)
+        // v3: Präambel …FF FF C, 00 05, dann die gespiegelten Nibbles direkt.
+        let v3 = SensorDecoders.reflectNibbles(oregonMessage(sensor: 0xF824, channel: 1, house: 0x33, temperature: 22.3, humidity: 45))
+        var b3 = SensorBitBuffer()
+        for byte in [0xFF, 0xFF, 0xC0, 0x00, 0x05] + v3 { for k in 0..<8 { b3.add((byte >> (7 - k)) & 1) } }
+        let r3 = try #require(SensorDecoders.oregonV3(b3))
+        #expect(r3.model == "Oregon-THGR810" && r3.temperatureC == 22.3 && r3.humidity == 45)
+    }
+
     @Test("TPMS: CRC-geprüfte Rahmung liefert ID und Rohbytes (eigener Vektor)")
     func tpms() throws {
         // 9-Byte-Rahmen (8 Daten + CRC-8/0x07 init 0x80). ID = erste 4 Byte.
@@ -300,4 +379,32 @@ struct SensorSlicerTests {
         #expect(SensorDecoders.tpms(.parse("{72}" + data.map { String(format: "%02x", $0) }.joined())) == nil)
     }
 
+    @Test("TPMS Toyota/PMV: Druck und Temperatur nur, wenn der invertierte Druck passt")
+    func tpmsToyota() throws {
+        // 32 psi → (32 + 7) · 4 = 156, 20 °C → 60; Byte 7 = Druck invertiert.
+        let pressure = 156, temperature = 60
+        var data: [UInt8] = [0x12, 0x34, 0x56, 0x78, UInt8(pressure >> 1), UInt8((pressure & 1) << 7 | temperature >> 1),
+                             UInt8((temperature & 1) << 7), UInt8(pressure) ^ 0xFF]
+        func frame(_ data: [UInt8]) -> SensorBitBuffer {
+            let bytes = data + [SensorChecksum.crc8(data, polynomial: 0x07, initial: 0x80)]
+            return .parse("{72}" + bytes.map { String(format: "%02x", $0) }.joined())
+        }
+        let reading = try #require(SensorDecoders.tpms(frame(data)))
+        #expect(reading.temperatureC == 20)
+        #expect(reading.extra["Reifendruck"] == "2.21 bar")
+        #expect(reading.extra["Format"] == "Toyota/PMV")
+        let device = SensorDevice(latest: reading, firstSeen: Date(), lastSeen: Date(), count: 1, rssiDB: -40,
+                                  snrDB: 20, offsetKHz: 0, frequencyMHz: 433.92)
+        #expect(MQTTFeeds.values(of: device).contains { $0.key == "tire_pressure" })
+        // Gegenprobe verfälscht: CRC stimmt (neu berechnet), Druckkopie nicht → nur Rohdaten.
+        data[7] ^= 0x01
+        let unchecked = try #require(SensorDecoders.tpms(frame(data)))
+        #expect(unchecked.extra["Reifendruck"] == nil)
+        #expect(unchecked.temperatureC == nil)
+    }
+
+}
+
+private extension String {
+    func leftPad(_ length: Int) -> String { String(repeating: "0", count: max(0, length - count)) + self }
 }

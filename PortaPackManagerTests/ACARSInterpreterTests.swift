@@ -19,6 +19,33 @@ struct ACARSInterpreterTests {
         #expect(lost.summary.contains("Satcom verloren"))
     }
 
+    @Test("Squitter der Bodenstation: Station, Netz, Lage, Frequenz; weitere OOOI-Labels")
+    func squitterAndOOOI() {
+        let i = message(label: "SQ", text: "02XSEDDHAHDL15333N00959E136975V").interpretation
+        #expect(i.summary == "Squitter der Bodenstation")
+        #expect(i.rows.contains { $0.name == "Station" && $0.value == "EDDH" })
+        #expect(i.rows.contains { $0.name == "Netz" && $0.value == "SITA" })
+        #expect(i.rows.contains { $0.name == "Lage der Station" })
+        #expect(i.rows.contains { $0.name == "Frequenz" && $0.value == "136.975 MHz" })
+        // Ohne Lage/Frequenz bleibt es bei der Station.
+        #expect(message(label: "SQ", text: "02XAEGLL").interpretation.rows.count == 2)
+        #expect(message(label: "QK", text: "EDDHEDDF1412").interpretation.summary == "Landemeldung")
+        #expect(message(label: "QS", text: "EDDF1430").interpretation.summary == "Am Gate (IN)")
+    }
+
+    @Test("Wetter: METAR in Felder zerlegt, TAF-Kopf")
+    func weather() {
+        let i = message(label: "51", text: "METAR EDDH 041320Z 25012G25KT 9999 FEW030 BKN045 M02/M05 Q1013=").interpretation
+        #expect(i.summary == "Wetter EDDH: Wind 22 km/h aus 250°, Böen 46 km/h, -2 °C, QNH 1013")
+        #expect(i.rows.contains { $0.name == "Sicht" && $0.value == "über 10 km" })
+        #expect(i.rows.contains { $0.name == "Wolken" && $0.value == "durchbrochen 1372 m" })
+        #expect(i.rows.contains { $0.name == "Temperatur" && $0.value == "-2 °C, Taupunkt -5 °C" })
+        let us = message(label: "51", text: "METAR KJFK 041351Z VRB03KT 10SM CLR 08/M01 A3012").interpretation
+        #expect(us.rows.contains { $0.name == "QNH" && $0.value == "1020 hPa" })
+        let taf = message(label: "52", text: "TAF EDDF 041100Z 0412/0518 24010KT CAVOK").interpretation
+        #expect(taf.summary == "Vorhersage EDDF vom 04. 12 Uhr bis 05. 18 Uhr UTC")
+    }
+
     @Test("FMS-Fortschrittsmeldung: Ziel, Flugnummer, Zeitstempel")
     func fmsProgress() {
         let i = message(label: "H1", text: "#M1BPRG/DTEDDH,15O,71,205301,042/FNMBU7AE/TS204237,261026AEC").interpretation
@@ -103,5 +130,20 @@ struct ACARSInterpreterTests {
         #expect(message(label: "_d", text: "").relevance == 3)
         #expect(message(label: "SA", text: "0EV205802VS").relevance == 1)
         #expect(message(label: "ATN", text: "x").relevance > message(label: "H1", text: "#M1BPRG/DTEDDH").relevance)
+    }
+
+    @Test("Deutung einmal gerechnet und gemerkt; der Zwischenspeicher zählt beim Vergleich nicht (Review 05.11.2026, U1)")
+    func interpretationCache() {
+        var cached = message(label: "15", text: "POS N53.80015 E009.850396 FL350")
+        let fresh = cached
+        cached.interpret()
+        #expect(cached == fresh)
+        #expect(cached.interpretation == fresh.interpretation)
+        #expect(cached.interpretation.latitude != nil && cached.relevance == 0)
+        var reassembler = ACARSReassembler()
+        _ = reassembler.add(message(label: "15", text: "POS N53.80015 ", number: "M12A", continued: true))
+        var merged = reassembler.add(message(label: "15", text: "E009.850396", number: "M12B")).message
+        merged.interpret()
+        #expect(merged.blocks == 2 && merged.interpretation.latitude != nil)
     }
 }

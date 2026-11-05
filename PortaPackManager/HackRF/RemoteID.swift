@@ -113,6 +113,17 @@ enum RemoteID {
     struct SelfID: Sendable, Equatable {
         var descriptionType: UInt8
         var text: String
+
+        /// Art der Beschreibung (ASTM F3411): 0 Text, 1 Notfall, 2 erweiterter Status.
+        var isEmergency: Bool { descriptionType == 1 }
+        var kindName: String? {
+            switch descriptionType {
+            case 0: nil
+            case 1: String(localized: "Notfall")
+            case 2: String(localized: "Erweiterter Status")
+            default: String(localized: "Herstellerangabe \(Int(descriptionType))")
+            }
+        }
     }
 
     struct System: Sendable, Equatable {

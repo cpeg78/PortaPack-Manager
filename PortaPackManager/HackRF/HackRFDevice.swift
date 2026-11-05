@@ -671,9 +671,10 @@ final class HackRFDevice: @unchecked Sendable {
         stateLock.withLock { _flashing.held = true }
     }
 
+    /// Nur `stateLock`: Der Main Actor ruft das aus einem `defer` – `lifecycle`
+    /// hält `close()` bis zu 5 s (Review 28.10., W6), und das Flag liegt ohnehin
+    /// unter `stateLock` (Review 05.11.2026).
     func releaseFlash() {
-        lifecycle.lock()
-        defer { lifecycle.unlock() }
         stateLock.withLock { _flashing.held = false }
     }
 

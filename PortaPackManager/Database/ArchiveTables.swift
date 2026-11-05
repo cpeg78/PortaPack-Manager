@@ -158,8 +158,8 @@ extension SQLiteConnection {
 extension SQLiteConnection {
     private static let insertSample = """
         INSERT OR IGNORE INTO sonde_samples (serial, type, time, frame, frequency, latitude, longitude, altitude,
-            vertical_speed, wind_speed, heading, temperature, humidity, battery, window)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            vertical_speed, wind_speed, heading, temperature, humidity, battery, window, pressure, satellites, ozone_current)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """
 
     /// Fügt Meldungen hinzu; eine Meldung derselben Sonde mit derselben Sekunde
@@ -173,7 +173,7 @@ extension SQLiteConnection {
                 added += try run(Self.insertSample, [
                     row.serial, row.type, Int(s.date.timeIntervalSince1970.rounded(.down)), row.frame, s.frequencyMHz,
                     s.latitude, s.longitude, s.altitude, s.verticalSpeed, s.windSpeed, s.heading, s.temperature,
-                    s.humidity, s.battery, window,
+                    s.humidity, s.battery, window, s.pressure, s.satellites, s.ozoneCurrent,
                 ])
             }
             return added
@@ -189,14 +189,15 @@ extension SQLiteConnection {
     }
 
     private static let sampleColumns =
-        "serial, type, time, frame, frequency, latitude, longitude, altitude, vertical_speed, wind_speed, heading, temperature, humidity, battery"
+        "serial, type, time, frame, frequency, latitude, longitude, altitude, vertical_speed, wind_speed, heading, temperature, humidity, battery, pressure, satellites, ozone_current"
 
     private static func sondeRow(_ s: SQLiteStatement) -> SondeArchive.Row {
         SondeArchive.Row(serial: s.text(0) ?? "", type: s.text(1) ?? "", frame: s.optionalInt(3), sample: SondeSample(
             date: Date(timeIntervalSince1970: s.double(2)), frequencyMHz: s.optionalDouble(4), latitude: s.optionalDouble(5),
             longitude: s.optionalDouble(6), altitude: s.optionalDouble(7), verticalSpeed: s.optionalDouble(8),
             windSpeed: s.optionalDouble(9), heading: s.optionalDouble(10), temperature: s.optionalDouble(11),
-            humidity: s.optionalDouble(12), battery: s.optionalDouble(13)))
+            humidity: s.optionalDouble(12), battery: s.optionalDouble(13), pressure: s.optionalDouble(14),
+            satellites: s.optionalInt(15), ozoneCurrent: s.optionalDouble(16), frame: s.optionalInt(3)))
     }
 
     /// Meldungen, wahlweise einer Sonde und/oder ab einem Zeitpunkt.
@@ -222,9 +223,111 @@ extension SQLiteConnection {
         try run("DELETE FROM sonde_samples WHERE serial = ?", [serial])
     }
 
+    /// Löscht Flüge mit weniger als `minimum` Meldungen, deren letzte Meldung vor
+    /// `endedBefore` liegt – Zufallstreffer am Rand der Reichweite. Laufende
+    /// Flüge (letzte Meldung jünger) bleiben, sie wachsen noch.
+    func deleteShortSondeFlights(minimum: Int, endedBefore: Date) throws -> Int {
+        try run("""
+            DELETE FROM sonde_samples WHERE serial IN (
+                SELECT serial FROM sonde_samples GROUP BY serial
+                HAVING COUNT(*) < ? AND MAX(time) < ?)
+            """, [minimum, Int(endedBefore.timeIntervalSince1970.rounded(.down))])
+    }
+
     /// Zahl der Empfangsfenster (früher: Protokolldateien) mit Meldungen.
     func sondeWindowCount() throws -> Int {
         try scalar("SELECT COUNT(DISTINCT window) FROM sonde_samples") ?? 0
+    }
+}
+
+// MARK: - Volltextsuche
+
+enum FullTextSearch {
+    /// Freitext → FTS5-Abfrage ohne Sonderzeichen: jedes Wort in Anführungszeichen
+    /// (sonst wären „118.005“ oder „-“ Syntaxfehler), das letzte als Präfix.
+    static func query(_ input: String) -> String {
+        let words = input.split(whereSeparator: \.isWhitespace)
+            .map { $0.filter { $0 != "\"" } }
+            .filter { $0.contains { $0.isLetter || $0.isNumber } }
+        guard !words.isEmpty else { return "" }
+        return words.enumerated().map { k, word in
+            "\"\(word)\"" + (k == words.count - 1 ? "*" : "")
+        }.joined(separator: " ")
+    }
+}
+
+// MARK: - Datenfunk (ACARS/VDL2)
+
+extension SQLiteConnection {
+    private static let acarsColumns =
+        "id, time, source, frequency, registration, flight, label, text, mode, block_id, message_number, icao, details, level"
+
+    /// Archivierte Meldung; die Kennung ist negativ (`-rowid`), damit sie nie mit
+    /// den laufend vergebenen Kennungen der Live-Liste zusammenfällt.
+    private static func acarsMessage(_ s: SQLiteStatement) -> ACARSMessage {
+        var m = ACARSMessage(mode: s.text(8)?.first ?? " ", registration: s.text(4) ?? "", acknowledge: " ",
+                             label: s.text(6) ?? "", text: s.text(7) ?? "", continued: false)
+        m.id = -s.int(0)
+        m.date = Date(timeIntervalSince1970: s.double(1))
+        m.frequencyMHz = s.double(3)
+        m.flight = s.text(5).flatMap { $0.isEmpty ? nil : $0 }
+        m.blockID = s.text(9)?.first
+        m.messageNumber = s.text(10)
+        m.icao = s.optionalInt(11).map { UInt32(truncatingIfNeeded: $0) }
+        m.details = s.text(12).flatMap { try? JSONDecoder().decode([[String]].self, from: Data($0.utf8)) } ?? []
+        m.levelDB = s.optionalDouble(13) ?? 0
+        m.interpret()
+        return m
+    }
+
+    /// Fertige Meldungen sichern; über VDL2 Empfangenes (mit ICAO-Adresse) als
+    /// Quelle „VDL2“, sonst „ACARS“.
+    @discardableResult
+    func insertACARS(_ items: [ACARSMessage]) throws -> Int {
+        try transaction {
+            var added = 0
+            for m in items {
+                let details = m.details.isEmpty ? nil
+                    : (try? JSONEncoder().encode(m.details)).flatMap { String(data: $0, encoding: .utf8) }
+                added += try run("""
+                    INSERT OR IGNORE INTO acars_messages
+                        (time, source, frequency, registration, flight, label, text, mode, block_id, message_number, icao, details, level)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """, [m.date.timeIntervalSince1970, m.icao == nil ? "ACARS" : "VDL2", m.frequencyMHz, m.registration,
+                          m.flight ?? "", m.label, m.text, String(m.mode), m.blockID.map(String.init), m.messageNumber,
+                          m.icao.map(Int.init), details, m.levelDB])
+            }
+            return added
+        }
+    }
+
+    func recentACARS(limit: Int) throws -> [ACARSMessage] {
+        try query("SELECT \(Self.acarsColumns) FROM acars_messages ORDER BY time DESC LIMIT ?", [limit], row: Self.acarsMessage)
+    }
+
+    /// Volltext im Meldungstext (FTS5) oder genau Kennzeichen/Flug, neueste zuerst.
+    func searchACARS(_ match: String, identifier: String?, limit: Int) throws -> [ACARSMessage] {
+        let columns = Self.acarsColumns.split(separator: ",").map { "m." + $0.trimmingCharacters(in: .whitespaces) }
+            .joined(separator: ", ")
+        var found = match.isEmpty ? [] : try query("""
+            SELECT \(columns) FROM acars_fts JOIN acars_messages m ON m.id = acars_fts.rowid
+            WHERE acars_fts MATCH ? ORDER BY m.time DESC LIMIT ?
+            """, [match, limit], row: Self.acarsMessage)
+        if let identifier {
+            let known = Set(found.map(\.id))
+            found += try query("""
+                SELECT \(Self.acarsColumns) FROM acars_messages WHERE registration = ? OR flight = ?
+                ORDER BY time DESC LIMIT ?
+                """, [identifier, identifier, limit], row: Self.acarsMessage).filter { !known.contains($0.id) }
+            found.sort { $0.date > $1.date }
+        }
+        return Array(found.prefix(limit))
+    }
+
+    func acarsSummary() throws -> Summary {
+        try query("SELECT COUNT(*), COUNT(DISTINCT registration), MIN(time) FROM acars_messages") {
+            Summary(entries: $0.int(0), distinct: $0.int(1), oldest: $0.optionalDouble(2).map(Date.init(timeIntervalSince1970:)))
+        }.first ?? Summary()
     }
 }
 
@@ -248,7 +351,15 @@ extension SQLiteConnection {
 
     @discardableResult
     func insertTransmissions(_ items: [AirbandTransmission]) throws -> Int {
-        try transaction {
+        // Mitschnitt-Namen mit Verzeichnisanteil (aus Altdateien/Sicherungen) nie
+        // speichern – sie würden zu Pfaden außerhalb des Mitschnitt-Ordners (Review 05.11.2026).
+        let items = items.map { item -> AirbandTransmission in
+            guard let name = item.recording, AirbandLog.safeRecordingName(name) == nil else { return item }
+            var cleaned = item
+            cleaned.recording = nil
+            return cleaned
+        }
+        return try transaction {
             var added = 0
             for t in items {
                 added += try run("""

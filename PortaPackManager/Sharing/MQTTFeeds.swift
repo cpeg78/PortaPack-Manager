@@ -48,6 +48,8 @@ enum MQTTFeeds {
             return number.map { .number("globe_temperature", "Globetemperatur", $0, unit: "°C", deviceClass: "temperature") }
         case "Formaldehyd": return number.map { .number("formaldehyde", "Formaldehyd", $0, unit: "ppb") }
         case "VOC-Stufe": return number.map { .number("voc_level", "VOC-Stufe", $0) }
+        case "Luftdruck": return number.map { .number("pressure", "Luftdruck", $0, unit: "hPa", deviceClass: "atmospheric_pressure") }
+        case "Reifendruck": return number.map { .number("tire_pressure", "Reifendruck", $0, unit: "bar", deviceClass: "pressure") }
         default: return nil
         }
     }
@@ -131,6 +133,9 @@ enum MQTTFeeds {
         }
         if let v = r.temperature { out.append(.number("temperature", "Temperatur", (v * 10).rounded() / 10, unit: "°C", deviceClass: "temperature")) }
         if let v = r.humidity { out.append(.number("humidity", "Luftfeuchte", v.rounded(), unit: "%", deviceClass: "humidity")) }
+        if let v = r.pressure { out.append(.number("pressure", "Luftdruck", (v * 10).rounded() / 10, unit: "hPa", deviceClass: "atmospheric_pressure")) }
+        if let v = r.ozoneCurrent { out.append(.number("ozone_cell_current", "Ozon-Zellstrom", (v * 1000).rounded() / 1000, unit: "µA")) }
+        if let v = r.configuration.activeCountdown { out.append(.number("shutdown_in", "Abschaltung in", Double(v), unit: "s", deviceClass: "duration", diagnostic: true)) }
         if let v = r.verticalSpeed { out.append(.number("vertical_speed", "Steigrate", (v * 10).rounded() / 10, unit: "m/s", deviceClass: "speed")) }
         if let v = r.groundSpeed { out.append(.number("ground_speed", "Geschwindigkeit", (v * 10).rounded() / 10, unit: "m/s", deviceClass: "speed")) }
         if let v = r.heading { out.append(.number("heading", "Kurs", v.rounded(), unit: "°")) }

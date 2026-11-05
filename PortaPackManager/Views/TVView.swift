@@ -185,6 +185,14 @@ struct TVView: View {
                     }
                     .font(.title2.weight(.semibold))
                     Text(subtitle).font(.callout).foregroundStyle(.secondary)
+                    if let service = playingService {
+                        if let now = service.now {
+                            Text("Jetzt: \(now.summary)").font(.callout).help(now.text)
+                        }
+                        if let next = service.next {
+                            Text("Danach: \(next.summary)").font(.callout).foregroundStyle(.secondary).help(next.text)
+                        }
+                    }
                 }
                 HStack {
                     Button {
@@ -243,47 +251,7 @@ struct TVView: View {
                 ReceiverControls(model: model, device: session.hackRF)
             }
             Section(PanelSection.status) {
-                LabeledContent("Zustand") {
-                    Text(model.running ? model.status.stage : "–")
-                        .foregroundStyle(model.status.locked ? .green : .secondary)
-                }
-                LabeledContent("Störabstand") {
-                    Text(model.status.locked ? snrText : "–").monospacedDigit()
-                }
-                LabeledContent("Datenblöcke") {
-                    let total = model.status.blocksGood + model.status.blocksBad
-                    Text(total > 0 ? "\(model.status.blocksGood) von \(total) fehlerfrei" : "–").monospacedDigit()
-                }
-                DisclosureGroup("Technische Details") {
-                    LabeledContent("BCH") {
-                        let s = model.status
-                        Group {
-                            if s.blocksGood + s.blocksBad == 0 {
-                                Text(verbatim: "–")
-                            } else if s.ldpcFalseBlocks > 0 {
-                                Text("\(s.bchCorrectedBits) Bits korrigiert · \(s.bchRescuedBlocks) Blöcke gerettet · \(s.ldpcFalseBlocks) falsche LDPC-Wörter")
-                            } else {
-                                Text("\(s.bchCorrectedBits) Bits korrigiert · \(s.bchRescuedBlocks) Blöcke gerettet")
-                            }
-                        }.monospacedDigit()
-                    }
-                    LabeledContent("TS-Pakete") { Text("\(model.status.packets)").monospacedDigit() }
-                    LabeledContent("Frequenzablage") {
-                        Text(verbatim: model.status.locked ? model.status.frequencyOffsetHz.formatted(.number.precision(.fractionLength(0)).sign(strategy: .always())) + " Hz" : "–").monospacedDigit()
-                    }
-                    LabeledContent("Abtastratenablage") {
-                        // Über ±5 ppm stört die Trägerstauchung – dann die Quarzkorrektur einstellen.
-                        Text(verbatim: model.status.locked ? model.status.sampleRateOffsetPPM.formatted(.number.precision(.fractionLength(2)).sign(strategy: .always())) + " ppm" : "–").monospacedDigit()
-                            .foregroundStyle(abs(model.status.sampleRateOffsetPPM) > 5 ? .orange : .primary)
-                    }
-                    .help("Über ±5 ppm stellst du besser die Quarzkorrektur ein (Einstellungen › Antenne & Gerät).")
-                }
-                if model.statistics.videoFrames > 0 || model.statistics.audioFrames > 0 {
-                    LabeledContent("Bild") {
-                        Text(model.statistics.width > 0 ? "\(model.statistics.width)×\(model.statistics.height) \(model.statistics.codec)" : model.statistics.codec)
-                    }
-                    LabeledContent("Ton", value: model.statistics.audioCodec)
-                }
+                TVStatusRows(model: model)
             }
 
             if model.status.locked, let pre = model.status.pre {
@@ -319,15 +287,6 @@ struct TVView: View {
         .formStyle(.grouped)
     }
 
-    private var snrText: String {
-        let snr = model.status.snr.formatted(.number.precision(.fractionLength(1)))
-        if let plp = model.status.post?.plps.first(where: { $0.id == model.status.plpID }),
-           let required = T2Threshold.requiredSNR(modulation: plp.modulation, codeRate: plp.codeRate) {
-            return String(localized: "\(snr) dB (nötig ≈ \(required.formatted(.number.precision(.fractionLength(0)))) dB)")
-        }
-        return "\(snr) dB"
-    }
-
     private func rateText(_ plp: T2PLP, pre: T2L1Pre) -> String {
         guard let fec = plp.fec, let fft = model.status.fft, let gi = model.status.guardInterval else { return "–" }
         let symbols = Double(fft.p2Symbols + pre.dataSymbols)
@@ -336,10 +295,16 @@ struct TVView: View {
         return (bits / frameSeconds / 1e6).formatted(.number.precision(.fractionLength(1))) + " Mbit/s"
     }
 
+    /// Laufender Dienst samt Programmführer aus dem Live-Strom.
+    private var playingService: TSService? {
+        model.playingServiceID.flatMap { id in model.services.first { $0.id == id } }
+    }
+
     private var subtitle: String {
         var parts = [String(localized: "Kanal \(model.channel.name)"), "\(model.channel.megahertz) MHz"]
-        if let id = model.playingServiceID, let service = model.services.first(where: { $0.id == id }), !service.provider.isEmpty {
-            parts.append(service.provider)
+        if let service = playingService {
+            if let number = service.channelNumber { parts.insert(String(localized: "Programmplatz \(number)"), at: 0) }
+            if !service.provider.isEmpty { parts.append(service.provider) }
         }
         return parts.joined(separator: " · ")
     }
@@ -390,5 +355,65 @@ private struct VideoLayerView: NSViewRepresentable {
             hosted?.frame = bounds
             CATransaction.commit()
         }
+    }
+}
+
+/// Zähler und Pegel als eigene Ansicht: sie ändern sich mehrmals je Sekunde,
+/// und im Bedienfeld selbst gelesen zeichneten sie das ganze Formular neu –
+/// das Scrollen ruckelte (Review 05.11.2026).
+private struct TVStatusRows: View {
+    let model: TVModel
+
+    var body: some View {
+        LabeledContent("Zustand") {
+            Text(model.running ? model.status.stage : "–")
+                .foregroundStyle(model.status.locked ? .green : .secondary)
+        }
+        LabeledContent("Störabstand") {
+            Text(model.status.locked ? snrText : "–").monospacedDigit()
+        }
+        LabeledContent("Datenblöcke") {
+            let total = model.status.blocksGood + model.status.blocksBad
+            Text(total > 0 ? "\(model.status.blocksGood) von \(total) fehlerfrei" : "–").monospacedDigit()
+        }
+        FoldOut("Technische Details") {
+            LabeledContent("BCH") {
+                let s = model.status
+                Group {
+                    if s.blocksGood + s.blocksBad == 0 {
+                        Text(verbatim: "–")
+                    } else if s.ldpcFalseBlocks > 0 {
+                        Text("\(s.bchCorrectedBits) Bits korrigiert · \(s.bchRescuedBlocks) Blöcke gerettet · \(s.ldpcFalseBlocks) falsche LDPC-Wörter")
+                    } else {
+                        Text("\(s.bchCorrectedBits) Bits korrigiert · \(s.bchRescuedBlocks) Blöcke gerettet")
+                    }
+                }.monospacedDigit()
+            }
+            LabeledContent("TS-Pakete") { Text("\(model.status.packets)").monospacedDigit() }
+            LabeledContent("Frequenzablage") {
+                Text(verbatim: model.status.locked ? model.status.frequencyOffsetHz.formatted(.number.precision(.fractionLength(0)).sign(strategy: .always())) + " Hz" : "–").monospacedDigit()
+            }
+            LabeledContent("Abtastratenablage") {
+                // Über ±5 ppm stört die Trägerstauchung – dann die Quarzkorrektur einstellen.
+                Text(verbatim: model.status.locked ? model.status.sampleRateOffsetPPM.formatted(.number.precision(.fractionLength(2)).sign(strategy: .always())) + " ppm" : "–").monospacedDigit()
+                    .foregroundStyle(abs(model.status.sampleRateOffsetPPM) > 5 ? .orange : .primary)
+            }
+            .help("Über ±5 ppm stellst du besser die Quarzkorrektur ein (Einstellungen › Antenne & Gerät).")
+        }
+        if model.statistics.videoFrames > 0 || model.statistics.audioFrames > 0 {
+            LabeledContent("Bild") {
+                Text(model.statistics.width > 0 ? "\(model.statistics.width)×\(model.statistics.height) \(model.statistics.codec)" : model.statistics.codec)
+            }
+            LabeledContent("Ton", value: model.statistics.audioCodec)
+        }
+    }
+
+    private var snrText: String {
+        let snr = model.status.snr.formatted(.number.precision(.fractionLength(1)))
+        if let plp = model.status.post?.plps.first(where: { $0.id == model.status.plpID }),
+           let required = T2Threshold.requiredSNR(modulation: plp.modulation, codeRate: plp.codeRate) {
+            return String(localized: "\(snr) dB (nötig ≈ \(required.formatted(.number.precision(.fractionLength(0)))) dB)")
+        }
+        return "\(snr) dB"
     }
 }

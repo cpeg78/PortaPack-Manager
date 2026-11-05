@@ -12,7 +12,13 @@ struct MeshtasticNode: Identifiable, Sendable {
     var longitude: Double?
     var altitude: Int?
     var positionDate: Date?
-    var telemetry: [String] = []
+    /// Letzte Messwerte je Telemetrieart („Gerät“, „Umwelt“ …) – eine Art
+    /// überschreibt nicht die andere.
+    var telemetryByKind: [String: [String]] = [:]
+    /// Gemeldete Nachbarn mit SNR (NEIGHBORINFO_APP).
+    var neighbors: [MeshtasticNeighborInfo.Neighbor] = []
+    /// Zuletzt gemeldeter Weg (Traceroute) dieses Knotens.
+    var lastRoute: String?
     var snrDB: Double
     var levelDB: Double
     var hops: Int?
@@ -24,6 +30,10 @@ struct MeshtasticNode: Identifiable, Sendable {
     var idString: String { Meshtastic.nodeName(number) }
     var displayName: String { longName ?? shortName ?? idString }
     var hasPosition: Bool { latitude != nil && longitude != nil }
+    /// Alle Messwerte, nach Art sortiert.
+    var telemetry: [String] {
+        telemetryByKind.sorted { $0.key < $1.key }.flatMap { kind, readings in readings.map { "\(kind): \($0)" } }
+    }
 }
 
 /// Eine Zeile im Paketprotokoll.
@@ -76,6 +86,8 @@ final class MeshtasticModel {
     private(set) var running = false
     private(set) var tunedMHz = 0.0
     private(set) var nodes: [MeshtasticNode] = []
+    /// Wegpunkte, neueste zuerst (abgelaufene fallen weg).
+    private(set) var waypoints: [MeshtasticWaypoint] = []
     private(set) var log: [MeshtasticLogLine] = []
     private(set) var frameCount = 0
     private(set) var crcErrors = 0
@@ -104,6 +116,7 @@ final class MeshtasticModel {
         var demod: LoRaDemodulator?
         var channels: [MeshtasticChannel] = []
         var nodes: [UInt32: MeshtasticNode] = [:]
+        var waypoints: [UInt32: (waypoint: MeshtasticWaypoint, date: Date)] = [:]
         var log: [MeshtasticLogLine] = []
         var seen: [UInt64: Date] = [:]
         var count = 0
@@ -173,7 +186,21 @@ final class MeshtasticModel {
                 node.altitude = position.altitude ?? node.altitude
                 node.positionDate = frame.date
             case .telemetry(let telemetry)?:
-                if !telemetry.readings.isEmpty { node.telemetry = telemetry.readings }
+                if !telemetry.readings.isEmpty { node.telemetryByKind[telemetry.kind] = telemetry.readings }
+            case .neighbors(let info)?:
+                node.neighbors = info.neighbors
+            case .traceroute(let route)?:
+                node.lastRoute = MeshtasticRoute.text(route.towards, snr: route.snrTowards,
+                                                      to: Meshtastic.nodeName(packet.header.to))
+            case .waypoint(let waypoint)?:
+                if waypoint.expires.map({ $0 > frame.date }) ?? true {
+                    waypoints[waypoint.id] = (waypoint, frame.date)
+                } else {
+                    waypoints[waypoint.id] = nil   // abgelaufen bzw. gelöscht
+                }
+                if waypoints.count > 500, let oldest = waypoints.min(by: { $0.value.date < $1.value.date })?.key {
+                    waypoints[oldest] = nil
+                }
             default:
                 break
             }
@@ -216,12 +243,15 @@ final class MeshtasticModel {
     }
 
     private func poll() {
-        let (nodes, log, count, undecrypted, stats) = shared.lock.withLock {
-            (Array(shared.nodes.values), shared.log, shared.count, shared.undecrypted,
+        let (nodes, waypoints, log, count, undecrypted, stats) = shared.lock.withLock {
+            (Array(shared.nodes.values), Array(shared.waypoints.values), shared.log, shared.count, shared.undecrypted,
              (shared.crcErrors, shared.headerErrors, shared.noiseDB))
         }
         if count != frameCount {
             self.nodes = nodes.sorted { $0.lastSeen > $1.lastSeen }
+            let now = Date()
+            self.waypoints = waypoints.sorted { $0.date > $1.date }.map(\.waypoint)
+                .filter { $0.expires.map { $0 > now } ?? true }
             self.log = log.reversed()
             frameCount = count
             self.undecrypted = undecrypted
@@ -277,11 +307,13 @@ final class MeshtasticModel {
     func clear() {
         shared.lock.withLock {
             shared.nodes = [:]
+            shared.waypoints = [:]
             shared.log = []
             shared.seen = [:]
             shared.undecrypted = 0
         }
         nodes = []
+        waypoints = []
         log = []
         undecrypted = 0
     }

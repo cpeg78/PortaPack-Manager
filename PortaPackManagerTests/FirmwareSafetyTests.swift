@@ -173,6 +173,17 @@ struct TarEdgeCaseTests {
 
 @Suite("Firmware-Abbild: Plausibilität vor dem Löschen")
 struct FirmwareImageTests {
+    @Test("Board-ID gegen gewählten Gerätetyp: One-Abbild auf Pro wird abgelehnt, Unbekanntes nicht blockiert")
+    func boardMatches() {
+        #expect(FirmwareImage.boardMatches(boardID: 4, type: .hackrf) == true)
+        #expect(FirmwareImage.boardMatches(boardID: 2, type: .hackrf) == true)
+        #expect(FirmwareImage.boardMatches(boardID: 5, type: .hpro) == true)
+        #expect(FirmwareImage.boardMatches(boardID: 5, type: .hackrf) == false)
+        #expect(FirmwareImage.boardMatches(boardID: 4, type: .hpro) == false)
+        #expect(FirmwareImage.boardMatches(boardID: 9, type: .hackrf) == nil)
+        #expect(FirmwareImage.boardMatches(boardID: 4, type: .portarf) == false)
+    }
+
     @Test("Abbild wie Mayhem n_261027 ist plausibel")
     func plausible() throws {
         try FirmwareImage.validate(plausibleImage(), capacity: 0x10_0000)

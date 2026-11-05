@@ -10,6 +10,21 @@ import UniformTypeIdentifiers
 /// alle Kanäle; eine Zeilengruppe besteht aus 14 Paketen je Kanal plus einem
 /// Telemetriepaket (bei drei Kanälen 43 Pakete). Kanäle einer Zeilengruppe
 /// folgen in APID-Reihenfolge.
+/// Bordzeit von METEOR nach UTC: Die Quellen sagen nicht sicher, ob die
+/// Uhr UTC oder Moskauer Zeit (UTC+3) zählt – genommen wird die Deutung, die
+/// zur Empfangszeit passt (ein Überflug dauert ≈ 15 min).
+enum MeteorTime {
+    static func utc(secondOfDay: Double, near reference: Date) -> Date {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: "UTC")!
+        let midnight = calendar.startOfDay(for: reference)
+        let candidates = [0.0, -3 * 3600].flatMap { offset in
+            [-86_400.0, 0, 86_400].map { day in midnight.addingTimeInterval(day + secondOfDay + offset) }
+        }
+        return candidates.min { abs($0.timeIntervalSince(reference)) < abs($1.timeIntervalSince(reference)) } ?? reference
+    }
+}
+
 struct MeteorImageAssembler: Sendable {
     /// MSU-MR-Kanal 1…6 (APID 64…69).
     static let apids = 64...69
@@ -35,6 +50,9 @@ struct MeteorImageAssembler: Sendable {
     static let maxRowGroups = 2000
     /// Größte Schlüsselspanne (Pakete) bei der längsten Periode.
     static let maxKeySpan = maxRowGroups * 43
+
+    /// Bordzeit der ersten und letzten Bildzeile (Sekunde des Tages, Zeitzone offen).
+    private(set) var onboardSpan: ClosedRange<Double>?
 
     var isEmpty: Bool { channels.isEmpty }
     var channelNumbers: [Int] { channels.keys.sorted().map { $0 - 63 } }
@@ -68,6 +86,16 @@ struct MeteorImageAssembler: Sendable {
             period = minimumGap ?? 43
         }
         channel.lastKey = key
+        // Sprünge über eine Stunde sind kaputte Zeitstempel, kein Überflug (≈ 15 min).
+        if (0..<86_400).contains(segment.secondOfDay) {
+            if let span = onboardSpan {
+                if abs(segment.secondOfDay - span.upperBound) < 3600 {
+                    onboardSpan = min(span.lowerBound, segment.secondOfDay)...max(span.upperBound, segment.secondOfDay)
+                }
+            } else {
+                onboardSpan = segment.secondOfDay...segment.secondOfDay
+            }
+        }
         var group = channel.groups[key] ?? [[UInt8]?](repeating: nil, count: MeteorJPEG.segmentsPerLine)
         group[index] = segment.pixels
         channel.groups[key] = group

@@ -334,9 +334,14 @@ actor MayhemDevice {
     func list(_ directory: String) throws -> [SDEntry] {
         let text = try shell.run(pathCommand("ls", directory), timeout: 20)
         let base = directory == "/" ? "" : directory
-        return text.split(whereSeparator: \.isNewline).compactMap { line in
-            let raw = String(line).trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !raw.isEmpty, !raw.hasPrefix("usage"), !raw.hasPrefix("Error") else { return nil }
+        let lines = text.split(whereSeparator: \.isNewline).map { String($0).trimmingCharacters(in: .whitespacesAndNewlines) }
+        // Fehlerantwort des Geräts („usage: …“, „Error …“) als Fehler melden – vorher
+        // verschwanden damit auch Dateien, die so heißen (Review 05.11.2026).
+        if let first = lines.first(where: { !$0.isEmpty }), first.hasPrefix("usage") || first.hasPrefix("Error") {
+            throw MayhemError.commandFailed(command: "ls", response: text)
+        }
+        return lines.compactMap { raw in
+            guard !raw.isEmpty else { return nil }
             if raw.hasSuffix("/") {
                 let name = String(raw.dropLast())
                 return SDEntry(name: name, path: base + "/" + name, isDirectory: true)
@@ -420,6 +425,9 @@ actor MayhemDevice {
     /// Liest eine Datei von der SD-Karte (hexkodiert über `fread`).
     func download(_ path: String, progress: @Sendable (Int, Int) -> Void) throws -> Data {
         let size = try fileSize(path)
+        // CRC vor dem Öffnen holen (der Upload prüft sie schon): eine verfälschte
+        // Hex-Ziffer blieb sonst eine stille falsche Kopie (Review 05.11.2026).
+        let expected = try crc32(path)
         _ = try? shell.run("fclose", timeout: 3)
         try expectOK(pathCommand("fopen", path))
         defer { _ = try? shell.run("fclose", timeout: 3) }
@@ -438,6 +446,8 @@ actor MayhemDevice {
             result.append(bytes)
             progress(result.count, size)
         }
+        let actual = MayhemCRC32.checksum(result)
+        guard actual == expected else { throw MayhemError.checksumMismatch(expected: expected, actual: actual) }
         return result
     }
 

@@ -74,7 +74,7 @@ struct MQTTSharingSection: View {
                     Text("\(bridge.heldBackDevices) neue Geräte zurückgehalten: Höchstens 20 neue Geräte pro Stunde gehen an Home Assistant (Schutz vor erfundenen Funkgeräten). Trag die gewünschten unter „Nur Geräte mit …“ ein, dann kommen sie sofort.")
                         .font(.caption).foregroundStyle(.orange)
                 }
-                DisclosureGroup("Gemeldete Geräte (\(bridge.deviceList.count))", isExpanded: $showDevices) {
+                FoldOut("Gemeldete Geräte (\(bridge.deviceList.count))", isExpanded: $showDevices) {
                     ForEach(bridge.deviceList.prefix(50)) { device in
                         LabeledContent(device.name) {
                             Text(device.source + " · " + device.lastSeen.formatted(date: .omitted, time: .shortened))

@@ -1,6 +1,8 @@
 import SwiftUI
 
 struct LoRaWANView: View {
+    @StoredColumns("lorawan.2") private var columns2: TableColumnCustomization<LoRaWANLogLine>
+    @StoredColumns("lorawan.1") private var columns: TableColumnCustomization<LoRaWANDevice>
     @Environment(DeviceSession.self) private var session
     /// Lebt im `ReceiverStore` – überlebt den Seitenwechsel samt laufendem Empfang.
     @Bindable private var model = ReceiverStore.shared.lorawan
@@ -31,19 +33,23 @@ struct LoRaWANView: View {
     }
 
     private var deviceTable: some View {
-        Table(model.devices, selection: $selection) {
+        Table(model.devices, selection: $selection, columnCustomization: $columns) {
             TableColumn("Adresse") { (d: LoRaWANDevice) in
                 HStack(spacing: 4) {
                     if d.hasKeys { Image(systemName: "key.fill").foregroundStyle(.green).help("Schlüssel hinterlegt") }
                     Text(d.address).font(.body.monospaced())
                 }
-            }.width(min: 90, ideal: 120)
-            TableColumn("Name") { (d: LoRaWANDevice) in Text(d.label ?? "–") }.width(min: 70, ideal: 110)
-            TableColumn("FCnt") { (d: LoRaWANDevice) in Text(d.lastFCnt.map(String.init) ?? "–").monospacedDigit() }.width(55)
-            TableColumn("Rahmen") { (d: LoRaWANDevice) in Text("\(d.frames)").monospacedDigit() }.width(55)
-            TableColumn("SNR") { (d: LoRaWANDevice) in Text(String(format: "%.0f dB", d.snrDB)).monospacedDigit() }.width(55)
-            TableColumn("Letzter Rahmen") { (d: LoRaWANDevice) in Text(d.lastSummary).lineLimit(1).foregroundStyle(.secondary) }
-            TableColumn("Gehört") { (d: LoRaWANDevice) in Text(d.lastSeen, style: .relative).foregroundStyle(.secondary) }.width(70)
+            }.width(min: 90, ideal: 120).customizationID("adresse")
+            TableColumn("Name") { (d: LoRaWANDevice) in Text(d.label ?? "–") }.width(min: 70, ideal: 110).customizationID("name")
+            TableColumn("FCnt") { (d: LoRaWANDevice) in Text(d.lastFCnt.map(String.init) ?? "–").monospacedDigit() }.width(min: 33, ideal: 55).customizationID("fcnt")
+            TableColumn("Rahmen") { (d: LoRaWANDevice) in Text("\(d.frames)").monospacedDigit() }.width(min: 33, ideal: 55).customizationID("rahmen")
+            TableColumn("SNR") { (d: LoRaWANDevice) in Text(String(format: "%.0f dB", d.snrDB)).monospacedDigit() }.width(min: 33, ideal: 55).customizationID("snr")
+            TableColumn("Batterie") { (d: LoRaWANDevice) in
+                Text(d.battery.map { $0 == 0 ? String(localized: "Netzstrom") : $0 == 255 ? "?" : String(format: "%.0f %%", Double($0 - 1) / 253 * 100) } ?? "–")
+                    .monospacedDigit().help(d.margin.map { String(localized: "Linkreserve \($0) dB") } ?? "")
+            }.width(min: 36, ideal: 60).customizationID("batterie")
+            TableColumn("Letzter Rahmen") { (d: LoRaWANDevice) in Text(d.lastSummary).lineLimit(1).foregroundStyle(.secondary) }.customizationID("letzter-rahmen")
+            TableColumn("Gehört") { (d: LoRaWANDevice) in Text(d.lastSeen, style: .relative).foregroundStyle(.secondary) }.width(min: 42, ideal: 70).customizationID("gehort")
         }
         .overlay {
             if model.devices.isEmpty {
@@ -55,11 +61,11 @@ struct LoRaWANView: View {
     }
 
     private var logTable: some View {
-        Table(model.log) {
-            TableColumn("Zeit") { Text($0.date, format: .dateTime.hour().minute().second()).monospacedDigit() }.width(64)
-            TableColumn("MHz") { Text(String(format: "%.1f", $0.channelMHz)).monospacedDigit() }.width(50)
-            TableColumn("SF") { Text("\($0.sf)").monospacedDigit() }.width(36)
-            TableColumn("Inhalt") { Text($0.frame.summary).lineLimit(1) }
+        Table(model.log, columnCustomization: $columns2) {
+            TableColumn("Zeit") { Text($0.date, format: .dateTime.hour().minute().second()).monospacedDigit() }.width(min: 38, ideal: 64).customizationID("zeit")
+            TableColumn("MHz") { Text(String(format: "%.1f", $0.channelMHz)).monospacedDigit() }.width(min: 30, ideal: 50).customizationID("mhz")
+            TableColumn("SF") { Text("\($0.sf)").monospacedDigit() }.width(min: 28, ideal: 36).customizationID("sf")
+            TableColumn("Inhalt") { Text($0.frame.summary).lineLimit(1) }.customizationID("inhalt")
         }
     }
 
@@ -92,12 +98,7 @@ struct LoRaWANView: View {
                 ReceiverControls(model: model, device: session.hackRF)
             }
             Section(PanelSection.status) {
-                if model.running {
-                    LabeledContent("Aktueller Kanal", value: String(format: "%.1f MHz", model.channelMHz))
-                    LabeledContent("Rauschen", value: String(format: "%.0f dBFS", model.noiseDB))
-                }
-                LabeledContent("Rahmen", value: "\(model.frameCount)")
-                LabeledContent("Davon entschlüsselt", value: "\(model.decryptedCount)")
+                LoRaWANStatusRows(model: model)
             }
             Section(PanelSection.daten) {
                 CSVExportButton(title: "Geräteliste als CSV sichern …", fileName: "lorawan-geraete", isEmpty: model.devices.isEmpty) { csvDocument() }
@@ -155,5 +156,21 @@ extension LoRaWANView {
                          .text(d.label), .integer(d.lastFCnt.map(Int.init)), .integer(d.frames), .number(d.snrDB), .number(d.rssiDB),
                          .text(d.lastSummary), .flag(d.hasKeys), .date(d.lastSeen)]
                     })
+    }
+}
+
+/// Zähler und Pegel als eigene Ansicht: sie ändern sich mehrmals je Sekunde,
+/// und im Bedienfeld selbst gelesen zeichneten sie das ganze Formular neu –
+/// das Scrollen ruckelte (Review 05.11.2026).
+private struct LoRaWANStatusRows: View {
+    let model: LoRaWANModel
+
+    var body: some View {
+        if model.running {
+            LabeledContent("Aktueller Kanal", value: String(format: "%.1f MHz", model.channelMHz))
+            LabeledContent("Rauschen", value: String(format: "%.0f dBFS", model.noiseDB))
+        }
+        LabeledContent("Rahmen", value: "\(model.frameCount)")
+        LabeledContent("Davon entschlüsselt", value: "\(model.decryptedCount)")
     }
 }

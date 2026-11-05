@@ -45,6 +45,12 @@ enum RemoteWeather {
             let serial: String; let type: String; let frequency: Double
             let altitude: Int?; let verticalSpeed: Double?; let temperature: Double?; let humidity: Double?
             let distanceKm: Double?; let direction: String?; let burst: Bool; let age: Int
+            /// Nur wenn die Sonde sie sendet: Wind (m/s, aus Richtung), Druck (hPa),
+            /// GPS-Satelliten, Abschalt-Countdown (s), Zusatzinstrument (Kennung,
+            /// Zellstrom µA, Pumpe °C).
+            var wind: Double?; var windFrom: String?
+            var pressure: Double?; var sats: Int?; var countdown: Int?
+            var instrument: Int?; var ozone: Double?; var pumpTemp: Double?
         }
         /// Abgeschlossener oder laufender Flug aus dem Archiv.
         struct Flight: Encodable {
@@ -166,7 +172,7 @@ enum RemoteWeather {
             sondeGain: .init(lna: Int(sonde.lnaGain), vga: Int(sonde.vgaGain), auto: sonde.autoBackoff, note: sonde.gainNote,
                              rms: levels.map { ($0.rmsDBFS * 10).rounded() / 10 }, clipped: levels.map(\.clipped)),
             history: planner.history.prefix(30).map { .init(date: ms($0.date), title: $0.title, result: $0.result) },
-            images: images().map { .init(name: $0.name, date: ms($0.date), pass: $0.pass, composite: $0.composite) },
+            images: cachedImages().map { .init(name: $0.name, date: ms($0.date), pass: $0.pass, composite: $0.composite) },
             sondeFiles: flightCache?.windows ?? 0,
             balloons: sonde.sondes.sorted { $0.lastSeen > $1.lastSeen }.map { b in
                 let home = ReceptionPlanner.home
@@ -175,10 +181,15 @@ enum RemoteWeather {
                     km = (GeoMath.distanceKm(lat1: home.latitude, lon1: home.longitude, lat2: lat, lon2: lon) * 10).rounded() / 10
                     dir = GeoMath.compass(GeoMath.bearingDegrees(lat1: home.latitude, lon1: home.longitude, lat2: lat, lon2: lon))
                 }
-                return .init(serial: b.serial, type: b.latest.model, frequency: b.latest.frequency / 1e6,
-                             altitude: b.latest.altitude.map { Int($0) }, verticalSpeed: b.latest.verticalSpeed,
-                             temperature: b.latest.temperature, humidity: b.latest.humidity,
-                             distanceKm: km, direction: dir, burst: b.burst, age: Int(Date().timeIntervalSince(b.lastSeen)))
+                let r = b.latest, instrument = r.instruments.first
+                return .init(serial: b.serial, type: r.configuration.subtype ?? r.model, frequency: r.frequency / 1e6,
+                             altitude: r.altitude.map { Int($0) }, verticalSpeed: r.verticalSpeed,
+                             temperature: r.temperature, humidity: r.humidity,
+                             distanceKm: km, direction: dir, burst: b.burst, age: Int(Date().timeIntervalSince(b.lastSeen)),
+                             wind: r.groundSpeed,
+                             windFrom: r.groundSpeed.flatMap { $0 >= 1 ? r.heading.map { GeoMath.compass(SondeSample.windFrom(heading: $0)) } : nil },
+                             pressure: r.pressure, sats: r.satellites, countdown: r.configuration.activeCountdown,
+                             instrument: instrument?.id, ozone: instrument?.cellCurrent, pumpTemp: instrument?.pumpTemperature)
             },
             flights: cachedFlights())
         return (try? JSONEncoder().encode(plan)) ?? Data("{}".utf8)
@@ -199,9 +210,26 @@ enum RemoteWeather {
         name.hasPrefix("SSTV_") ? SSTVStore.folder : MeteorPNG.folder
     }
 
+    private static var imageCache: (date: Date, images: [(name: String, date: Date, pass: String, composite: String)])?
+    private static var imageLoading = false
+
+    /// `images()` höchstens einmal je Minute, abseits des Main Actors – zwei
+    /// Ordner listen und je PNG `stat` je `/api/plan` hingen sonst an ihm (Review 05.11.2026).
+    private static func cachedImages() -> [(name: String, date: Date, pass: String, composite: String)] {
+        if (imageCache.map { Date().timeIntervalSince($0.date) > 60 } ?? true), !imageLoading {
+            imageLoading = true
+            Task {
+                let list = await Task.detached(priority: .utility) { images() }.value
+                imageCache = (Date(), list)
+                imageLoading = false
+            }
+        }
+        return imageCache?.images ?? []
+    }
+
     /// PNGs beider Bilderordner, neueste zuerst. Namen `METEOR_<datum>_<zeit>_<komposit>.png`
     /// bzw. `SSTV_<datum>_<zeit>_<modus>[_teilweise].png`.
-    static func images(limit: Int = 120) -> [(name: String, date: Date, pass: String, composite: String)] {
+    nonisolated static func images(limit: Int = 120) -> [(name: String, date: Date, pass: String, composite: String)] {
         let names = [MeteorPNG.folder, SSTVStore.folder].flatMap { folder in
             ((try? FileManager.default.contentsOfDirectory(atPath: folder.path)) ?? []).map { (folder, $0) }
         }
@@ -223,6 +251,10 @@ enum RemoteWeather {
     }
 
     private static var thumbnails: [String: Data] = [:]
+    /// Einfügereihenfolge für die Byte-Grenze (älteste zuerst hinaus).
+    private static var thumbnailOrder: [String] = []
+    private static var thumbnailBytes = 0
+    static let thumbnailLimitBytes = 32 * 1024 * 1024
 
     /// Ein Bild aus dem Bilderordner; mit `w` als verkleinertes JPEG. Lesen und
     /// Verkleinern laufen in einer abgelösten Aufgabe wie bei `/occupancy.png` –
@@ -245,8 +277,15 @@ enum RemoteWeather {
         if let cached = thumbnails[key] { return .data(status: 200, contentType: "image/jpeg", body: cached) }
         let data = await Task.detached(priority: .utility) { thumbnail(of: url, size: size) }.value
         guard let data else { return .text(404, notFound) }
-        if thumbnails.count > 300 { thumbnails.removeAll() }
+        // Nach Bytes begrenzen, nicht nach Anzahl: 300 Komposite à 1600 px wären
+        // einige hundert MB (Review 05.11.2026).
         thumbnails[key] = data
+        thumbnailOrder.append(key)
+        thumbnailBytes += data.count
+        while thumbnailBytes > Self.thumbnailLimitBytes, let oldest = thumbnailOrder.first {
+            thumbnailOrder.removeFirst()
+            thumbnailBytes -= thumbnails.removeValue(forKey: oldest)?.count ?? 0
+        }
         return .data(status: 200, contentType: "image/jpeg", body: data)
     }
 

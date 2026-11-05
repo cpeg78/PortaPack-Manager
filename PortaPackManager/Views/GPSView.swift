@@ -2,6 +2,7 @@ import CoreLocation
 import SwiftUI
 
 struct GPSView: View {
+    @StoredColumns("gps.1") private var columns: TableColumnCustomization<GPSChannelStatus>
     @AppStorage("homeLat") private var homeLat = 0.0
     @AppStorage("homeLon") private var homeLon = 0.0
     @Environment(DeviceSession.self) private var session
@@ -76,28 +77,28 @@ struct GPSView: View {
     // MARK: Satelliten
 
     private var table: some View {
-        Table(model.status.channels) {
+        Table(model.status.channels, columnCustomization: $columns) {
             TableColumn("PRN") { ch in
                 HStack {
                     Circle().fill(color(ch)).frame(width: 9, height: 9)
                     Text("\(ch.prn)").monospacedDigit()
                 }
-            }.width(60)
+            }.width(min: 36, ideal: 60).customizationID("prn")
             TableColumn("Zustand") { ch in
                 HStack(spacing: 4) {
                     Text(ch.state.title).foregroundStyle(ch.locked ? .primary : .secondary)
                     if ch.longIntegration {
-                        Text("schwach").font(.caption2).foregroundStyle(.orange)
+                        Text(String(localized: "gps.weak", defaultValue: "schwach")).font(.caption2).foregroundStyle(.orange)
                             .help("Schwaches Signal: Die App integriert über ein ganzes Datenbit (20 ms) und regelt mit schmaler Bandbreite nach.")
                     }
                 }
-            }.width(min: 90, ideal: 120)
+            }.width(min: 90, ideal: 120).customizationID("zustand")
             TableColumn("C/N₀") { ch in
                 Text(ch.cn0 > 0 ? "\((ch.cn0).formatted(.number.precision(.fractionLength(0)))) dB-Hz" : "–").monospacedDigit()
-            }.width(80)
+            }.width(min: 48, ideal: 80).customizationID("c-n0")
             TableColumn("Doppler") { ch in
                 Text(verbatim: "\((ch.dopplerHz).formatted(.number.precision(.fractionLength(0)).sign(strategy: .always()))) Hz").monospacedDigit().foregroundStyle(.secondary)
-            }.width(80)
+            }.width(min: 48, ideal: 80).customizationID("doppler")
             TableColumn("Bahndaten") { ch in
                 HStack(spacing: 3) {
                     ForEach(1...3, id: \.self) { id in
@@ -107,15 +108,15 @@ struct GPSView: View {
                                         in: RoundedRectangle(cornerRadius: 3))
                     }
                 }
-            }.width(70)
+            }.width(min: 42, ideal: 70).customizationID("bahndaten")
             TableColumn("Höhe") { ch in
                 Text(ch.elevation.map { "\(($0).formatted(.number.precision(.fractionLength(0))))°" } ?? "–").monospacedDigit()
                     .foregroundStyle(.secondary)
-            }.width(70)
+            }.width(min: 42, ideal: 70).customizationID("hohe")
             TableColumn("Richtung") { ch in
                 Text(ch.azimuth.map { "\(($0).formatted(.number.precision(.fractionLength(0))))°" } ?? "–").monospacedDigit()
                     .foregroundStyle(.secondary)
-            }.width(60)
+            }.width(min: 36, ideal: 60).customizationID("richtung")
         }
         .overlay {
             if model.status.channels.isEmpty {
@@ -125,15 +126,6 @@ struct GPSView: View {
                         : "Klicke auf „Start“, dann sucht die App GPS-Satelliten und bestimmt deine Position."))
             }
         }
-    }
-
-    /// Wie gerade gesucht wird – in Alltagssprache.
-    private var searchText: String {
-        guard model.weakSearch else { return String(localized: "nur schnelle Suche") }
-        if let visible = model.status.predictedVisible {
-            return String(localized: "gezielt, \(visible) Satelliten über dem Horizont")
-        }
-        return String(localized: "Schwachsignal-Suche über alle Satelliten")
     }
 
     private func color(_ ch: GPSChannelStatus) -> Color {
@@ -171,17 +163,7 @@ struct GPSView: View {
                 }
             }
             Section(PanelSection.status) {
-                LabeledContent("Verfolgte Satelliten", value: "\(model.trackedCount)")
-                LabeledContent("Mit Bahndaten", value: "\(model.status.ephemerisCount)")
-                    .help("Satelliten, deren Bahndaten (Ephemeriden) vollständig angekommen sind.")
-                if model.running {
-                    LabeledContent("Suche", value: searchText)
-                        .help("Mit Almanach oder gespeicherten Bahndaten, Ort und Uhrzeit sagt die App voraus, welche Satelliten am Himmel stehen und mit welchem Doppler – dann sucht sie gezielt und findet schwächere Signale.")
-                }
-                if model.status.hotStart {
-                    Text("Gespeicherte Bahndaten sind noch gültig – die erste Position braucht nur die Uhrzeit der Satelliten (Heißstart).")
-                        .font(.caption).foregroundStyle(.secondary)
-                }
+                GPSStatusRows(model: model)
             }
             if model.running && model.status.solution == nil {
                 coldStart
@@ -240,5 +222,35 @@ struct GPSView: View {
             Text("Jeder Satellit sendet seine Bahndaten nur alle 30 Sekunden. Bis zur ersten Position dauert es deshalb mindestens so lange, bei schwachem Signal länger.")
                 .font(.caption).foregroundStyle(.secondary)
         }
+    }
+}
+
+/// Zähler und Pegel als eigene Ansicht: sie ändern sich mehrmals je Sekunde,
+/// und im Bedienfeld selbst gelesen zeichneten sie das ganze Formular neu –
+/// das Scrollen ruckelte (Review 05.11.2026).
+private struct GPSStatusRows: View {
+    let model: GPSModel
+
+    var body: some View {
+        LabeledContent("Verfolgte Satelliten", value: "\(model.trackedCount)")
+        LabeledContent("Mit Bahndaten", value: "\(model.status.ephemerisCount)")
+            .help("Satelliten, deren Bahndaten (Ephemeriden) vollständig angekommen sind.")
+        if model.running {
+            LabeledContent("Suche", value: searchText)
+                .help("Mit Almanach oder gespeicherten Bahndaten, Ort und Uhrzeit sagt die App voraus, welche Satelliten am Himmel stehen und mit welchem Doppler – dann sucht sie gezielt und findet schwächere Signale.")
+        }
+        if model.status.hotStart {
+            Text("Gespeicherte Bahndaten sind noch gültig – die erste Position braucht nur die Uhrzeit der Satelliten (Heißstart).")
+                .font(.caption).foregroundStyle(.secondary)
+        }
+    }
+
+    /// Wie gerade gesucht wird – in Alltagssprache.
+    private var searchText: String {
+        guard model.weakSearch else { return String(localized: "nur schnelle Suche") }
+        if let visible = model.status.predictedVisible {
+            return String(localized: "gezielt, \(visible) Satelliten über dem Horizont")
+        }
+        return String(localized: "Schwachsignal-Suche über alle Satelliten")
     }
 }

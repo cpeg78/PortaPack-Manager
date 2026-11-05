@@ -148,6 +148,32 @@ struct RDSTests {
         #expect(decoder.info.blocksBad == 0)
     }
 
+    @Test("RadioText+: Anmeldung per 3A, Markierungen in Gruppe 11A → Interpret und Titel")
+    func radioTextPlus() {
+        var decoder = RDSDecoder()
+        let text = Array("Jetzt: Queen - Bohemian Rhapsody".utf8) + [0x0D]
+        // 3A: Anwendung in Gruppe 11A (Typ 11 · 2 + A = 22), Kennung 0x4BD7.
+        let announce = group(pi: pi, type: 3, b: 22, c: 0x0000, d: RDSDecoder.radioTextPlusAID)
+        // 11A: Running, Art 1 = Interpret (4) ab 7, Länge 5; Art 2 = Titel (1) ab 15, Länge 17.
+        let (type1, start1, length1) = (RadioTextPlus.artist, 7, 5)
+        let (type2, start2, length2) = (RadioTextPlus.title, 15, 17)
+        let b = UInt16(0x08) | UInt16(type1 >> 3)
+        let c = UInt16(type1 & 0x07) << 13 | UInt16(start1) << 7 | UInt16(length1 - 1) << 1 | UInt16(type2 >> 5)
+        let d = UInt16(type2 & 0x1F) << 11 | UInt16(start2) << 5 | UInt16(length2 - 1)
+        let tags = group(pi: pi, type: 11, b: b, c: c, d: d)
+        var bits: [UInt8] = []
+        for _ in 0..<2 { for g in radioTextGroups(text, pi: pi) + [announce, tags] { bits += g } }
+        for bit in differential(bits) { decoder.push(bit) }
+        #expect(decoder.info.radioTextString == "Jetzt: Queen - Bohemian Rhapsody")
+        #expect(decoder.info.radioTextPlus == [RadioTextTag(type: RadioTextPlus.artist, text: "Queen"),
+                                               RadioTextTag(type: RadioTextPlus.title, text: "Bohemian Rhapsody")])
+        #expect(RadioTextPlus.nowPlaying(decoder.info.radioTextPlus) == "Queen – Bohemian Rhapsody")
+        // Ohne Anmeldung ist Gruppe 11A keine RadioText+-Gruppe.
+        var plain = RDSDecoder()
+        for bit in differential(radioTextGroups(text, pi: pi).flatMap { $0 } + tags + tags) { plain.push(bit) }
+        #expect(plain.info.radioTextPlusMarkers.isEmpty)
+    }
+
     @Test("Zeichensatz: Umlaute nach IEC 62106")
     func characters() {
         #expect(RDSDecoder.character(0x91) == "ä")

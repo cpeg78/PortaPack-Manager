@@ -1,9 +1,11 @@
 import AppKit
+import CoreLocation
 import SwiftUI
 
 /// Seite „Amateurfunk-Satelliten & ISS“: SSTV-Bilder der ISS (live und als
 /// Galerie) und AX.25-Pakete kleiner Satelliten, mit Doppler-Korrektur.
 struct AmateurSatView: View {
+    @StoredColumns("amateursat.1") private var columns: TableColumnCustomization<AmateurFrame>
     @Environment(DeviceSession.self) private var session
     /// Gehört dem Empfangsplan, damit geplante Überflüge auch ohne offene Seite laufen.
     @Bindable private var model = ReceptionPlanner.shared.amateur
@@ -12,7 +14,11 @@ struct AmateurSatView: View {
     @State private var zoom = false
     @State private var pendingDelete: DeleteConfirmation?
 
-    enum Tab: String { case packets, gallery }
+    @State private var mapController = MapController()
+    @AppStorage("homeLat") private var homeLat = 0.0
+    @AppStorage("homeLon") private var homeLon = 0.0
+
+    enum Tab: String { case packets, map, gallery }
 
     private var hackRFReady: Bool { session.mode == .hackRF && session.hackRF != nil }
 
@@ -102,36 +108,38 @@ struct AmateurSatView: View {
             HStack {
                 Picker("Ansicht", selection: $tab) {
                     Text("Rahmen (\(model.frames.count))").tag(Tab.packets)
+                    Text("Karte (\(aprsStations.count))").tag(Tab.map)
                     Text("Galerie (\(model.gallery.count))").tag(Tab.gallery)
                 }
                 .pickerStyle(.segmented)
                 .labelsHidden()
-                .frame(maxWidth: 320)
+                .frame(maxWidth: 420)
                 Spacer()
             }
             .padding(8)
             Divider()
             switch tab {
             case .packets: packets
+            case .map: aprsMap
             case .gallery: gallery
             }
         }
     }
 
     private var packets: some View {
-        Table(model.frames) {
-            TableColumn("Zeit") { Text($0.date.formatted(date: .omitted, time: .standard)).monospacedDigit() }.width(70)
-            TableColumn("Quelle") { Text($0.source).font(.body.monospaced()) }.width(min: 70, ideal: 90)
-            TableColumn("Ziel") { Text($0.destination).font(.body.monospaced()) }.width(min: 60, ideal: 80)
-            TableColumn("Pfad") { Text($0.path).font(.caption.monospaced()).foregroundStyle(.secondary) }.width(min: 50, ideal: 100)
+        Table(model.frames, columnCustomization: $columns) {
+            TableColumn("Zeit") { Text($0.date.formatted(date: .omitted, time: .standard)).monospacedDigit() }.width(min: 42, ideal: 70).customizationID("zeit")
+            TableColumn("Quelle") { Text($0.source).font(.body.monospaced()) }.width(min: 70, ideal: 90).customizationID("quelle")
+            TableColumn("Ziel") { Text($0.destination).font(.body.monospaced()) }.width(min: 60, ideal: 80).customizationID("ziel")
+            TableColumn("Pfad") { Text($0.path).font(.caption.monospaced()).foregroundStyle(.secondary) }.width(min: 50, ideal: 100).customizationID("pfad")
             TableColumn("Inhalt") { frame in
-                Text(frame.text ?? frame.hex)
+                Text(frame.aprsSummary ?? frame.text ?? frame.hex)
                     .font(frame.text == nil ? .caption.monospaced() : .body)
                     .lineLimit(2)
                     .textSelection(.enabled)
                     .help(frame.hex)
-            }
-            TableColumn("Kanal") { Text($0.channel).font(.caption).foregroundStyle(.secondary) }.width(min: 80, ideal: 140)
+            }.customizationID("inhalt")
+            TableColumn("Kanal") { Text($0.channel).font(.caption).foregroundStyle(.secondary) }.width(min: 80, ideal: 140).customizationID("kanal")
         }
         .contextMenu(forSelectionType: AmateurFrame.ID.self) { ids in
             if let frame = model.frames.first(where: { ids.contains($0.id) }) {
@@ -151,6 +159,38 @@ struct AmateurSatView: View {
                                        description: Text("Empfangene Datenpakete (AX.25) erscheinen hier mit Rufzeichen und Inhalt."))
             }
         }
+    }
+
+    /// Je Station (bzw. Objekt) die jüngste APRS-Position über einen Satelliten.
+    private var aprsStations: [(id: String, frame: AmateurFrame, packet: APRSPacket)] {
+        var latest: [String: (frame: AmateurFrame, packet: APRSPacket)] = [:]
+        for frame in model.frames {   // neueste zuerst
+            guard let packet = frame.aprs, packet.latitude != nil, packet.longitude != nil,
+                  latest[packet.stationID] == nil else { continue }
+            latest[packet.stationID] = (frame, packet)
+        }
+        return latest.map { ($0.key, $0.value.frame, $0.value.packet) }.sorted { $0.id < $1.id }
+    }
+
+    /// Stationen, die über ISS oder NO-44 gemeldet wurden – oft weit außerhalb
+    /// der eigenen Funkreichweite.
+    private var aprsMap: some View {
+        let home = (homeLat == 0 && homeLon == 0) ? nil : CLLocationCoordinate2D(latitude: homeLat, longitude: homeLon)
+        var features: [MapFeature] = home.map { [.home($0)] } ?? []
+        for station in aprsStations {
+            guard let lat = station.packet.latitude, let lon = station.packet.longitude else { continue }
+            features.append(.marker("sat:\(station.id)", at: CLLocationCoordinate2D(latitude: lat, longitude: lon),
+                                    symbol: MapSymbol(sfSymbol: station.packet.systemImage), color: MapColor.accent,
+                                    size: 18, label: station.id))
+        }
+        return LeafletMap(features: features, controller: mapController,
+                          options: MapOptions(center: home.map(MapPoint.init) ?? MapPoint(51, 10), zoom: 3))
+            .overlay {
+                if aprsStations.isEmpty {
+                    ContentUnavailableView("Keine APRS-Positionen", systemImage: "map",
+                                           description: Text("Positionen, die Funkamateure über die ISS oder andere APRS-Satelliten senden, erscheinen hier."))
+                }
+            }
     }
 
     private var gallery: some View {
@@ -231,24 +271,7 @@ struct AmateurSatView: View {
                 ReceiverControls(model: model, device: session.hackRF)
             }
             Section(PanelSection.status) {
-                if let g = model.geometry {
-                    LabeledContent("Position", value: String(localized: "\(g.elevation.formatted(.number.precision(.fractionLength(0))))° hoch · \(GeoMath.compass(g.azimuth)) · \(g.rangeKm.formatted(.number.precision(.fractionLength(0)))) km"))
-                    if let hz = model.dopplerHz {
-                        LabeledContent("Doppler", value: (hz / 1000).formatted(.number.precision(.fractionLength(1)).sign(strategy: .always())) + " kHz")
-                    }
-                    if g.elevation < 0 {
-                        Text("Der Satellit steht gerade unter dem Horizont.").font(.caption).foregroundStyle(.secondary)
-                    }
-                } else {
-                    Text(ReceptionPlanner.home == nil
-                         ? "Für die Doppler-Korrektur fehlt dein Standort (Einstellungen)."
-                         : "Bahndaten werden geladen …").font(.caption).foregroundStyle(.secondary)
-                }
-                LabeledContent("Rahmen", value: "\(model.frameCount)")
-                LabeledContent("SSTV-Bilder", value: "\(model.imageCount)")
-                if !model.levels.isEmpty {
-                    LabeledContent("Kanalpegel", value: model.levels.map { "\(($0).formatted(.number.precision(.fractionLength(0))))" }.joined(separator: " / ") + " dBFS")
-                }
+                AmateurSatStatusRows(model: model)
             }
             Section("Überflüge") {
                 let passes = planner.amateurPasses.filter { $0.satellite.id == model.satellite.id }
@@ -320,7 +343,7 @@ private struct CustomSatelliteSection: View {
 
     var body: some View {
         Section {
-            DisclosureGroup("Eigener Satellit", isExpanded: $expanded) {
+            FoldOut("Eigener Satellit", isExpanded: $expanded) {
                 TextField("NORAD-Nummer", text: $norad)
                 TextField("Frequenz (MHz)", text: $mhz)
                 Picker("Betriebsart", selection: $mode) {
@@ -384,6 +407,34 @@ private struct GalleryTile: View {
             let url = url
             let data = await Task.detached { try? Data(contentsOf: url) }.value
             image = data.flatMap(NSImage.init(data:))
+        }
+    }
+}
+
+/// Zähler und Pegel als eigene Ansicht: sie ändern sich mehrmals je Sekunde,
+/// und im Bedienfeld selbst gelesen zeichneten sie das ganze Formular neu –
+/// das Scrollen ruckelte (Review 05.11.2026).
+private struct AmateurSatStatusRows: View {
+    let model: AmateurSatModel
+
+    var body: some View {
+        if let g = model.geometry {
+            LabeledContent("Position", value: String(localized: "\(g.elevation.formatted(.number.precision(.fractionLength(0))))° hoch · \(GeoMath.compass(g.azimuth)) · \(g.rangeKm.formatted(.number.precision(.fractionLength(0)))) km"))
+            if let hz = model.dopplerHz {
+                LabeledContent("Doppler", value: (hz / 1000).formatted(.number.precision(.fractionLength(1)).sign(strategy: .always())) + " kHz")
+            }
+            if g.elevation < 0 {
+                Text("Der Satellit steht gerade unter dem Horizont.").font(.caption).foregroundStyle(.secondary)
+            }
+        } else {
+            Text(ReceptionPlanner.home == nil
+                 ? "Für die Doppler-Korrektur fehlt dein Standort (Einstellungen)."
+                 : "Bahndaten werden geladen …").font(.caption).foregroundStyle(.secondary)
+        }
+        LabeledContent("Rahmen", value: "\(model.frameCount)")
+        LabeledContent("SSTV-Bilder", value: "\(model.imageCount)")
+        if !model.levels.isEmpty {
+            LabeledContent("Kanalpegel", value: model.levels.map { "\(($0).formatted(.number.precision(.fractionLength(0))))" }.joined(separator: " / ") + " dBFS")
         }
     }
 }

@@ -391,8 +391,17 @@ final class ReceiverStore {
         return ReceiverConflict.classify(
             requester: requester,
             occupant: Self.occupant(of: device),
-            plan: ReceptionPlanner.shared.active.map { ($0.title, Self.planModel(of: $0)) },
+            plan: Self.planConflict(ReceptionPlanner.shared),
             remote: hub.remoteMode.map { ($0, hub.existingOwner(for: $0)) })
+    }
+
+    /// Laufender Termin – oder ein Sondenfenster in der Horchpause, das gleich
+    /// wiederkommt (Review 05.11.2026).
+    static func planConflict(_ planner: ReceptionPlanner) -> (title: String, model: AnyObject)? {
+        if let job = planner.active { return (job.title, planModel(of: job)) }
+        guard let job = planner.probePausedJob, let pause = planner.sondeProbePause else { return nil }
+        let time = pause.until.formatted(date: .omitted, time: .shortened)
+        return (String(localized: "\(job.title) (horcht um \(time) wieder)"), planModel(of: job))
     }
 
     /// Start durch den Nutzer: Was der Plan nach einem Termin zurückholen wollte,

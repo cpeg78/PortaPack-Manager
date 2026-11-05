@@ -191,7 +191,19 @@ final class TrafficArchive {
         }
         guard !changed.isEmpty else { return }
         let kind = kind
-        database.write("Sichtungen sichern") { try $0.upsertSightings(changed, kind: kind) }
+        // Scheitert das Schreiben (Platte voll), bleiben die Sichtungen im Speicher
+        // und kommen mit dem nächsten Lauf – begrenzt, damit nichts unbegrenzt wächst
+        // (Review 05.11.2026).
+        database.write("Sichtungen sichern", onFailure: { [weak self] in
+            Task { @MainActor in self?.retain(changed) }
+        }) { try $0.upsertSightings(changed, kind: kind) }
+    }
+
+    private static let retainLimit = 2000
+
+    private func retain(_ sightings: [(sighting: ArchiveSighting, day: String)]) {
+        guard finished.count + sightings.count <= Self.retainLimit else { return }
+        finished.append(contentsOf: sightings)
     }
 
     /// Wartet, bis alle angestoßenen Schreibläufe in der Datenbank sind.

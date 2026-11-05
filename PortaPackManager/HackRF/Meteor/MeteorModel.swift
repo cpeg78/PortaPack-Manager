@@ -22,6 +22,8 @@ final class MeteorModel {
     private(set) var image: CGImage?
     private(set) var channels: [Int] = []
     private(set) var savedFiles: [URL] = []
+    /// Bezug für die Bordzeit: Beginn des Empfangs bzw. der abgespielten Aufnahme.
+    private(set) var receptionDate = Date()
     private(set) var error: String?
     private(set) var recordings: [IQRecording] = []
     /// Beim nächsten Live-Start die Rohdaten in den Aufnahmeordner schreiben.
@@ -52,6 +54,7 @@ final class MeteorModel {
 
     func start(on device: HackRFDevice) {
         guard !busy else { return }
+        receptionDate = Date()
         do {
             shared.receiver.configure(inputRate: Double(MeteorReceiver.sampleRate),
                                       offset: frequency - Double(MeteorReceiver.centerFrequency), signal: signal)
@@ -139,6 +142,7 @@ final class MeteorModel {
         frequency = target
         shared.receiver.configure(inputRate: Double(rec.sampleRate), offset: target - Double(rec.centerHz), signal: signal)
         shared.receiver.clearImage()
+        receptionDate = rec.date
         playing = true
         progress = 0
         error = nil

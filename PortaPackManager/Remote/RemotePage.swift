@@ -147,6 +147,7 @@ enum RemotePage {
     .tabs .who span { flex:1; min-width:0; color:var(--muted); font-size:14px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
     .tabs .who input { border:0; border-radius:8px; background:var(--line); color:var(--text); padding:7px 12px; font:14px -apple-system, system-ui, sans-serif; cursor:pointer; }
     .viewer #runbar [data-run], .viewer [data-stop], .viewer [data-gain] { display:none !important; }
+    .viewer #wx input, .viewer #wx select, .viewer #skipjob { display:none !important; }
     .status { margin-left:auto; color:var(--muted); font-size:14px; }
     @media (max-width: 560px) {
       /* Kompakt (27.10.2026: Reiter, Statuszeile und Optimieren-Leiste nahmen der Karte zu viel Höhe). */
@@ -691,6 +692,7 @@ enum RemotePage {
       sailboat: '<path d="M11.5 2v14H4z"' + EDGE + '/><path d="M13 5l7 11h-7z"' + EDGE + '/><path d="M2 17.5h20l-2.5 4h-15z"' + EDGE + '/>',
       medical: '<rect x="2" y="5" width="20" height="15" rx="2.5"' + EDGE + '/><path d="M10.5 8.5h3v3h3v3h-3v3h-3v-3h-3v-3h3z" fill="#fff"/>',
       flame: '<path d="M12 1.5c1 4.5 6.5 6.5 6.5 12.5a6.5 6.5 0 0 1-13 0c0-3.4 2.1-5.6 3.2-7.6.2 2.2 1.2 3.4 2.4 3.6-.4-3.4.4-5.9.9-8.5z"' + EDGE + '/>',
+      sos: '<circle cx="12" cy="12" r="11"' + EDGE + '/><text x="12" y="15.2" text-anchor="middle" font-size="8.5" font-weight="700" font-family="-apple-system,Helvetica,sans-serif" fill="#fff">SOS</text>',
       pin: '<circle cx="12" cy="12" r="10.5"' + EDGE + '/><circle cx="12" cy="12" r="3.6" fill="#fff"/>'
     };
     function symSvg(name, size, color, rot) {
@@ -704,7 +706,8 @@ enum RemotePage {
         name = { helicopter: 'helicopter', light: 'planeLight', glider: 'glider' }[it.kind] || 'plane';
         size = it.kind === 'heavy' ? 32 : it.kind === 'light' ? 21 : 26; rot = it.track ?? 90;
       }
-      else if (it.fixed) { name = it.fixed === 'base' ? 'antenna' : 'beacon'; size = 20; }
+      else if (it.fixed === 'air') { name = 'plane'; size = 26; rot = it.course ?? 90; }
+      else if (it.fixed) { name = { base: 'antenna', sos: 'sos', wx: 'weather' }[it.fixed] || 'beacon'; size = 20; }
       else if (it.heading == null) { name = 'dot'; size = 14; }
       else { name = 'hull'; size = 26; rot = it.heading; }
       return L.divIcon({ className: stale ? 'stale' : '', iconSize: [size, size], iconAnchor: [size / 2, size / 2],
@@ -792,7 +795,7 @@ enum RemotePage {
       side.innerHTML = bar + list.map(it => {
         const key = tab + ':' + it.id, d = km(it);
         const sub = tab === 'adsb'
-          ? [it.type, it.from && it.to ? it.from + ' → ' + it.to : null, it.altitudeM != null ? it.altitudeM + ' m' : null].filter(Boolean).join(' · ')
+          ? [it.emergency ? '⚠︎ ' + it.emergency : null, it.type, it.from && it.to ? it.from + ' → ' + it.to : null, it.altitudeM != null ? it.altitudeM + ' m' : null].filter(Boolean).join(' · ')
           : [it.type, it.destination ? '→ ' + it.destination : null, it.speedKn != null ? it.speedKn.toFixed(1) + ' kn' : null].filter(Boolean).join(' · ');
         return '<div class="row' + (sel === key ? ' sel' : '') + '" data-key="' + esc(key) + '"><span class="t">' + esc(label(it)) + '</span><span class="s">' + esc(sub) + '</span><span class="r">' + esc(rightValue(it)) + '</span></div>';
       }).join('');
@@ -814,12 +817,14 @@ enum RemotePage {
       const add = (k, v) => { if (v != null && v !== '') rows.push('<tr><td>' + esc(k) + '</td><td>' + esc(v) + '</td></tr>'); };
       const d = km(it);
       if (tab === 'adsb') {
+        add(t('Notlage'), it.emergency ? '⚠︎ ' + it.emergency : null); add('Squawk', it.squawk);
         add(t('Kennzeichen'), it.registration); add(t('Typ'), it.type); add(t('Betreiber'), it.operatorName);
         add(t('Gesellschaft'), it.airline); add(t('Von'), it.from); add(t('Nach'), it.to);
-        add(t('Höhe'), it.altitudeM != null ? it.altitudeM + ' m' : null); add(t('Tempo'), it.speedKmh != null ? it.speedKmh + ' km/h' : null);
+        add(t('Höhe'), it.ground ? t('am Boden') : it.altitudeM != null ? it.altitudeM + ' m' : null); add(t('Tempo'), it.speedKmh != null ? it.speedKmh + ' km/h' : null);
         add(t('Kurs'), it.track != null ? Math.round(it.track) + '°' : null); add(t('Steigen'), it.climbMs != null ? it.climbMs.toFixed(1) + ' m/s' : null);
+        add(t('Sollhöhe'), it.selectedAltitudeM != null ? it.selectedAltitudeM + ' m' : null);
       } else {
-        add(t('Typ'), it.type); add(t('Status'), it.status); add(t('Fahrt'), it.speedKn != null ? it.speedKn.toFixed(1) + ' kn' + (it.course != null ? ' · ' + Math.round(it.course) + '°' : '') : null);
+        add(t('Typ'), it.type); add(t('Meldung'), it.message); add(t('Höhe'), it.altitudeM != null ? it.altitudeM + ' m' : null); add(t('Status'), it.status); add(t('Fahrt'), it.speedKn != null ? it.speedKn.toFixed(1) + ' kn' + (it.course != null ? ' · ' + Math.round(it.course) + '°' : '') : null);
         add(t('Ziel'), it.destination); add(t('Ankunft'), it.eta); add(t('Größe'), it.length ? it.length + ' × ' + it.beam + ' m' : null);
         add(t('Tiefgang'), it.draught != null ? it.draught.toFixed(1) + ' m' : null); add(t('Rufzeichen'), it.callsign); add('IMO', it.imo);
       }
@@ -906,13 +911,17 @@ enum RemotePage {
     function toggleAudio() { if (player.paused) startAudio(); else stopAudio(); setTimeout(render, 50); }
     function updateNowPlaying() {
       if (!('mediaSession' in navigator) || !state) return;
-      navigator.mediaSession.metadata = new MediaMetadata({ title: state.dab.playing || 'DAB+', artist: state.dab.dynamicLabel || '', album: 'PortaPack · ' + state.dab.channel,
+      // Mit DL Plus Titel und Interpret wie bei einer Musik-App, sonst Sender und Lauftext.
+      const d = state.dab;
+      navigator.mediaSession.metadata = new MediaMetadata({ title: d.title || d.playing || 'DAB+', artist: d.artist || d.dynamicLabel || '',
+        album: (d.title ? d.playing + ' · ' : 'PortaPack · ') + d.channel,
         artwork: [{ src: '/icon-512.png', sizes: '512x512', type: 'image/png' }] });
     }
     function renderRadio() {
       const d = state.dab, box = $('radio');
       const active = state.mode === 'dab';
       let html = '<div class="nowwrap"><div class="now"><div class="name">' + esc(d.playing || t('Kein Sender gewählt')) + '</div>' +
+        (d.nowPlaying ? '<div class="dls"><b>♪ ' + esc(d.nowPlaying) + '</b></div>' : '') +
         '<div class="dls">' + esc(d.dynamicLabel) + '</div>' +
         '<div class="hint">' + (active ? t('Kanal {0}', d.channel) + ' · ' + (d.synchronized ? t('synchron · SNR {0} dB', d.snr.toFixed(1)) : t('sucht Signal …')) : t('Digitalradio ist aus – oben „Start“ tippen.')) + '</div>' +
         '<div style="margin-top:10px"><button class="btn" id="play" style="margin-left:0">' + audioLabel() + '</button>' +
@@ -943,7 +952,7 @@ enum RemotePage {
     const fmtDay = ms => new Date(ms).toLocaleDateString(LOCALE, { weekday: 'short', day: 'numeric', month: 'short' });
     const fmtTime = ms => new Date(ms).toLocaleTimeString(LOCALE, { hour: '2-digit', minute: '2-digit' });
     async function loadPlan(params = {}) {
-      try { plan = await api('/api/plan', params); if (tab === 'wx') renderWeather(); } catch (e) { showError(e); }
+      try { plan = await api('/api/plan', params); if (tab === 'wx') renderWeather(); } catch (e) { showError(e); if (tab === 'wx' && plan) renderWeather(); }
     }
     // Einklappbare Kästen (<details>) in allen Reitern, auf-/zugeklappt je Kasten im
     // Browser gemerkt (übersteht Neuzeichnen und Neuladen). Schlüssel je Reiter mit
@@ -975,25 +984,30 @@ enum RemotePage {
     document.head.insertAdjacentHTML('beforeend', '<style>' +
       '.sp-panel { display:flex; flex-direction:column; gap:8px; padding:8px 12px; min-width:0; box-sizing:border-box; }' +
       '.sp-map { height:280px; border-radius:10px; overflow:hidden; border:1px solid var(--line); min-width:0; box-sizing:border-box; }' +
-      '.sp-detail { height:340px; display:flex; flex-direction:column; gap:6px; min-width:0; }' +
+      '.sp-detail { height:496px; display:flex; flex-direction:column; gap:6px; min-width:0; }' +
       '.sp-detail[hidden] { display:none; }' +
       '.sp-cap { display:flex; align-items:center; gap:8px; font-size:13px; min-width:0; height:28px; }' +
       '.sp-cap span { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }' +
       '.sp-cap .btn { margin:0; padding:4px 10px; }' +
       '.sp-detail canvas { width:100%; height:150px; display:block; background:var(--bg); border-radius:8px; }' +
+      '.sp-detail canvas[hidden] { display:none; }' +
       '.item.sp-pick { cursor:pointer; }' +
       '.item.sp-on { box-shadow:inset 3px 0 0 var(--sel); }' +
       '.sp-tip { font-size:11px; padding:1px 5px; }' +
       '.fmbands{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:6px;padding:8px}.fmbands button{border:0;border-radius:9px;background:var(--bg);color:var(--text);padding:8px 10px;text-align:left;cursor:pointer;font:14px -apple-system,system-ui,sans-serif;min-width:0}.fmbands button b{display:block;font-weight:600}.fmbands button span{display:block;color:var(--muted);font-size:12px;margin-top:2px}</style>');
-    // Mindesthöhe des Platzhalters = Höhe des Elements (Ränder 8, Karte 280, Diagramme 340).
-    const sondeSlotHeight = () => sondeUI.sel ? 8 + 280 + 8 + 340 + 8 : 8 + 280 + 8;
+    // Mindesthöhe des Platzhalters = Höhe des Elements (Ränder 8, Karte 280, Diagramme 496).
+    const sondeSlotHeight = () => {
+      if (!sondeUI.sel) return 8 + 280 + 8;
+      const det = sondeUI.panel && sondeUI.panel.querySelector('.sp-detail');
+      return 8 + 280 + 8 + (det && det.style.height ? parseInt(det.style.height) : 496) + 8;
+    };
     const sondeColor = name => getComputedStyle(document.documentElement).getPropertyValue(name).trim() || '#0a84ff';
     function sondePanel() {
       if (sondeUI.panel) return sondeUI.panel;
       const p = document.createElement('div');
       p.className = 'sp-panel';
       p.innerHTML = '<div class="sp-map"></div><div class="sp-detail" hidden><div class="sp-cap"><span></span>' +
-        '<button class="btn secondary" type="button">' + t('Schließen') + '</button></div><canvas class="sp-alt"></canvas><canvas class="sp-temp"></canvas></div>';
+        '<button class="btn secondary" type="button">' + t('Schließen') + '</button></div><canvas class="sp-alt"></canvas><canvas class="sp-temp"></canvas><canvas class="sp-wind"></canvas><canvas class="sp-ozone" hidden></canvas><canvas class="sp-pres" hidden></canvas></div>';
       p.querySelector('.sp-cap .btn').onclick = () => sondeSelect(null);
       sondeUI.panel = p;
       return p;
@@ -1090,7 +1104,8 @@ enum RemotePage {
       const d = sondeUI.selData;
       cap.textContent = !d ? sondeUI.sel + ' · ' + (sondeUI.selLoading ? t('lade …') : t('keine Daten'))
         : d.serial + ' · ' + d.type + ' · ' + fmtDay(d.start) + ' ' + fmtTime(d.start) + '–' + fmtTime(d.end) +
-          (d.peak != null ? ' · ' + tt('Gipfel {0} km', (d.peak / 1000).toFixed(1)) : '') + ' · ' + tt('{0} Meldungen', d.total);
+          (d.peak != null ? ' · ' + tt('Gipfel {0} km', (d.peak / 1000).toFixed(1)) : '') + ' · ' + tt('{0} Meldungen', d.total) +
+          (d.coverage != null ? ' · ' + tt('{0} % der Rahmen gehört', d.coverage) : '');
       p.querySelectorAll('canvas').forEach(cv => { if (!d && cv.width) cv.getContext('2d').clearRect(0, 0, cv.width, cv.height); });
       sondeCharts();
     }
@@ -1125,8 +1140,8 @@ enum RemotePage {
       pts.forEach((q, i) => i ? c.lineTo(X(q.x), Y(q.y)) : c.moveTo(X(q.x), Y(q.y)));
       c.stroke();
     }
-    // Höhe über Zeit; Temperatur über Höhe nur im Aufstieg (bis zum höchsten Punkt),
-    // Temperatur waagerecht, Höhe senkrecht – wie ein Aufstiegsprofil.
+    // Höhe über Zeit; Temperatur und Wind über Höhe nur im Aufstieg (bis zum höchsten
+    // Punkt), Messwert waagerecht, Höhe senkrecht – wie ein Aufstiegsprofil.
     function sondeCharts() {
       const d = sondeUI.selData, p = sondePanel();
       if (!d || !sondeUI.sel) return;
@@ -1135,15 +1150,38 @@ enum RemotePage {
         { title: t('Höhe (km) über Zeit'), color: sondeColor('--sel'), yZero: true, xFmt: fmtTime, yFmt: v => v.toFixed(1) });
       let peak = 0;
       alt.forEach((q, i) => { if (q.alt > alt[peak].alt) peak = i; });
-      const rise = alt.slice(0, peak + 1).filter(q => q.temp != null);
+      const ascent = alt.slice(0, peak + 1);
       // Mittel je 250-m-Schicht: in der Stratosphäre ändert sich die Temperatur kaum,
       // jedes Zehntelgrad Rauschen wurde sonst zu einem waagerechten Zacken.
-      const layers = new Map();
-      for (const q of rise) {
-        const k = Math.round(q.alt / 250);
-        const l = layers.get(k) || { s: 0, n: 0 }; l.s += q.temp; l.n++; layers.set(k, l);
+      const layered = value => {
+        const layers = new Map();
+        for (const q of ascent) {
+          const v = value(q);
+          if (v == null) continue;
+          const k = Math.round(q.alt / 250);
+          const l = layers.get(k) || { s: 0, n: 0 }; l.s += v; l.n++; layers.set(k, l);
+        }
+        return [...layers.entries()].sort((a, b) => a[0] - b[0]).map(([k, l]) => ({ x: l.s / l.n, y: k * 0.25 }));
+      };
+      const profile = layered(q => q.temp);
+      // Die Sonde treibt mit dem Wind: ihre GPS-Geschwindigkeit ist der Wind.
+      sondeChart(p.querySelector('.sp-wind'), layered(q => q.ws == null ? null : q.ws * 3.6),
+        { title: t('Wind (km/h) über Höhe (km), Aufstieg'), color: sondeColor('--sel'), yZero: true, xMinSpan: 20,
+          xFmt: v => Math.round(v) + ' km/h', yFmt: v => v.toFixed(1) });
+      // Druck (nur RS41-SGP) und Ozon (Ozonsonde) nur, wenn der Flug sie enthält.
+      const ozone = layered(q => q.o3), pres = alt.filter(q => q.p != null);
+      const oc = p.querySelector('.sp-ozone'), pc = p.querySelector('.sp-pres');
+      const extraCharts = (ozone.length > 1) + (pres.length > 1);
+      if (oc.hidden !== !(ozone.length > 1) || pc.hidden !== !(pres.length > 1)) {
+        oc.hidden = !(ozone.length > 1); pc.hidden = !(pres.length > 1);
+        p.querySelector('.sp-detail').style.height = (496 + 156 * extraCharts) + 'px';
+        const slot = p.parentNode; if (slot && slot.classList.contains('sp-slot')) slot.style.minHeight = sondeSlotHeight() + 'px';
       }
-      const profile = [...layers.entries()].sort((a, b) => a[0] - b[0]).map(([k, l]) => ({ x: l.s / l.n, y: k * 0.25 }));
+      if (ozone.length > 1) sondeChart(oc, ozone,
+        { title: t('Ozon-Zellstrom (µA) über Höhe (km), Aufstieg'), color: sondeColor('--ok'), yZero: true,
+          xFmt: v => v.toFixed(1) + ' µA', yFmt: v => v.toFixed(1) });
+      if (pres.length > 1) sondeChart(pc, pres.map(q => ({ x: q.t, y: q.p })),
+        { title: t('Luftdruck (hPa) über Zeit'), color: sondeColor('--muted'), xFmt: fmtTime, yFmt: v => Math.round(v) });
       sondeChart(p.querySelector('.sp-temp'), profile,
         { title: t('Temperatur über Höhe (km), Aufstieg'), color: sondeColor('--warn'), yZero: true, xMinSpan: 30,
           xFmt: v => Math.round(v) + ' °C', yFmt: v => v.toFixed(1) });
@@ -1206,8 +1244,23 @@ enum RemotePage {
         const wx = b.temperature == null ? '' : ' · ' + b.temperature.toFixed(1) + ' °C' + (b.humidity == null ? '' : ' · ' + Math.round(b.humidity) + ' %');
         const where = b.distanceKm == null ? '' : ' · ' + b.distanceKm.toFixed(0) + ' km ' + (b.direction || '');
         const age = b.age < 60 ? tt('gerade') : tt('vor {0} min', Math.round(b.age / 60));
+        // Zusatzdaten nur, wenn die Sonde sie sendet (Druck nur RS41-SGP, Instrumente per XDATA).
+        const extra = [];
+        if (b.wind != null) extra.push(tt('Wind {0} km/h', Math.round(b.wind * 3.6)) + (b.windFrom ? ' ' + tt('aus {0}', b.windFrom) : ''));
+        if (b.pressure != null) extra.push(b.pressure.toFixed(b.pressure < 100 ? 1 : 0) + ' hPa');
+        if (b.sats != null) extra.push(tt('{0} Satelliten', b.sats));
+        if (b.countdown != null) extra.push(b.countdown > 0
+          ? tt('Abschaltung um {0}', new Date(Date.now() + b.countdown * 1000).toLocaleTimeString([], {hour: '2-digit', minute: '2-digit'}))
+            + ' (' + Math.floor(b.countdown / 3600) + ':' + String(Math.floor(b.countdown % 3600 / 60)).padStart(2, '0') + ' h)'
+          : tt('Abschaltzeit erreicht'));
+        if (b.instrument != null) {
+          const name = { 1: t('Ozonsonde (ECC)'), 5: t('Ozonsonde (OIF411)'), 8: t('Frostpunkt-Hygrometer (CFH)') }[b.instrument]
+            || tt('Zusatzinstrument 0x{0}', b.instrument.toString(16).toUpperCase().padStart(2, '0'));
+          extra.push(name + (b.ozone != null ? ' ' + b.ozone.toFixed(2) + ' µA' : '') + (b.pumpTemp != null ? ', ' + tt('Pumpe {0} °C', b.pumpTemp.toFixed(1)) : ''));
+        }
         return '<div class="item sp-pick" data-live="' + esc(b.serial) + '"><span>' + (b.burst ? '🪂' : '🎈') + '</span><div class="grow"><div>' + esc(b.serial + ' · ' + b.type + ' · ' + b.frequency.toFixed(3) + ' MHz') + '</div>' +
-          '<div class="sub">' + esc(alt + vs + wx + where + ' · ' + age) + '</div></div>' +
+          '<div class="sub">' + esc(alt + vs + wx + where + ' · ' + age) + '</div>' +
+          (extra.length ? '<div class="sub">' + esc(extra.join(' · ')) + '</div>' : '') + '</div>' +
           '<a class="el" href="https://sondehub.org/' + encodeURIComponent(b.serial) + '" target="_blank" rel="noopener">↗</a></div>';
       }).join('');
       else body += '<div class="empty">' + t('Gerade keine Sonde zu hören.') + '</div>';
@@ -1851,7 +1904,7 @@ enum RemotePage {
         (d.programType ? '<span>' + esc(d.programType) + '</span>' : '') +
         (active && d.signalDB != null ? '<span>' + d.signalDB.toFixed(0) + ' dB</span>' : '');
       $('fmname').textContent = d.rdsName || '';
-      $('fmtext').textContent = d.rdsText || '';
+      $('fmtext').textContent = d.nowPlaying ? '♪ ' + d.nowPlaying : d.rdsText || '';
       $('fmplay').textContent = audioLabel();
       $('fmprev').disabled = $('fmnext').disabled = $('fmgo').disabled = !canTune;
       $('fmseg').querySelectorAll('[data-m]').forEach(b => b.classList.toggle('on', b.dataset.m === d.mode));
@@ -1910,7 +1963,7 @@ enum RemotePage {
       }
       if ('mediaSession' in navigator && !player.paused && active) {
         const title = d.rdsName || fmFmt(d.mhz, d.mode) + ' MHz';
-        const artist = d.rdsText || FM_MODES[d.mode] + ' · ' + fmFmt(d.mhz, d.mode) + ' MHz';
+        const artist = d.nowPlaying || d.rdsText || FM_MODES[d.mode] + ' · ' + fmFmt(d.mhz, d.mode) + ' MHz';
         const meta = navigator.mediaSession.metadata;
         if (!meta || meta.title !== title || meta.artist !== artist) {
           navigator.mediaSession.metadata = new MediaMetadata({ title, artist, album: 'PortaPack · Radio',

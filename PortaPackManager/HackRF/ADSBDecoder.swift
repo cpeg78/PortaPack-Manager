@@ -6,10 +6,78 @@ struct ADSBMessage: Sendable {
     enum Content: Sendable {
         case identification(callsign: String, category: Int)
         case airbornePosition(altitude: Int?, oddFormat: Bool, latCPR: Int, lonCPR: Int)
+        /// TC 5–8: am Boden, mit Rollgeschwindigkeit (kn) und Kurs.
+        case surfacePosition(groundSpeed: Double?, track: Double?, oddFormat: Bool, latCPR: Int, lonCPR: Int)
         case velocity(groundSpeed: Double, track: Double, verticalRate: Int?)
         case other(typeCode: Int)
-        /// Mode S ohne ADS-B: nur Kennung, bei DF4/20 die Höhe (keine Position).
-        case surveillance(altitude: Int?)
+        /// Mode S ohne ADS-B: nur Kennung, bei DF4/20 die Höhe, bei DF5/21 der
+        /// Squawk (keine Position); DF20/21 tragen dazu 56 Bit Comm-B (`mb`).
+        case surveillance(altitude: Int?, squawk: Int?, mb: [UInt8]? = nil)
+        /// TC 28/1: Notfall- bzw. Vorrangstatus samt Squawk.
+        case emergency(Emergency, squawk: Int?)
+        /// TC 29/1 (ADS-B v2): Zielzustand aus Autopilot bzw. FMS.
+        case targetState(TargetState)
+        /// TC 31: Betriebsstatus – ADS-B-Version und Positionsgenauigkeit.
+        case operationalStatus(version: Int, nacp: Int?)
+    }
+
+    /// Notfallstatus aus TC 28 (DO-260B 2.2.3.2.7.8.1.1).
+    enum Emergency: Int, Sendable {
+        case none = 0, general, medical, minimumFuel, noCommunication, unlawfulInterference, downed, reserved
+
+        var text: String? {
+            switch self {
+            case .none, .reserved: nil
+            case .general: String(localized: "Notfall")
+            case .medical: String(localized: "Medizinischer Notfall")
+            case .minimumFuel: String(localized: "Treibstoffmangel")
+            case .noCommunication: String(localized: "Funkausfall")
+            case .unlawfulInterference: String(localized: "Entführung")
+            case .downed: String(localized: "Abgestürzt")
+            }
+        }
+
+        /// Die drei Notfall-Squawks, sonst `nil`.
+        init?(squawk: Int) {
+            switch squawk {
+            case 7500: self = .unlawfulInterference
+            case 7600: self = .noCommunication
+            case 7700: self = .general
+            default: return nil
+            }
+        }
+    }
+
+    /// Was Autopilot bzw. FMS gerade ansteuern (TC 29, Unterart 1).
+    struct TargetState: Sendable, Equatable {
+        /// Eingestellte Höhe in ft; `fromFMS` = vom Flugmanagementsystem statt MCP/FCU.
+        var selectedAltitude: Int?
+        var fromFMS = false
+        /// Eingestellter Luftdruck (QNH) in hPa.
+        var qnh: Double?
+        var selectedHeading: Double?
+        /// `nil`: Flugzeug meldet die Betriebsarten nicht.
+        var modes: AutopilotModes?
+    }
+
+    struct AutopilotModes: OptionSet, Sendable, Hashable {
+        let rawValue: Int
+        static let autopilot = AutopilotModes(rawValue: 1)
+        static let vnav = AutopilotModes(rawValue: 2)
+        static let altitudeHold = AutopilotModes(rawValue: 4)
+        static let approach = AutopilotModes(rawValue: 8)
+        static let lnav = AutopilotModes(rawValue: 16)
+        static let tcas = AutopilotModes(rawValue: 32)
+
+        var text: String {
+            var parts: [String] = []
+            if contains(.autopilot) { parts.append(String(localized: "Autopilot")) }
+            if contains(.lnav) { parts.append("LNAV") }
+            if contains(.vnav) { parts.append("VNAV") }
+            if contains(.altitudeHold) { parts.append(String(localized: "Höhe halten")) }
+            if contains(.approach) { parts.append(String(localized: "Anflug")) }
+            return parts.isEmpty ? String(localized: "von Hand") : parts.joined(separator: ", ")
+        }
     }
 
     let icao: UInt32
@@ -380,10 +448,79 @@ final class ADSBDemodulator: @unchecked Sendable {
             let vrRaw = Int(me[4] & 7) << 6 | Int(me[5]) >> 2
             let vr = vrRaw == 0 ? nil : (vrRaw - 1) * 64 * ((me[4] & 8) != 0 ? -1 : 1)
             content = .velocity(groundSpeed: (ew * ew + ns * ns).squareRoot(), track: track, verticalRate: vr)
+        case 5...8:
+            let movement = Int(me[0] & 7) << 4 | Int(me[1] >> 4)
+            let trackValid = (me[1] >> 3) & 1 == 1
+            let track = Double(Int(me[1] & 7) << 4 | Int(me[2] >> 4)) * 360 / 128
+            content = .surfacePosition(
+                groundSpeed: surfaceSpeed(movement), track: trackValid ? track : nil,
+                oddFormat: (me[2] >> 2) & 1 == 1,
+                latCPR: Int(me[2] & 3) << 15 | Int(me[3]) << 7 | Int(me[4]) >> 1,
+                lonCPR: Int(me[4] & 1) << 16 | Int(me[5]) << 8 | Int(me[6]))
+        case 28 where me[0] & 7 == 1:
+            let squawk = squawkDigits(id13: Int(me[1] & 0x1F) << 8 | Int(me[2]))
+            content = .emergency(ADSBMessage.Emergency(rawValue: Int(me[1] >> 5)) ?? .reserved, squawk: squawk)
+        case 29 where (me[0] >> 1) & 3 == 1:
+            content = .targetState(targetState(me))
+        case 31:
+            let version = Int(me[5] >> 5)
+            // NACp steht erst ab Version 1 an dieser Stelle.
+            content = .operationalStatus(version: version, nacp: version >= 1 ? Int(me[5] & 0x0F) : nil)
         default:
             content = .other(typeCode: tc)
         }
         return ADSBMessage(icao: icao, downlinkFormat: df, typeCode: tc, content: content, raw: bytes, date: now)
+    }
+
+    /// Rollgeschwindigkeit aus dem Bewegungsfeld (DO-260B 2.2.3.2.4.2), in kn.
+    static func surfaceSpeed(_ m: Int) -> Double? {
+        switch m {
+        case 1: 0
+        case 2...8: 0.125 * Double(m - 1)
+        case 9...12: 1 + 0.25 * Double(m - 9)
+        case 13...38: 2 + 0.5 * Double(m - 13)
+        case 39...93: 15 + Double(m - 39)
+        case 94...108: 70 + 2 * Double(m - 94)
+        case 109...123: 100 + 5 * Double(m - 109)
+        case 124: 175
+        default: nil
+        }
+    }
+
+    /// TC 29 Unterart 1 (wie pyModeS `adsb.selected_altitude` u. a.): ME-Bits
+    /// 9 Quelle, 10–20 Höhe ((n − 1) · 32 ft), 21–29 QNH (800 + (n − 1) · 0,8 hPa),
+    /// 30 Kurs gültig, 31–39 Kurs (· 180/256°), 47 Betriebsarten gültig,
+    /// 48 Autopilot, 49 VNAV, 50 Höhe halten, 52 Anflug, 53 TCAS, 54 LNAV.
+    static func targetState(_ me: [UInt8]) -> ADSBMessage.TargetState {
+        func bit(_ n: Int) -> Bool { me[(n - 1) >> 3] & (0x80 >> UInt8((n - 1) & 7)) != 0 }
+        func field(_ first: Int, _ count: Int) -> Int {
+            (first..<(first + count)).reduce(0) { $0 << 1 | (bit($1) ? 1 : 0) }
+        }
+        var state = ADSBMessage.TargetState()
+        let altitude = field(10, 11), qnh = field(21, 9)
+        if altitude > 0 { state.selectedAltitude = (altitude - 1) * 32 }
+        state.fromFMS = bit(9)
+        if qnh > 0 { state.qnh = 800 + Double(qnh - 1) * 0.8 }
+        if bit(30) { state.selectedHeading = Double(field(31, 9)) * 180 / 256 }
+        if bit(47) {
+            var modes: ADSBMessage.AutopilotModes = []
+            if bit(48) { modes.insert(.autopilot) }
+            if bit(49) { modes.insert(.vnav) }
+            if bit(50) { modes.insert(.altitudeHold) }
+            if bit(52) { modes.insert(.approach) }
+            if bit(53) { modes.insert(.tcas) }
+            if bit(54) { modes.insert(.lnav) }
+            state.modes = modes
+        }
+        return state
+    }
+
+    /// 13-Bit-Kennungsfeld (C1 A1 C2 A2 C4 A4 X B1 D1 B2 D2 B4 D4) → Squawk als
+    /// vierstellige Dezimalzahl (7700 = „7700“); 0 heißt „kein Code“ → `nil`.
+    static func squawkDigits(id13: Int) -> Int? {
+        let modeA = modeAOrder(id13)
+        guard modeA != 0 else { return nil }
+        return (modeA >> 12 & 7) * 1000 + (modeA >> 8 & 7) * 100 + (modeA >> 4 & 7) * 10 + (modeA & 7)
     }
 
     /// Mode-S-Rahmen ohne ADS-B (Prüfung in `acceptModeS`); `icao` aus dem
@@ -391,14 +528,18 @@ final class ADSBDemodulator: @unchecked Sendable {
     static func decodeModeS(_ bytes: [UInt8], icao: UInt32, now: Date = Date()) -> ADSBMessage? {
         guard bytes.count == 7 || bytes.count == 14 else { return nil }
         let df = Int(bytes[0] >> 3)
-        let altitude: Int?
+        // DF4/20: Höhe, DF5/21: Kennung – beide im 13-Bit-Feld der Bits 20–32.
+        let field13 = Int(bytes[2] & 0x1F) << 8 | Int(bytes[3])
+        let altitude: Int?, squawk: Int?
         switch df {
-        case 4, 20: altitude = altitude13(Int(bytes[2] & 0x1F) << 8 | Int(bytes[3]))
-        case 5, 11, 21: altitude = nil
+        case 4, 20: (altitude, squawk) = (altitude13(field13), nil)
+        case 5, 21: (altitude, squawk) = (nil, squawkDigits(id13: field13))
+        case 11: (altitude, squawk) = (nil, nil)
         default: return nil
         }
-        return ADSBMessage(icao: icao, downlinkFormat: df, typeCode: 0, content: .surveillance(altitude: altitude),
-                           raw: bytes, date: now)
+        let mb = bytes.count == 14 ? Array(bytes[4..<11]) : nil
+        return ADSBMessage(icao: icao, downlinkFormat: df, typeCode: 0,
+                           content: .surveillance(altitude: altitude, squawk: squawk, mb: mb), raw: bytes, date: now)
     }
 
     /// 13-Bit-Höhencode der Antworten (AC-Feld mit M-Bit): M = 1 heißt Meter –
@@ -412,14 +553,25 @@ final class ADSBDemodulator: @unchecked Sendable {
     private static let charset = Array("#ABCDEFGHIJKLMNOPQRSTUVWXYZ##### ###############0123456789######")
 
     static func callsign(_ me: [UInt8]) -> String {
+        callsign(me, strict: false) ?? ""
+    }
+
+    /// Rufzeichen aus 8 × 6 Bit. `strict`: `nil`, sobald ein ungültiges Zeichen
+    /// („#“) vorkommt – für Comm-B BDS 2,0, wo erst das die Kennung bestätigt.
+    static func callsign(_ me: [UInt8], strict: Bool) -> String? {
         var bits: UInt64 = 0
         for k in 1...6 { bits = bits << 8 | UInt64(me[k]) }
         var text = ""
         for k in 0..<8 {
             let index = Int((bits >> UInt64(42 - 6 * k)) & 0x3F)
-            text.append(charset[index])
+            let char = charset[index]
+            if char == "#" {
+                if strict { return nil }
+                continue
+            }
+            text.append(char)
         }
-        return text.replacingOccurrences(of: "#", with: "").trimmingCharacters(in: .whitespaces)
+        return text.trimmingCharacters(in: .whitespaces)
     }
 
     /// 12-Bit-Höhencode (AC-Feld ohne M-Bit): mit Q-Bit 25-ft-Schritte, ohne Q-Bit
@@ -509,6 +661,20 @@ struct Aircraft: Identifiable, Sendable {
     var groundSpeed: Double?
     var track: Double?
     var verticalRate: Int?
+    /// Meldet Bodenpositionen (TC 5–8) – rollt oder steht am Flughafen.
+    var onGround = false
+    /// Transpondercode (Mode A), vierstellig dezimal geschrieben – erst, wenn
+    /// derselbe Code zweimal kam (ein Notfall-Squawk löst eine Mitteilung aus).
+    var squawk: Int?
+    var pendingSquawk: Int?
+    /// Notfallstatus aus TC 28 (`nil` = nie gemeldet; `.none` = gemeldet, kein Notfall).
+    var emergencyState: ADSBMessage.Emergency?
+    var targetState: ADSBMessage.TargetState?
+    /// Comm-B (Mode-S EHS): was die Radarantworten über das Flugzeug verraten.
+    var commB = CommB.State()
+    var adsbVersion: Int?
+    /// Positionsgenauigkeit NACp (0–11; 9 ≈ besser als 30 m).
+    var nacp: Int?
     var latitude: Double?
     var longitude: Double?
     var messages = 0
@@ -522,6 +688,13 @@ struct Aircraft: Identifiable, Sendable {
 
     var id: UInt32 { icao }
     var icaoHex: String { String(format: "%06X", icao) }
+    var squawkText: String? { squawk.map { String(format: "%04d", $0) } }
+
+    /// Gemeldeter Notfall, sonst einer der Notfall-Squawks 7500/7600/7700.
+    var emergency: ADSBMessage.Emergency? {
+        if let emergencyState, emergencyState.text != nil { return emergencyState }
+        return squawk.flatMap(ADSBMessage.Emergency.init(squawk:))
+    }
 }
 
 /// Sammelt Nachrichten zu Flugzeugen und rechnet Positionen aus CPR-Meldungen.
@@ -566,7 +739,27 @@ struct AircraftTracker: Sendable {
         case let .identification(callsign, category):
             if !callsign.isEmpty { plane.callsign = callsign }
             if category != 0 { plane.emitter = message.typeCode << 3 | category }
+        case let .surfacePosition(speed, track, odd, lat, lon):
+            plane.onGround = true
+            plane.altitude = nil
+            if let speed { plane.groundSpeed = speed }
+            if let track { plane.track = track }
+            plane.verticalRate = nil
+            if let position = surfacePosition(of: plane, cpr: (lat, lon), odd: odd, at: message.date) {
+                plane.latitude = position.lat
+                plane.longitude = position.lon
+                plane.positionDate = message.date
+                // Am Boden schon ab 20 m Abstand ein Spurpunkt (Rollwege sind kurz).
+                let moved = plane.trail.last.map {
+                    GeoMath.distanceKm(lat1: $0.lat, lon1: $0.lon, lat2: position.lat, lon2: position.lon) > 0.02
+                } ?? true
+                if moved {
+                    plane.trail.append((position.lat, position.lon))
+                    if plane.trail.count > Self.trailLimit { plane.trail.removeFirst(plane.trail.count - Self.trailLimit) }
+                }
+            }
         case let .airbornePosition(altitude, odd, lat, lon):
+            plane.onGround = false
             if let altitude { plane.altitude = altitude }
             if odd { plane.oddCPR = (lat, lon, message.date) } else { plane.evenCPR = (lat, lon, message.date) }
             if let position = position(of: plane, cpr: (lat, lon), odd: odd, at: message.date) {
@@ -591,8 +784,18 @@ struct AircraftTracker: Sendable {
             plane.groundSpeed = speed
             plane.track = track
             plane.verticalRate = vr
-        case let .surveillance(altitude):
+        case let .surveillance(altitude, squawk, mb):
             if let altitude { plane.altitude = altitude }
+            if let squawk { Self.take(squawk: squawk, into: &plane) }
+            if let mb, let register = CommB.infer(mb, plane: plane) { register.apply(to: &plane, at: message.date) }
+        case let .emergency(state, squawk):
+            plane.emergencyState = state
+            if let squawk { Self.take(squawk: squawk, into: &plane) }
+        case let .targetState(state):
+            plane.targetState = state
+        case let .operationalStatus(version, nacp):
+            plane.adsbVersion = version
+            if let nacp { plane.nacp = nacp }
         case .other:
             break
         }
@@ -600,6 +803,31 @@ struct AircraftTracker: Sendable {
         if aircraft.count > Self.maximumAircraft {
             DevicePruning.prune(&aircraft, limit: Self.maximumAircraft, maxAge: Self.keepSeconds, now: message.date) { $0.lastSeen }
         }
+    }
+
+    /// Ein neuer Code gilt erst beim zweiten Mal – ein einzelner verfälschter
+    /// Rahmen soll keinen Notfall-Squawk vortäuschen.
+    private static func take(squawk: Int, into plane: inout Aircraft) {
+        if squawk == plane.squawk || squawk == plane.pendingSquawk {
+            plane.squawk = squawk
+            plane.pendingSquawk = nil
+        } else {
+            plane.pendingSquawk = squawk
+        }
+    }
+
+    /// Bodenposition: Die CPR-Zonen sind viermal kleiner (90° statt 360°), eine
+    /// einzelne Meldung ist nur bis ≈ 80 km um den Bezug eindeutig – Bezug ist die
+    /// letzte Position (jünger als 60 s), sonst der eigene Standort.
+    private func surfacePosition(of plane: Aircraft, cpr: (Int, Int), odd: Bool, at date: Date) -> (lat: Double, lon: Double)? {
+        let recent = plane.positionDate.map { date.timeIntervalSince($0) < 60 } ?? false
+        let reference: (lat: Double, lon: Double)
+        if recent, let lat = plane.latitude, let lon = plane.longitude { reference = (lat, lon) }
+        else if let receiver { reference = receiver }
+        else { return nil }
+        guard let position = Self.localPosition(cpr: cpr, odd: odd, reference: reference, surface: true) else { return nil }
+        let distance = GeoMath.distanceKm(lat1: reference.lat, lon1: reference.lon, lat2: position.lat, lon2: position.lon)
+        return distance <= (recent ? 5 : 80) ? position : nil
     }
 
     /// Position aus der neuen CPR-Meldung: Paar, sonst örtlich (siehe oben).
@@ -654,15 +882,18 @@ struct AircraftTracker: Sendable {
     /// Örtliche Dekodierung einer einzelnen Meldung relativ zu einem Bezugspunkt
     /// innerhalb einer halben Zone („The 1090 MHz Riddle“, Kap. „Locally
     /// unambiguous position“).
-    static func localPosition(cpr: (Int, Int), odd: Bool, reference: (lat: Double, lon: Double)) -> (lat: Double, lon: Double)? {
+    /// `surface`: Bodenmeldung – Zonen über 90° statt 360°.
+    static func localPosition(cpr: (Int, Int), odd: Bool, reference: (lat: Double, lon: Double),
+                              surface: Bool = false) -> (lat: Double, lon: Double)? {
         let scale = 131072.0
         let i = odd ? 1.0 : 0.0
-        let dLat = 360 / (60 - i)
+        let span = surface ? 90.0 : 360.0
+        let dLat = span / (60 - i)
         let latCPR = Double(cpr.0) / scale, lonCPR = Double(cpr.1) / scale
         let j = floor(reference.lat / dLat) + floor(0.5 + mod(reference.lat, dLat) / dLat - latCPR)
         let lat = dLat * (j + latCPR)
         guard abs(lat) <= 90 else { return nil }
-        let dLon = 360 / Double(max(nl(lat) - Int(i), 1))
+        let dLon = span / Double(max(nl(lat) - Int(i), 1))
         let m = floor(reference.lon / dLon) + floor(0.5 + mod(reference.lon, dLon) / dLon - lonCPR)
         var lon = dLon * (m + lonCPR)
         if lon > 180 { lon -= 360 }
@@ -678,7 +909,9 @@ struct AircraftTracker: Sendable {
         var rlat1 = 360.0 / 59 * (mod(j, 59) + lat1 / scale)
         if rlat0 >= 270 { rlat0 -= 360 }
         if rlat1 >= 270 { rlat1 -= 360 }
-        guard nl(rlat0) == nl(rlat1) else { return nil }
+        // Wie dump1090: Breiten außerhalb ±90° sind Datenmüll (für 90…270 wäre
+        // `nl` beider Werte 1 und die Prüfung darunter griffe nicht).
+        guard (-90...90).contains(rlat0), (-90...90).contains(rlat1), nl(rlat0) == nl(rlat1) else { return nil }
         let lat: Double, lon: Double
         if newestIsOdd {
             let nl1 = nl(rlat1)

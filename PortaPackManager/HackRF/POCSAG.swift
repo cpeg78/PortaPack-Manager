@@ -197,6 +197,11 @@ struct PagerMessage: Sendable, Equatable, Identifiable {
     }
 
     func text(german: Bool) -> String {
+        let raw = rawText(german: german)
+        return DAPNET.decode(ric: ric, raw) ?? raw
+    }
+
+    private func rawText(german: Bool) -> String {
         switch kind {
         case .tone: ""
         case .numeric: POCSAG.numericText(bits)
@@ -204,9 +209,56 @@ struct PagerMessage: Sendable, Equatable, Identifiable {
         }
     }
 
+    /// Art für die Tabelle: DAPNET-Dienst (Zeitsignal, Rubrik …), sonst Text/Ziffern/Ton.
+    var kindTitle: String { DAPNET.serviceName(ric: ric) ?? kind.title }
+
     /// Gleicher Inhalt an denselben Empfänger (Wiederholung, anderer Sender).
     func sameContent(as other: PagerMessage) -> Bool {
         ric == other.ric && function == other.function && bits == other.bits
+    }
+}
+
+// MARK: - DAPNET-Sonderrufnummern
+
+/// System-RICs des Funkrufnetzes der Funkamateure (hampager.de, Seite
+/// „dapnetprotocol“): 8 Senderkennung (alle 10 min), 1004 DX-Cluster,
+/// 2504 Zeit für Skyper („HHMMSS DDMMYY“), 4520 Skyper-Rubriken (Text je
+/// Zeichen um eins verschoben, erstes Zeichen kennzeichnet die Rubrik);
+/// „XTIME=HHMMDDMMYY“ ist der Zeitruf im Textformat.
+enum DAPNET {
+    static func serviceName(ric: UInt32) -> String? {
+        switch ric {
+        case 8: String(localized: "Senderkennung")
+        case 1004: "DX-Cluster"
+        case 2504: String(localized: "Zeitsignal")
+        case 4520: String(localized: "Skyper-Rubrik")
+        default: nil
+        }
+    }
+
+    /// Klartext einer Sondernachricht, `nil` für gewöhnliche Rufe.
+    static func decode(ric: UInt32, _ text: String) -> String? {
+        if let time = timeSignal(text) { return time }
+        if ric == 4520, text.count >= 2 {
+            // ROT-1: jedes Zeichen eins zurück; das erste nennt die Rubrik.
+            let plain = String(text.dropFirst().unicodeScalars.map { scalar -> Character in
+                (0x21...0x7F).contains(scalar.value) ? Character(Unicode.Scalar(scalar.value - 1)!) : Character(scalar)
+            })
+            return plain.trimmingCharacters(in: .whitespaces)
+        }
+        return nil
+    }
+
+    /// „193500 161018“ (RIC 2504, Ziffern) bzw. „XTIME=1935161018“ → „19:35 Uhr, 16.10.18“.
+    static func timeSignal(_ text: String) -> String? {
+        let trimmed = text.trimmingCharacters(in: .whitespaces)
+        if let match = trimmed.firstMatch(of: /^(\d{2})(\d{2})(\d{2}) (\d{2})(\d{2})(\d{2})$/) {
+            return String(localized: "Zeit \(String(match.1)):\(String(match.2)):\(String(match.3)), \(String(match.4)).\(String(match.5)).\(String(match.6))")
+        }
+        if let match = trimmed.firstMatch(of: /XTIME=(\d{2})(\d{2})(\d{2})(\d{2})(\d{2})/) {
+            return String(localized: "Zeit \(String(match.1)):\(String(match.2)), \(String(match.3)).\(String(match.4)).\(String(match.5))")
+        }
+        return nil
     }
 }
 
@@ -239,7 +291,9 @@ struct POCSAGFramer {
 
     var isLocked: Bool { locked }
 
-    mutating func push(_ bit: UInt8) -> PagerMessage? {
+    /// `now`: Zeitstempel fertiger Nachrichten – durchgereicht statt `Date()` im
+    /// Dekoder (Review 05.11.2026), wie bei ADS-B/AIS/APRS.
+    mutating func push(_ bit: UInt8, now: Date = Date()) -> PagerMessage? {
         register = register << 1 | UInt64(bit & 1)
         guard locked else {
             let candidate = UInt32(truncatingIfNeeded: register)
@@ -264,16 +318,16 @@ struct POCSAGFramer {
                 return nil
             }
             locked = false
-            return finish(incomplete: false)
+            return finish(incomplete: false, now: now)
         }
         let frame = UInt32(codewordIndex / 2)
         codewordIndex += 1
-        return handle(word, frame: frame)
+        return handle(word, frame: frame, now: now)
     }
 
     /// Schließt eine offene Nachricht ab (z. B. am Ende einer Aufnahme).
-    mutating func flush() -> PagerMessage? {
-        finish(incomplete: false)
+    mutating func flush(now: Date = Date()) -> PagerMessage? {
+        finish(incomplete: false, now: now)
     }
 
     private mutating func lock(inverted: Bool) {
@@ -284,20 +338,20 @@ struct POCSAGFramer {
         word = 0
     }
 
-    private mutating func handle(_ raw: UInt32, frame: UInt32) -> PagerMessage? {
+    private mutating func handle(_ raw: UInt32, frame: UInt32, now: Date) -> PagerMessage? {
         guard let (cw, errors) = POCSAG.correct(raw) else {
-            return finish(incomplete: true)
+            return finish(incomplete: true, now: now)
         }
-        if cw == POCSAG.idle { return finish(incomplete: false) }
+        if cw == POCSAG.idle { return finish(incomplete: false, now: now) }
         if cw & 0x8000_0000 == 0 {
             // Mit Paritätsbit ist der Mindestabstand 6: Falsch korrigierte Wörter
             // haben mindestens vier Fehler, kommen also aus Fehlerbündeln mitten
             // in einer Nachricht. Eine Adresse dort, die zwei Korrekturen
             // brauchte, gilt deshalb als zerstörtes Nachrichtenwort.
             if errors >= 2, current != nil, messageCodewords > 0 {
-                return finish(incomplete: true)
+                return finish(incomplete: true, now: now)
             }
-            let done = finish(incomplete: false)
+            let done = finish(incomplete: false, now: now)
             current = PagerMessage(ric: (cw >> 13) << 3 | frame, function: UInt8((cw >> 11) & 3),
                                    bitRate: bitRate, bits: [], correctedBits: errors, incomplete: false,
                                    addressErrors: errors)
@@ -310,17 +364,17 @@ struct POCSAGFramer {
         }
         current!.correctedBits += errors
         messageCodewords += 1
-        return messageCodewords >= maximumCodewords ? finish(incomplete: true) : nil
+        return messageCodewords >= maximumCodewords ? finish(incomplete: true, now: now) : nil
     }
 
-    private mutating func finish(incomplete: Bool) -> PagerMessage? {
+    private mutating func finish(incomplete: Bool, now: Date) -> PagerMessage? {
         guard var message = current else { return nil }
         current = nil
         // Nur-Ton-Ruf an eine Adresse mit zwei Korrekturen: bei vielen
         // Bitfehlern fast immer ein Zufallswort (gemessen im Rauschtest).
         if message.bits.isEmpty, message.uncertain { return nil }
         message.incomplete = incomplete
-        message.date = Date()
+        message.date = now
         return message
     }
 }
@@ -369,7 +423,7 @@ final class POCSAGDemodulator: @unchecked Sendable {
     /// Bitraten mit derzeit erkannter Synchronisation.
     var lockedRates: [Int] { slicers.filter(\.framer.isLocked).map(\.framer.bitRate) }
 
-    func process(_ samples: [Float]) -> [PagerMessage] {
+    func process(_ samples: [Float], now: Date = Date()) -> [PagerMessage] {
         var messages: [PagerMessage] = []
         for n in slicers.indices {
             var s = slicers[n]
@@ -387,7 +441,7 @@ final class POCSAGDemodulator: @unchecked Sendable {
                 s.dc += s.dcRate * (y - s.dc)
                 guard let value = s.clock.push(y - s.dc) else { continue }
                 // Untere Frequenz (negativer Diskriminator) = logisch 1.
-                if let message = s.framer.push(value < 0 ? 1 : 0) { messages.append(message) }
+                if let message = s.framer.push(value < 0 ? 1 : 0, now: now) { messages.append(message) }
             }
             slicers[n] = s
         }
@@ -395,8 +449,8 @@ final class POCSAGDemodulator: @unchecked Sendable {
     }
 
     /// Gibt noch offene Nachrichten aus (Ende einer Aufnahme).
-    func flush() -> [PagerMessage] {
-        slicers.indices.compactMap { slicers[$0].framer.flush() }
+    func flush(now: Date = Date()) -> [PagerMessage] {
+        slicers.indices.compactMap { slicers[$0].framer.flush(now: now) }
     }
 }
 

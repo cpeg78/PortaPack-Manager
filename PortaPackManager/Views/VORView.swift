@@ -3,6 +3,7 @@ import SwiftUI
 
 /// Funkfeuer (VOR): Radial messen, Kennung lesen, Kreuzpeilung auf der Karte.
 struct VORView: View {
+    @StoredColumns("vor.1") private var columns: TableColumnCustomization<NearbyRow>
     @Environment(DeviceSession.self) private var session
     /// Lebt im `ReceiverStore` – überlebt den Seitenwechsel samt laufendem Empfang.
     @Bindable private var model = ReceiverStore.shared.vor
@@ -131,14 +132,14 @@ struct VORView: View {
     // MARK: - Liste
 
     private var stationTable: some View {
-        Table(nearby.map(NearbyRow.init), selection: $selection) {
-            TableColumn("Kennung") { row in Text(row.navaid.ident).bold() }.width(60)
-            TableColumn("Name") { row in Text(row.navaid.name) }
-            TableColumn("Art") { row in Text(row.navaid.type).foregroundStyle(.secondary) }.width(80)
-            TableColumn("MHz") { row in Text(String(format: "%.2f", row.navaid.mhz)).monospacedDigit() }.width(56)
+        Table(nearby.map(NearbyRow.init), selection: $selection, columnCustomization: $columns) {
+            TableColumn("Kennung") { row in Text(row.navaid.ident).bold() }.width(min: 36, ideal: 60).customizationID("kennung")
+            TableColumn("Name") { row in Text(row.navaid.name) }.customizationID("name")
+            TableColumn("Art") { row in Text(row.navaid.type).foregroundStyle(.secondary) }.width(min: 48, ideal: 80).customizationID("art")
+            TableColumn("MHz") { row in Text(String(format: "%.2f", row.navaid.mhz)).monospacedDigit() }.width(min: 34, ideal: 56).customizationID("mhz")
             TableColumn("Entfernung") { row in
                 Text(String(format: "%.0f km %@", row.km, GeoMath.compass(row.bearing))).monospacedDigit()
-            }.width(90)
+            }.width(min: 54, ideal: 90).customizationID("entfernung")
         }
         .onChange(of: selection) { _, id in
             if let id, let navaid = nearby.first(where: { $0.navaid.id == id })?.navaid { select(navaid) }
@@ -213,21 +214,7 @@ struct VORView: View {
                 ReceiverControls(model: model, device: session.hackRF)
             }
             Section(PanelSection.status) {
-                radialDisplay
-                LabeledContent("Güte", value: model.signalQuality.text)
-                if let reading = model.reading, reading.carrierFraction < VORQuality.minCarrierFraction {
-                    // Kein Träger: Modulationswerte wären nur Rauschen – stattdessen erklären.
-                    Text("Hier ist kein Funkfeuer zu hören. Am Boden reichen sie oft nur 20–40 km – wähle ein näheres oder bring die Antenne höher und waagerecht an.")
-                        .help("Funkfeuer sind für Flugzeuge in der Höhe gebaut, brauchen freie Sicht und sind horizontal polarisiert. Manche sind abgeschaltet, obwohl sie noch in der Liste stehen.")
-                        .font(.caption).foregroundStyle(.secondary)
-                } else if let reading = model.reading {
-                    LabeledContent("30 Hz AM", value: String(format: "%.0f %%", reading.amDepth * 100))
-                    LabeledContent("Hilfsträger 9960 Hz", value: String(format: "%.0f %%", reading.subcarrierDepth * 100))
-                    LabeledContent("FM-Hub", value: String(format: "%.0f Hz", reading.deviationHz))
-                }
-                if let spread = model.spread {
-                    LabeledContent("Streuung (10 s)", value: String(format: "± %.1f°", spread))
-                }
+                VORStatusRows(model: model)
             }
             FrequencyMemorySection(page: .vor, currentMHz: model.frequencyMHz,
                                    suggestedName: model.station.map { "\($0.ident) \($0.name)" } ?? "", range: 108...117.95) { model.tune(to: $0.mhz) }
@@ -291,6 +278,41 @@ struct VORView: View {
         .formStyle(.grouped)
     }
 
+    private func candidates(for ident: String) -> [Navaid] {
+        database.navaids.filter { $0.ident.uppercased() == ident && abs($0.mhz - model.frequencyMHz) < 0.03 }
+            .sorted { a, b in
+                guard let home else { return true }
+                return GeoMath.distanceKm(lat1: home.latitude, lon1: home.longitude, lat2: a.latitude, lon2: a.longitude)
+                    < GeoMath.distanceKm(lat1: home.latitude, lon1: home.longitude, lat2: b.latitude, lon2: b.longitude)
+            }
+    }
+
+}
+
+/// Zähler und Pegel als eigene Ansicht: sie ändern sich mehrmals je Sekunde,
+/// und im Bedienfeld selbst gelesen zeichneten sie das ganze Formular neu –
+/// das Scrollen ruckelte (Review 05.11.2026).
+private struct VORStatusRows: View {
+    let model: VORModel
+
+    var body: some View {
+        radialDisplay
+        LabeledContent("Güte", value: model.signalQuality.text)
+        if let reading = model.reading, reading.carrierFraction < VORQuality.minCarrierFraction {
+            // Kein Träger: Modulationswerte wären nur Rauschen – stattdessen erklären.
+            Text("Hier ist kein Funkfeuer zu hören. Am Boden reichen sie oft nur 20–40 km – wähle ein näheres oder bring die Antenne höher und waagerecht an.")
+                .help("Funkfeuer sind für Flugzeuge in der Höhe gebaut, brauchen freie Sicht und sind horizontal polarisiert. Manche sind abgeschaltet, obwohl sie noch in der Liste stehen.")
+                .font(.caption).foregroundStyle(.secondary)
+        } else if let reading = model.reading {
+            LabeledContent("30 Hz AM", value: String(format: "%.0f %%", reading.amDepth * 100))
+            LabeledContent("Hilfsträger 9960 Hz", value: String(format: "%.0f %%", reading.subcarrierDepth * 100))
+            LabeledContent("FM-Hub", value: String(format: "%.0f Hz", reading.deviationHz))
+        }
+        if let spread = model.spread {
+            LabeledContent("Streuung (10 s)", value: String(format: "± %.1f°", spread))
+        }
+    }
+
     private var radialDisplay: some View {
         VStack(alignment: .leading, spacing: 4) {
             HStack(alignment: .firstTextBaseline) {
@@ -325,14 +347,4 @@ struct VORView: View {
             }
         }
     }
-
-    private func candidates(for ident: String) -> [Navaid] {
-        database.navaids.filter { $0.ident.uppercased() == ident && abs($0.mhz - model.frequencyMHz) < 0.03 }
-            .sorted { a, b in
-                guard let home else { return true }
-                return GeoMath.distanceKm(lat1: home.latitude, lon1: home.longitude, lat2: a.latitude, lon2: a.longitude)
-                    < GeoMath.distanceKm(lat1: home.latitude, lon1: home.longitude, lat2: b.latitude, lon2: b.longitude)
-            }
-    }
-
 }

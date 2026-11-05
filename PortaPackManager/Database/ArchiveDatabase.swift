@@ -107,13 +107,17 @@ final class ArchiveDatabase: @unchecked Sendable, Observable {
     }
 
     /// Schreiben ohne Warten, als eine Transaktion. Fehler landen im Protokoll.
-    func write(_ label: String = "Schreiben", _ body: @escaping @Sendable (SQLiteConnection) throws -> Void) {
+    /// `onFailure` läuft auf der Warteschlange, wenn der Schreiblauf scheitert
+    /// (Platte voll, I/O) – der Aufrufer kann die Daten dann behalten.
+    func write(_ label: String = "Schreiben", onFailure: (@Sendable () -> Void)? = nil,
+               _ body: @escaping @Sendable (SQLiteConnection) throws -> Void) {
         queue.async {
             do {
                 try self.perform { db in try db.transaction { try body(db) } }
                 self.clearDiskFullNotice()
             } catch {
                 Self.log.error("\(label, privacy: .public) fehlgeschlagen: \(String(describing: error), privacy: .public)")
+                onFailure?()
             }
         }
     }
@@ -147,6 +151,10 @@ final class ArchiveDatabase: @unchecked Sendable, Observable {
             }
         }
         readerLock.unlock()
+        // Ohne Leser (Datei fehlt oder Schema älter) liefe `sync` samt Migration –
+        // auf dem Main Thread hinge die Oberfläche (Review 05.11.2026). Die Aufrufer
+        // nehmen `try?`; `ArchiveMaintenance.start` wärmt die Verbindung vorher auf.
+        guard !Thread.isMainThread else { throw ArchiveDatabaseError.notReady }
         return try sync(body)
     }
 
@@ -177,8 +185,15 @@ final class ArchiveDatabase: @unchecked Sendable, Observable {
             return try body(db)
         } catch let error as SQLiteError {
             if error.isCorrupt {
-                Self.log.fault("Archiv beschädigt: \(error.description, privacy: .public)")
-                replaceCorrupt()
+                // Ist die Datei selbst gesund und nur ein Volltextindex (FTS5, externer
+                // Inhalt) inkonsistent (`SQLITE_CORRUPT_VTAB`), reicht der Neuaufbau – vorher
+                // wanderte das intakte Archiv als „beschädigt“ beiseite (Review 05.11.2026).
+                if Self.repairIndexes(db) {
+                    Self.log.error("Archiv: Volltextindex neu aufgebaut nach \(error.description, privacy: .public)")
+                } else {
+                    Self.log.fault("Archiv beschädigt: \(error.description, privacy: .public)")
+                    replaceCorrupt()
+                }
             } else if error.isFull {
                 Self.log.error("Archiv: Platte voll – \(error.description, privacy: .public)")
                 setNotice(String(localized: "Das Archiv konnte nicht schreiben: Der Speicher ist voll. Neue Sichtungen und Meldungen gehen verloren, bis wieder Platz ist."),
@@ -205,6 +220,19 @@ final class ArchiveDatabase: @unchecked Sendable, Observable {
 
     /// Benennt eine beschädigte Datei um (samt WAL) und legt beim nächsten Zugriff
     /// eine neue an. Gelöscht wird nichts – die alte Datei bleibt zur Rettung liegen.
+    /// `quick_check` auf der Hauptdatei; ist sie in Ordnung, alle FTS-Indizes neu
+    /// aufbauen. `false`, wenn die Datei selbst defekt ist oder der Aufbau scheitert.
+    private static func repairIndexes(_ db: SQLiteConnection) -> Bool {
+        guard (try? db.query("PRAGMA main.quick_check(1)") { $0.text(0) ?? "" }) == ["ok"] else { return false }
+        do {
+            _ = try db.run("INSERT INTO acars_fts(acars_fts) VALUES('rebuild')")
+            _ = try db.run("INSERT INTO airband_fts(airband_fts) VALUES('rebuild')")
+            return true
+        } catch {
+            return false
+        }
+    }
+
     private func replaceCorrupt() {
         connection = nil
         // Die Zweitverbindung zeigte sonst weiter auf die umbenannte Datei.
@@ -378,6 +406,24 @@ final class ArchiveDatabase: @unchecked Sendable, Observable {
         END;
         INSERT INTO airband_fts (airband_fts) VALUES ('rebuild');
         """,
+        // 3 (04.11.2026): Radiosonden – Luftdruck (RS41-SGP), GPS-Satelliten und
+        // Zellstrom einer Ozonsonde je Meldung.
+        """
+        ALTER TABLE sonde_samples ADD COLUMN pressure REAL;
+        ALTER TABLE sonde_samples ADD COLUMN satellites INTEGER;
+        ALTER TABLE sonde_samples ADD COLUMN ozone_current REAL;
+        """,
+        // 4 (04.11.2026): ACARS/VDL2 werden gespeichert – dazu, was die Deutung
+        // braucht: Mode, Block-ID (Richtung), Nachrichtennummer, ICAO-Adresse
+        // (nur VDL2), schon gedeutete ATN-Felder (JSON) und der Pegel.
+        """
+        ALTER TABLE acars_messages ADD COLUMN mode TEXT;
+        ALTER TABLE acars_messages ADD COLUMN block_id TEXT;
+        ALTER TABLE acars_messages ADD COLUMN message_number TEXT;
+        ALTER TABLE acars_messages ADD COLUMN icao INTEGER;
+        ALTER TABLE acars_messages ADD COLUMN details TEXT;
+        ALTER TABLE acars_messages ADD COLUMN level REAL;
+        """,
     ]
 
     static var schemaVersion: Int { migrations.count }
@@ -442,7 +488,7 @@ final class ArchiveDatabase: @unchecked Sendable, Observable {
     }
 
     /// Öffnet die Sicherung nur lesend und prüft sie; liefert Schema-Stand und Tabellen.
-    private static func inspectBackup(_ source: URL) throws -> (version: Int, tables: Set<String>) {
+    static func inspectBackup(_ source: URL) throws -> (version: Int, tables: Set<String>) {
         do {
             let check = try SQLiteConnection(url: source, readOnly: true)
             let result = try check.query("PRAGMA quick_check") { $0.text(0) ?? "" }
@@ -464,16 +510,25 @@ final class ArchiveDatabase: @unchecked Sendable, Observable {
         // Rufzeichen der Abschriften gibt es erst ab Schema 2.
         let airbandColumns = "uuid, start, duration, channel, name, peak_db, recording, transcript, transcript_lang, transcript_confidence"
             + (version >= 2 ? ", transcript_callsign, transcript_icao, transcript_text" : "")
+        let sondeColumns = "serial, type, time, frame, frequency, latitude, longitude, altitude, vertical_speed, wind_speed, heading, temperature, humidity, battery, window"
+            + (version >= 3 ? ", pressure, satellites, ozone_current" : "")
+        let acarsColumns = "time, source, frequency, registration, flight, label, text"
+            + (version >= 4 ? ", mode, block_id, message_number, icao, details, level" : "")
         let copies: [(table: String, columns: String)] = [
             ("sightings", "kind, sid, key, day, name, registration, type, operator, route, first, last, messages, max_altitude, max_speed, min_distance, track"),
-            ("sonde_samples", "serial, type, time, frame, frequency, latitude, longitude, altitude, vertical_speed, wind_speed, heading, temperature, humidity, battery, window"),
+            ("sonde_samples", sondeColumns),
             ("airband_transmissions", airbandColumns),
-            ("acars_messages", "time, source, frequency, registration, flight, label, text"),
+            ("acars_messages", acarsColumns),
         ]
         return try db.transaction {
             var added = 0
             for copy in copies where tables.contains(copy.table) {
                 added += try db.run("INSERT OR IGNORE INTO main.\(copy.table) (\(copy.columns)) SELECT \(copy.columns) FROM src.\(copy.table)")
+            }
+            // Mitschnitt-Namen aus einer fremden Sicherung werden zu Pfaden im
+            // Mitschnitt-Ordner – alles mit Verzeichnisanteil verwerfen (Review 05.11.2026).
+            if tables.contains("airband_transmissions") {
+                _ = try db.run("UPDATE main.airband_transmissions SET recording = NULL WHERE recording LIKE '%/%' OR recording IN ('.', '..', '')")
             }
             return added
         }
@@ -497,6 +552,8 @@ final class ArchiveDatabase: @unchecked Sendable, Observable {
 
 enum ArchiveDatabaseError: Error, LocalizedError {
     case newerSchema(Int)
+    /// Die Datei ist noch nicht geöffnet/migriert und der Aufruf kam vom Main Thread.
+    case notReady
     /// Die Archivdatei der Sicherung ist beschädigt oder keine Datenbank (Einzelheiten von SQLite).
     case badBackup(String)
 
@@ -504,6 +561,7 @@ enum ArchiveDatabaseError: Error, LocalizedError {
         switch self {
         case .newerSchema: String(localized: "Die Sicherung stammt aus einer neueren Version der App. Bitte die App aktualisieren.")
         case .badBackup: String(localized: "Die Archivdatei der Sicherung ist beschädigt und lässt sich nicht einspielen. Dein Archiv bleibt unverändert.")
+        case .notReady: String(localized: "Das Archiv wird gerade geöffnet – bitte gleich noch einmal.")
         }
     }
 }

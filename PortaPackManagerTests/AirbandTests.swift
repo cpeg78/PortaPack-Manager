@@ -262,7 +262,7 @@ struct AirbandTests {
         // Eine halbe Sekunde Ton – AAC braucht ein paar Rahmen.
         first.recording = log.writeRecording((0..<8000).map { Int16(8000 * sin(Double($0) * 0.3)) }, for: first)
         let name = try #require(first.recording)
-        #expect(FileManager.default.fileExists(atPath: log.recordingURL(name).path))
+        #expect(FileManager.default.fileExists(atPath: log.recordingURL(name)!.path))
         #expect(name.hasSuffix(".m4a"))
         log.insert([first])
         var list = log.merge([first], into: [])
@@ -271,7 +271,7 @@ struct AirbandTests {
         list = log.merge(many, into: list)
         #expect(list.count == AirbandLog.limit)
         #expect(!list.contains { $0.id == first.id })
-        #expect(!FileManager.default.fileExists(atPath: log.recordingURL(name).path))
+        #expect(!FileManager.default.fileExists(atPath: log.recordingURL(name)!.path))
         // In der Datenbank bleibt der herausgefallene Eintrag – ohne Mitschnitt.
         await db.database.flush()
         #expect(log.load().count == AirbandLog.limit)
@@ -336,4 +336,13 @@ struct AirbandVoiceTests {
         #expect(AirbandReceiver.counts(seconds: 0.7, voice: d, speechOnly: false))
         #expect(!AirbandReceiver.counts(seconds: 0.3, voice: d, speechOnly: false))
     }
+
+    @Test("Mitschnitt-Namen aus Datenbank/Sicherung: nur nackte Dateinamen werden zu Pfaden")
+    func safeRecordingName() {
+        #expect(AirbandLog.safeRecordingName("2026-11-05_01-00-00_118.100.m4a") == "2026-11-05_01-00-00_118.100.m4a")
+        for bad in ["../x.m4a", "a/b.m4a", "..", ".", "", ".versteckt", "C:\\x.wav"] {
+            #expect(AirbandLog.safeRecordingName(bad) == nil, Comment(rawValue: bad))
+        }
+    }
+
 }

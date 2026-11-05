@@ -69,7 +69,7 @@ final class RemoteHTTPServer: @unchecked Sendable {
     /// Gewöhnliche Anfragen bis zur Antwort, mit „Kopf vollständig“. Ohne
     /// Zeitgrenze und Obergrenze konnte jeder im Netz – auch ohne Schlüssel –
     /// beliebig viele Verbindungen offen halten (Slowloris, Review 27.10.2026).
-    private var open: [ObjectIdentifier: (connection: NWConnection, headerDone: Bool, peer: String?)] = [:]
+    private var open: [ObjectIdentifier: (connection: NWConnection, headerDone: Bool, peer: String?, longRunning: Bool)] = [:]
     static let maximumOpen = 64
     /// Höchstens so viele offene Anfragen je Gegenstelle (IP-Adresse, bei IPv6 das
     /// /64-Netz – `RemoteAccessPolicy.peerKey`). Sonst konnte ein einzelnes Gerät alle
@@ -82,6 +82,10 @@ final class RemoteHTTPServer: @unchecked Sendable {
     /// mehr las (Slow-Read), hielt seinen Platz für immer (Review 29.10.2026, S1).
     /// Audioströme sind ausgenommen, sie trennt der Rückstau in `broadcast`.
     static let connectionTimeout: TimeInterval = 30
+    /// Moduswechsel (`hackrf` am Gerät + Warten) dauert mitunter länger als 30 s:
+    /// diese Pfade bekommen nach vollständigem Kopf einmal so viel mehr (Review 05.11.2026).
+    static let actionTimeout: TimeInterval = 60
+    static let longActions: Set<String> = ["/api/mode", "/api/dab/scan", "/api/dab/play"]
     /// Höchstens so viele gleichzeitige Audioströme (jeder kostet Sendepuffer).
     static let maximumStreams = 8
     /// Größter angenommener Körper (Anmeldeformular: Name und Passwort).
@@ -158,9 +162,14 @@ final class RemoteHTTPServer: @unchecked Sendable {
             for (key, entry) in streams where entry.pending >= 256 { dropStream(key) }
             for (key, entry) in streams {
                 streams[key]?.pending += 1
+                let connection = entry.connection
                 entry.connection.send(content: data, completion: .contentProcessed { [weak self] error in
                     guard let self else { return }
                     self.queue.async {
+                        // Schlüssel ist die Objektadresse – nach Freigabe kann eine neue
+                        // Verbindung dieselbe bekommen (Review 05.11.2026): nur zählen,
+                        // wenn es noch dieselbe ist.
+                        guard self.streams[key]?.connection === connection else { return }
                         self.streams[key]?.pending -= 1
                         if error != nil { self.dropStream(key) }
                     }
@@ -187,7 +196,7 @@ final class RemoteHTTPServer: @unchecked Sendable {
         }
         let peer = host.map(RemoteAccessPolicy.peerKey)
         guard Self.admits(peer: peer, openPeers: open.values.map(\.peer)) else { connection.cancel(); return }
-        open[key] = (connection, false, peer)
+        open[key] = (connection, false, peer, false)
         connection.stateUpdateHandler = { [weak self] state in
             switch state {
             case .cancelled, .failed: self?.open.removeValue(forKey: key)
@@ -195,15 +204,28 @@ final class RemoteHTTPServer: @unchecked Sendable {
             }
         }
         connection.start(queue: queue)
+        // Beide Fristen prüfen, ob unter dem Schlüssel noch *diese* Verbindung
+        // steht: Die Adresse wird nach der Freigabe wiederverwendet, sonst kappte
+        // die 30-s-Frist einer alten Anfrage eine neue grundlos (Review 05.11.2026).
         queue.asyncAfter(deadline: .now() + Self.headerTimeout) { [weak self] in
-            guard let self, let entry = self.open[key], !entry.headerDone else { return }
+            guard let self, let entry = self.open[key], entry.connection === connection, !entry.headerDone else { return }
             entry.connection.cancel()
             self.open.removeValue(forKey: key)
         }
         // Gesamtfrist: wer bis dahin nicht fertig ist (auch beim Senden), fliegt.
         // Ein Audiostrom steht dann schon in `streams`, nicht mehr in `open`.
         queue.asyncAfter(deadline: .now() + Self.connectionTimeout) { [weak self] in
-            guard let self, let entry = self.open.removeValue(forKey: key) else { return }
+            guard let self, let entry = self.open[key], entry.connection === connection else { return }
+            if entry.longRunning {
+                self.open[key]?.longRunning = false
+                self.queue.asyncAfter(deadline: .now() + Self.actionTimeout) { [weak self] in
+                    guard let self, let entry = self.open[key], entry.connection === connection else { return }
+                    self.open.removeValue(forKey: key)
+                    entry.connection.cancel()
+                }
+                return
+            }
+            self.open.removeValue(forKey: key)
             entry.connection.cancel()
         }
         receiveHeader(connection, buffer: Data())
@@ -218,6 +240,7 @@ final class RemoteHTTPServer: @unchecked Sendable {
                 self.open[ObjectIdentifier(connection)]?.headerDone = true
                 var request = Self.parse(buffer[..<end.lowerBound])
                 request.peer = self.open[ObjectIdentifier(connection)]?.peer
+                self.open[ObjectIdentifier(connection)]?.longRunning = Self.longActions.contains(request.path)
                 let length = Int(request.headers["content-length"] ?? "") ?? 0
                 guard (0...Self.maximumBody).contains(length) else {
                     self.send(.text(413, "Payload Too Large"), on: connection, head: false)

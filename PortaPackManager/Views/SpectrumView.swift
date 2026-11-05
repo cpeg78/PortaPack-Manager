@@ -114,18 +114,7 @@ struct SpectrumView: View {
             Section(PanelSection.empfang) {
                 ReceiverControls(model: model, device: session.hackRF)
             }
-            if model.running || model.peak != nil {
-                Section(PanelSection.status) {
-                    if let peak = model.peak {
-                        LabeledContent("Spitze", value: String(format: "%.4f MHz · %.0f dB", peak.mhz, peak.db))
-                            .font(.callout.monospacedDigit())
-                    }
-                    if model.running {
-                        LabeledContent("Datenrate", value: String(format: "%.1f MS/s", model.throughput / 1e6))
-                            .font(.callout.monospacedDigit())
-                    }
-                }
-            }
+            SpectrumStatusSection(model: model)
             markerSection
             FrequencyMemorySection(page: .spectrum, currentMHz: model.centerMHz) { entry in
                 applyFrequency(entry.mhz)
@@ -380,5 +369,27 @@ private struct SpectrumPlot: View {
         let mid = size.width / 2
         context.stroke(Path { $0.move(to: CGPoint(x: mid, y: 0)); $0.addLine(to: CGPoint(x: mid, y: plotHeight)) },
                        with: .color(.red.opacity(0.6)), style: StrokeStyle(lineWidth: 1, dash: [4, 4]))
+    }
+}
+
+/// Spitze und Datenrate als eigene Ansicht: sie ändern sich mit jedem Spektrum,
+/// und im Bedienfeld selbst gelesen zeichneten sie das ganze Formular neu –
+/// das Scrollen ruckelte (Review 05.11.2026). Auch die Bedingung liest `peak`.
+private struct SpectrumStatusSection: View {
+    let model: SpectrumModel
+
+    var body: some View {
+        if model.running || model.peak != nil {
+            Section(PanelSection.status) {
+                if let peak = model.peak {
+                    LabeledContent("Spitze", value: String(format: "%.4f MHz · %.0f dB", peak.mhz, peak.db))
+                        .font(.callout.monospacedDigit())
+                }
+                if model.running {
+                    LabeledContent("Datenrate", value: String(format: "%.1f MS/s", model.throughput / 1e6))
+                        .font(.callout.monospacedDigit())
+                }
+            }
+        }
     }
 }

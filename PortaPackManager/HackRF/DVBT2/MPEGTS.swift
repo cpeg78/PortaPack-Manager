@@ -18,6 +18,22 @@ struct TSStream: Sendable, Equatable, Hashable {
 }
 
 /// Ein Programm (Dienst) aus PAT, PMT und SDT.
+/// Sendung im Programmführer (EIT).
+struct TSEvent: Sendable, Equatable {
+    var title: String
+    var text: String
+    var start: Date?
+    var duration: TimeInterval
+
+    /// „20:15–21:45 Tatort“.
+    var summary: String {
+        let span = start.map { start in
+            start.formatted(date: .omitted, time: .shortened) + "–" + start.addingTimeInterval(duration).formatted(date: .omitted, time: .shortened) + " "
+        } ?? ""
+        return span + title
+    }
+}
+
 struct TSService: Sendable, Equatable, Identifiable {
     var id: Int                 // program_number = service_id
     var pmtPID: Int
@@ -26,6 +42,11 @@ struct TSService: Sendable, Equatable, Identifiable {
     var serviceType = 0
     var streams: [TSStream] = []
     var scrambled = false
+    /// Logische Kanalnummer aus der NIT (Senderplatz auf dem Fernseher).
+    var channelNumber: Int?
+    /// Programmführer (EIT jetzt/nächste Sendung).
+    var now: TSEvent?
+    var next: TSEvent?
 
     var video: TSStream? { streams.first { $0.kind.isVideo } }
     var audio: [TSStream] { streams.filter { $0.kind.isAudio } }
@@ -55,6 +76,9 @@ final class TSDemuxer: @unchecked Sendable {
     private(set) var services: [Int: TSService] = [:]
     private(set) var networkName = ""
     private(set) var transportStreamID: Int?
+    /// Uhrzeit des Senders (TDT/TOT, UTC) und Ortszeitversatz (TOT) in Minuten.
+    private(set) var utc: Date?
+    private(set) var localOffsetMinutes: Int?
     private(set) var packets = 0
     private(set) var continuityErrors = 0
     /// Neue oder geänderte Dienste.
@@ -103,7 +127,8 @@ final class TSDemuxer: @unchecked Sendable {
         continuity[pid] = counter
         let payload = packet[offset...]
 
-        if pid == 0 || pid == 0x11 || pid == 0x10 || pmtPIDs[pid] != nil {
+        // PAT, NIT, SDT, EIT (0x12), TDT/TOT (0x14) und die PMTs.
+        if pid == 0 || pid == 0x10 || pid == 0x11 || pid == 0x12 || pid == 0x14 || pmtPIDs[pid] != nil {
             section(pid: pid, start: start, payload: Array(payload))
         }
         if pesPIDs.contains(pid) {
@@ -148,6 +173,11 @@ final class TSDemuxer: @unchecked Sendable {
     }
 
     private func parseSections(pid: Int, _ s: [UInt8]) {
+        // TDT (0x70) ist eine Kurzsektion ohne CRC: nur die UTC-Zeit.
+        if pid == 0x14, s.count >= 8, s[0] == 0x70 {
+            utc = Self.dvbTime(Array(s[3..<8]))
+            return
+        }
         guard s.count >= 8 else { return }
         let length = 3 + (Int(s[1] & 0x0F) << 8 | Int(s[2]))
         guard length <= s.count, length >= 12, Self.crc32(s[0..<length]) == 0 else { return }
@@ -157,6 +187,19 @@ final class TSDemuxer: @unchecked Sendable {
         case (0, 0x00): parsePAT(s, body)
         case (0x11, 0x42): parseSDT(s, body)
         case (0x10, 0x40): parseNIT(body)
+        case (0x12, 0x4E): parseEIT(s, body)
+        case (0x14, 0x73):
+            // TOT: Zeit wie TDT, danach Ortszeitversatz (Deskriptor 0x58).
+            // Mindestens 14 Byte (Kopf 3, UTC 5, Schleifenlänge 2, CRC 4) – mit
+            // 12/13 ergäbe der Bereich `10..<8` einen Absturz (Review 05.11.2026).
+            guard length >= 14 else { return }
+            utc = Self.dvbTime(Array(s[3..<8]))
+            let loop = Int(s[8] & 0x0F) << 8 | Int(s[9])
+            for d in Self.descriptors(Array(s[10..<min(length - 4, 10 + loop)])) where d.tag == 0x58 && d.data.count >= 13 {
+                // Land (3), Region/Polarität, Versatz in BCD hh mm.
+                let sign = d.data[3] & 0x01 != 0 ? -1 : 1
+                localOffsetMinutes = sign * (Self.bcd(d.data[4]) * 60 + Self.bcd(d.data[5]))
+            }
         case (_, 0x02): if let program = pmtPIDs[pid] { parsePMT(program: program, pid: pid, body) }
         default: break
         }
@@ -272,7 +315,77 @@ final class TSDemuxer: @unchecked Sendable {
         for d in Self.descriptors(Array(body[2..<min(body.count, 2 + length)])) where d.tag == 0x40 {
             networkName = DVBText.decode(d.data[...])
         }
+        // Transportstromschleife: je Strom Deskriptoren, darunter die logischen
+        // Kanalnummern (0x83, EACEM/NorDig: Dienst 16 · sichtbar · 5 · Nummer 10).
+        var i = 2 + length
+        guard i + 2 <= body.count else { return }
+        let loopEnd = min(body.count, i + 2 + (Int(body[i] & 0x0F) << 8 | Int(body[i + 1])))
+        i += 2
+        var changed = false
+        while i + 6 <= loopEnd {
+            let stream = Int(body[i]) << 8 | Int(body[i + 1])
+            let descriptorsLength = Int(body[i + 4] & 0x0F) << 8 | Int(body[i + 5])
+            let descriptors = Self.descriptors(Array(body[(i + 6)..<min(loopEnd, i + 6 + descriptorsLength)]))
+            i += 6 + descriptorsLength
+            guard transportStreamID == nil || stream == transportStreamID else { continue }
+            for d in descriptors where d.tag == 0x83 {
+                var k = 0
+                while k + 4 <= d.data.count {
+                    let serviceID = Int(d.data[k]) << 8 | Int(d.data[k + 1])
+                    let number = Int(d.data[k + 2] & 0x03) << 8 | Int(d.data[k + 3])
+                    k += 4
+                    guard var service = services[serviceID], number > 0, service.channelNumber != number else { continue }
+                    service.channelNumber = number
+                    services[serviceID] = service
+                    changed = true
+                }
+            }
+        }
+        if changed { servicesChanged?(sortedServices) }
     }
+
+    /// EIT „jetzt/nächste“ des eigenen Stroms (Tabelle 0x4E): Sektion 0 = läuft,
+    /// 1 = folgt. Je Ereignis Start (MJD + BCD), Dauer (BCD) und der kurze
+    /// Ereignisdeskriptor 0x4D mit Titel und Kurztext.
+    private func parseEIT(_ s: [UInt8], _ body: [UInt8]) {
+        let serviceID = Int(s[3]) << 8 | Int(s[4])
+        let section = Int(s[6])
+        guard section <= 1, var service = services[serviceID], body.count >= 6 else { return }
+        var i = 6
+        var event: TSEvent?
+        while i + 12 <= body.count {
+            let start = Self.dvbTime(Array(body[(i + 2)..<(i + 7)]))
+            let duration = Self.bcd(body[i + 7]) * 3600 + Self.bcd(body[i + 8]) * 60 + Self.bcd(body[i + 9])
+            let loop = Int(body[i + 10] & 0x0F) << 8 | Int(body[i + 11])
+            let descriptors = Self.descriptors(Array(body[(i + 12)..<min(body.count, i + 12 + loop)]))
+            i += 12 + loop
+            for d in descriptors where d.tag == 0x4D && d.data.count >= 5 {
+                let nameLength = Int(d.data[3])
+                guard 4 + nameLength < d.data.count else { continue }
+                let title = DVBText.decode(d.data[4..<(4 + nameLength)])
+                let textLength = Int(d.data[4 + nameLength])
+                let textStart = 5 + nameLength
+                let text = DVBText.decode(d.data[textStart..<min(d.data.count, textStart + textLength)])
+                event = TSEvent(title: title, text: text, start: start, duration: TimeInterval(duration))
+            }
+        }
+        let changed = section == 0 ? service.now != event : service.next != event
+        guard changed else { return }
+        if section == 0 { service.now = event } else { service.next = event }
+        services[serviceID] = service
+        servicesChanged?(sortedServices)
+    }
+
+    /// DVB-Zeit: MJD (16 Bit) und Uhrzeit in BCD (hh mm ss), UTC.
+    static func dvbTime(_ b: [UInt8]) -> Date? {
+        guard b.count >= 5, b[2...4].allSatisfy({ $0 >> 4 <= 9 && $0 & 0x0F <= 9 }) else { return nil }
+        let mjd = Int(b[0]) << 8 | Int(b[1])
+        guard mjd > 50_000, mjd != 0xFFFF else { return nil }
+        let seconds = bcd(b[2]) * 3600 + bcd(b[3]) * 60 + bcd(b[4])
+        return Date(timeIntervalSince1970: Double(mjd - 40_587) * 86_400 + Double(seconds))
+    }
+
+    static func bcd(_ byte: UInt8) -> Int { Int(byte >> 4) * 10 + Int(byte & 0x0F) }
 
     var sortedServices: [TSService] {
         services.values.sorted { ($0.name.isEmpty ? "\($0.id)" : $0.name).localizedStandardCompare($1.name.isEmpty ? "\($1.id)" : $1.name) == .orderedAscending }

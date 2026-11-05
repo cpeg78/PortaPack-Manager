@@ -14,6 +14,9 @@ struct LoRaWANDevice: Identifiable, Sendable, Equatable {
     var snrDB = 0.0
     var rssiDB = 0.0
     var hasKeys = false
+    /// Aus DevStatusAns: Batterie (0 Netz, 1–254, 255 unbekannt) und Linkreserve in dB.
+    var battery: Int?
+    var margin: Int?
     var lastSeen: Date
 
     var address: String {
@@ -120,6 +123,10 @@ final class LoRaWANModel {
             device.lastFCnt = frame.fCnt ?? device.lastFCnt
             device.lastSummary = frame.summary
             if let decrypted = frame.decrypted { device.lastPayload = decrypted }
+            if let status = frame.macCommands.first(where: { $0.battery != nil }) {
+                device.battery = status.battery
+                device.margin = status.margin
+            }
             device.hasKeys = frame.devAddr.map { sessions[$0] != nil } ?? false
             device.label = frame.devAddr.flatMap { sessions[$0]?.label } ?? device.label
             device.snrDB = phy.snrDB

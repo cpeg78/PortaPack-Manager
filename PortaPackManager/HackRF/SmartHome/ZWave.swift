@@ -242,6 +242,12 @@ enum ZWave {
                 c.fields.append(.init(name: String(localized: "Geräteklasse"),
                                       value: String(localized: "Basis \(hex(args[3])), generisch \(hex(args[4])), spezifisch \(hex(args[5]))")))
                 c.deviceType = genericClass(args[4])
+                // Danach die unterstützten Klassen, bis zur Marke 0xEF (dahinter: was es steuert).
+                let supported = args.dropFirst(6).prefix { $0 != 0xEF }
+                if !supported.isEmpty {
+                    c.fields.append(.init(name: String(localized: "Klassen"),
+                                          value: supported.map { classNames[$0] ?? String(format: "0x%02X", $0) }.joined(separator: ", ")))
+                }
             }
         case (0x20, 0x01): c.summary = String(localized: "Basic: setze \(onOff(args.first ?? 0))")
         case (0x20, 0x02): c.summary = String(localized: "Basic: Abfrage")
@@ -262,8 +268,12 @@ enum ZWave {
             c.deviceType = String(localized: "Dimmer")
         case (0x30, 0x03):
             let v = args.first ?? 0
-            c.summary = v == 0 ? String(localized: "Binärsensor: ruhig") : String(localized: "Binärsensor: ausgelöst")
+            // Version 2 nennt die Sensorart im zweiten Byte.
+            let kind = args.count >= 2 ? binarySensorName(args[1]) : nil
+            let state = v == 0 ? String(localized: "ruhig") : String(localized: "ausgelöst")
+            c.summary = "\(kind ?? String(localized: "Binärsensor")): \(state)"
             c.values.append(SmartHomeValue(name: "Ausgelöst", unit: "", value: v == 0 ? 0 : 1))
+            if let kind { c.deviceType = kind }
         case (0x31, 0x04): c.summary = String(localized: "Messsensor: Abfrage")
         case (0x31, 0x05):
             if args.count >= 2, let reading = sensorReading(type: args[0], Array(args.dropFirst())) {
@@ -397,6 +407,91 @@ enum ZWave {
                 c.values = values
                 c.encrypted = encrypted
             }
+        case (0x2B, 0x01):
+            if let scene = args.first { c.summary = String(localized: "Szene \(Int(scene)) aktivieren") }
+        case (0x33, 0x03):
+            if args.count >= 2 {
+                let colors = [String(localized: "Warmweiß"), String(localized: "Kaltweiß"), String(localized: "Rot"),
+                              String(localized: "Grün"), String(localized: "Blau"), "Amber", "Cyan", String(localized: "Violett")]
+                let color = Int(args[0]) < colors.count ? colors[Int(args[0])] : String(localized: "Farbe \(Int(args[0]))")
+                c.summary = String(localized: "Farbe: \(color) \(Int(args[1]))")
+            }
+        case (0x35, 0x05):
+            if args.count >= 4 {
+                let pulses = args.prefix(4).reduce(0) { $0 << 8 | Int($1) }
+                c.summary = String(localized: "Impulszähler: \(pulses)")
+                c.values.append(SmartHomeValue(name: "Impulse", unit: "", value: Double(pulses)))
+                c.deviceType = String(localized: "Zähler")
+            }
+        case (0x42, 0x03):
+            let states = [String(localized: "ruht"), String(localized: "heizt"), String(localized: "kühlt"),
+                          String(localized: "lüftet"), String(localized: "heizt gleich"), String(localized: "kühlt gleich"),
+                          String(localized: "belüftet"), String(localized: "Zusatzheizung"), String(localized: "heizt (Stufe 2)"),
+                          String(localized: "kühlt (Stufe 2)"), String(localized: "Zusatzheizung (Stufe 2)"), String(localized: "Zusatzheizung (Stufe 3)")]
+            let state = Int((args.first ?? 0) & 0x0F)
+            let text = state < states.count ? states[state] : "\(state)"
+            c.summary = String(localized: "Thermostat: \(text)")
+            c.values.append(SmartHomeValue(name: "Heizen", unit: "", value: state == 1 || state == 7 || state == 8 ? 1 : 0))
+            c.deviceType = String(localized: "Thermostat")
+        case (0x45, 0x03):
+            let state = Int((args.first ?? 0) & 0x0F)
+            c.summary = state == 0 ? String(localized: "Lüfter aus") : String(localized: "Lüfter läuft (Stufe \(state))")
+        case (0x62, 0x01), (0x62, 0x03):
+            let mode = lockModeText(args.first ?? 0xFE)
+            if cmd == 0x01 {
+                c.summary = String(localized: "Türschloss: setze \(mode)")
+            } else {
+                c.summary = String(localized: "Türschloss: \(mode)")
+                // Bit 0 der Türlage: 0 = Tür offen.
+                if args.count >= 3 { c.summary += args[2] & 0x01 == 0 ? String(localized: ", Tür offen") : String(localized: ", Tür zu") }
+                c.values.append(SmartHomeValue(name: "Verriegelt", unit: "", value: args.first == 0xFF ? 1 : 0))
+                c.deviceType = String(localized: "Türschloss")
+            }
+        case (0x63, 0x03):
+            // Den Code selbst nie anzeigen – nur, ob der Platz belegt ist.
+            if args.count >= 2 {
+                let status = args[1] == 1 ? String(localized: "belegt") : args[1] == 0 ? String(localized: "frei") : String(localized: "zwave.code.blocked", defaultValue: "gesperrt")
+                c.summary = String(localized: "Benutzercode \(Int(args[0])): \(status)")
+            }
+        case (0x70, 0x06):
+            if args.count >= 3 {
+                let size = Int(args[1] & 0x07)
+                if size > 0, args.count >= 2 + size {
+                    var value = args[2..<(2 + size)].reduce(0) { $0 << 8 | Int($1) }
+                    if args[2] & 0x80 != 0 { value -= 1 << (8 * size) }   // vorzeichenbehaftet
+                    c.summary = String(localized: "Einstellung \(Int(args[0])) = \(value)")
+                }
+            }
+        case (0x73, 0x03):
+            if let level = args.first {
+                c.summary = level == 0 ? String(localized: "Sendeleistung normal") : String(localized: "Sendeleistung −\(Int(level)) dB")
+            }
+        case (0x5E, 0x02):
+            if args.count >= 3 {
+                let roles = [String(localized: "Zentrale"), String(localized: "Nebensteuerung"), String(localized: "tragbare Steuerung"),
+                             String(localized: "Steuerung als Repeater"), String(localized: "immer erreichbar"),
+                             String(localized: "Gerät mit Weckintervall"), String(localized: "schlafendes Gerät"),
+                             String(localized: "Weiterleitung über Netz")]
+                let role = Int(args[1]) < roles.count ? roles[Int(args[1])] : "\(args[1])"
+                c.summary = String(localized: "Z-Wave Plus \(Int(args[0])): \(role)")
+            }
+        case (0x85, 0x03):
+            if args.count >= 3 {
+                let nodes = args.dropFirst(3).prefix { $0 != 0x00 }.map { String(Int($0)) }.joined(separator: ", ")
+                c.summary = String(localized: "Zuordnung Gruppe \(Int(args[0])): ")
+                    + (nodes.isEmpty ? String(localized: "leer") : String(localized: "Knoten \(nodes)"))
+            }
+        case (0x87, 0x03):
+            if let value = args.first { c.summary = String(localized: "Anzeige: \(onOff(value))") }
+        case (0x9C, 0x02):
+            if args.count >= 3 {
+                // 0xFF + 1 liefe über (UInt8) – Review 05.11.2026: Absturz per Funk.
+                let kind = UInt8(exactly: Int(args[1]) + 1).flatMap(binarySensorName) ?? String(localized: "Alarm")
+                let active = args[2] != 0
+                c.summary = "\(kind): " + (active ? String(localized: "Alarm!") : String(localized: "ruhig"))
+                c.values.append(SmartHomeValue(name: "Alarm", unit: "", value: active ? 1 : 0))
+                c.deviceType = kind
+            }
         case (0x5A, 0x01): c.summary = String(localized: "Gerät wurde zurückgesetzt")
         case (0x86, 0x12): c.summary = String(localized: "Version abfragen")
         case (0x86, 0x14):
@@ -408,6 +503,37 @@ enum ZWave {
             break
         }
         return c
+    }
+
+    /// Sensorart des Binärsensors (v2) – der Sensoralarm (0x9C) zählt um eins verschoben.
+    static func binarySensorName(_ type: UInt8) -> String? {
+        switch type {
+        case 1: String(localized: "Sensor")
+        case 2: String(localized: "Rauchmelder")
+        case 3: String(localized: "CO-Melder")
+        case 4: String(localized: "CO₂-Melder")
+        case 5: String(localized: "Hitzemelder")
+        case 6: String(localized: "Wassermelder")
+        case 7: String(localized: "Frostmelder")
+        case 8: String(localized: "Sabotagekontakt")
+        case 10: String(localized: "Tür-/Fensterkontakt")
+        case 11: String(localized: "Neigungssensor")
+        case 12: String(localized: "Bewegungsmelder")
+        case 13: String(localized: "Glasbruchmelder")
+        default: nil
+        }
+    }
+
+    /// Betriebsart eines Türschlosses (Door Lock CC).
+    static func lockModeText(_ mode: UInt8) -> String {
+        switch mode {
+        case 0x00: String(localized: "entriegelt")
+        case 0x01: String(localized: "entriegelt (auf Zeit)")
+        case 0x10, 0x11: String(localized: "innen entriegelt")
+        case 0x20, 0x21: String(localized: "außen entriegelt")
+        case 0xFF: String(localized: "verriegelt")
+        default: String(localized: "unbekannt")
+        }
     }
 
     static func genericClass(_ value: UInt8) -> String? {

@@ -20,6 +20,8 @@ final class AISModel {
     /// Anzahl der Schiffe für die Startseite (eigene Größe, siehe `ADSBModel.aircraftCount`).
     private(set) var vesselCount = 0
     private(set) var log: [LogLine] = []
+    /// Sicherheitsmeldungen (AIS 12/14), neueste zuerst.
+    private(set) var safetyMessages: [AISSafetyMessage] = []
     private(set) var messageCount = 0
     private(set) var channelDB: [Float] = [-100, -100]
     private(set) var error: String?
@@ -85,11 +87,15 @@ final class AISModel {
                 while !Task.isCancelled {
                     try? await Task.sleep(for: .milliseconds(500))
                     guard let self else { return }
-                    let (vessels, recent, count) = self.shared.lock.withLock {
-                        (self.shared.tracker.sorted, self.shared.recent, self.shared.count)
+                    let (vessels, recent, count, safety) = self.shared.lock.withLock {
+                        (self.shared.tracker.sorted, self.shared.recent, self.shared.count, self.shared.tracker.safetyMessages)
                     }
                     if count != self.messageCount {
                         self.vessels = vessels
+                        if safety.last?.id != self.safetyMessages.first?.id { self.safetyMessages = safety.reversed() }
+                        for vessel in vessels where vessel.beaconActive {
+                            Notifier.shared.aisBeacon(vessel)
+                        }
                         if self.vesselCount != vessels.count { self.vesselCount = vessels.count }
                         self.log = recent.suffix(200).reversed()
                         self.messageCount = count
@@ -116,10 +122,8 @@ final class AISModel {
     /// Schiffe mit neuer Meldung ins Tagesarchiv (das Archiv merkt sich, was neu ist).
     private func archive(_ vessels: [AISVessel]) {
         let updates = vessels.map { vessel in
-            let kind = vessel.isBaseStation ? String(localized: "Basisstation") : vessel.isAidToNavigation ? String(localized: "Seezeichen")
-                : AISMessage.shipTypeText(vessel.shipType)
-            return SightingUpdate(
-                key: String(vessel.mmsi), name: vessel.name, registration: vessel.callsign, type: kind,
+            SightingUpdate(
+                key: String(vessel.mmsi), name: vessel.name, registration: vessel.callsign, type: vessel.kindText,
                 route: vessel.destination, lastSeen: vessel.lastSeen, messages: vessel.messages,
                 latitude: vessel.latitude, longitude: vessel.longitude, speed: vessel.speedKnots)
         }
@@ -141,5 +145,6 @@ final class AISModel {
         }
         vessels = []
         log = []
+        safetyMessages = []
     }
 }

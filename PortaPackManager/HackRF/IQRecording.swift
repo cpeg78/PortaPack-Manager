@@ -29,8 +29,8 @@ struct IQRecording: Codable, Identifiable, Sendable, Hashable {
 /// Verwaltet den Ordner mit IQ-Aufnahmen.
 enum IQStore {
     static var folder: URL {
-        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("de.christiangolz.portapackmanager/Aufnahmen", isDirectory: true)
+        // Eine Ablage für Sicherung und Aufnahmen (Review 05.11.2026).
+        let base = AppFiles.support.appendingPathComponent(ArchiveBackup.recordingsFolder, isDirectory: true)
         try? FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)
         return base
     }

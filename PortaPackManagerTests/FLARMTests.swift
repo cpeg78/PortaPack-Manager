@@ -56,10 +56,12 @@ struct FLARMTests {
         payload += [UInt8(crc >> 8), UInt8(crc & 0xFF)]
         packet += payload
         let demod = FLARMDemodulator()
-        var packets = demod.process(Self.iq(bytes: packet))
-        packets += demod.process(Data(count: 2 * 8192))
+        let now = Date(timeIntervalSince1970: 1_800_000_000)      // durchgereicht statt `Date()` (Review 05.11.2026)
+        var packets = demod.process(Self.iq(bytes: packet), now: now)
+        packets += demod.process(Data(count: 2 * 8192), now: now)
         let found = try #require(packets.first { $0.crcValid })
         #expect(found.bytes == payload)
+        #expect(found.date == now)
     }
 
     @Test("Rauschen allein liefert keine gültigen Pakete")

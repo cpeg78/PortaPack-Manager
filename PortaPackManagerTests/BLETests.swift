@@ -200,6 +200,35 @@ struct BLETests {
         #expect(BLEInterpreter.bthome([0x41, 0x00]).kind == "BTHome (verschlüsselt)")
     }
 
+    @Test("SwitchBot-Thermometer, AirPods-Akku, AirTag-Akku")
+    func switchBotAndApple() {
+        // Meter: Akku 87 %, 21,4 °C, 45 % – und −3,2 °C (Bit 7 aus).
+        let meter = values(BLEInterpreter.switchBot([0x54, 0x00, 0x57, 0x04, 0x80 | 21, 45]))
+        #expect(meter["Temperatur"]?.hasPrefix("21.4") == true)
+        #expect(meter["Batterie"] == "87 %")
+        #expect(values(BLEInterpreter.switchBot([0x54, 0x00, 0x57, 0x02, 3, 60]))["Temperatur"]?.hasPrefix("-3.2") == true)
+        #expect(BLEInterpreter.switchBot([0x48]).kind == "SwitchBot Bot")
+        // AirPods Pro 2: Hörer 80 % / 70 %, Etui 50 %, lädt.
+        let pods = BLEInterpreter.manufacturer(0x004C, [0x07, 0x19, 0x01, 0x14, 0x20, 0x2B, 0x87, 0x45, 0x00])
+        #expect(pods?.kind == "AirPods Pro 2")
+        #expect(pods.map(values)?["Hörer"] == "80 % / 70 %")
+        #expect(pods.map(values)?["Etui"] == "50 %")
+        #expect(pods.map(values)?["Lädt"] == "ja")
+        let tag = BLEInterpreter.manufacturer(0x004C, [0x12, 0x19, 0x80] + [UInt8](repeating: 0, count: 22))
+        #expect(tag.map(values)?["Akku"] == "schwach")
+    }
+
+    @Test("BTHome v2: neuere Objekte, Text, Firmware; unbekannte ID wird gemeldet")
+    func bthomeMore() {
+        // Niederschlag 12,3 mm (0x5F), Text „Hi“ (0x53), Firmware 1.2.3.4 (0xF1), dann unbekannt 0xEE.
+        let result = BLEInterpreter.bthome([0x40, 0x5F, 0x7B, 0x00, 0x53, 0x02, 0x48, 0x69, 0xF1, 0x04, 0x03, 0x02, 0x01, 0xEE, 0x01])
+        let v = values(result)
+        #expect(v["Niederschlag"] == "12.3 mm")
+        #expect(v["Text"] == "Hi")
+        #expect(v["Firmware"] == "1.2.3.4")
+        #expect(v["Weitere Daten"] == "Objekt 0xEE")
+    }
+
     @Test("Xiaomi-Thermometer mit pvvx- und ATC-Firmware")
     func xiaomi() throws {
         let pvvx: [UInt8] = [0x11, 0x22, 0x33, 0x44, 0x55, 0xA4, 0x2E, 0x08, 0xFC, 0x12, 0x86, 0x0B, 0x55, 0x07, 0x04]
